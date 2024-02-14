@@ -1,46 +1,36 @@
+#include "secrets.h"  // SSID_NAME, WIFI_PASSWORD
+
 #include <Arduino.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <ESPAsyncWebServer.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
-#include <PN5180.h>
 #include <PN5180ISO15693.h>
 #include <SPI.h>
+#include <WiFi.h>
 #include <Wire.h>
 
-#define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
+#define PANEL_RES_X 128  // Number of pixels wide of each INDIVIDUAL panel module.
 #define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
 
-#define SCREEN_WIDTH 128     // OLED display width, in pixels
-#define SCREEN_HEIGHT 64     // OLED display height, in pixels
-#define OLED_RESET -1        // Reset pin # (or -1 if sharing Arduino reset pin)
-#define SCREEN_ADDRESS 0x3C  ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
-
-#define PN5180_NSS 32
+#define MISO 39
 #define PN5180_BUSY 36
+#define PN5180_NSS 32
 #define PN5180_RST 17
 
-MatrixPanel_I2S_DMA *dma_display;
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-bool hasDisplay = false;
-
-PN5180ISO15693 nfc = PN5180ISO15693(PN5180_NSS, PN5180_BUSY, PN5180_RST);
-
 HUB75_I2S_CFG::i2s_pins _pins = {
-  33,  //R1_PIN,
+  25,  //R1_PIN,
   26,  //G1_PIN,
-  25,  //B1_PIN,
-  14,  //R2_PIN,
+  33,  //B1_PIN,
+  13,  //R2_PIN,
   27,  //G2_PIN,
-  13,  //B2_PIN,
-  5,   //A_PIN,
+  14,  //B2_PIN,
+  19,  //A_PIN,
   21,  //B_PIN,
   4,   //C_PIN,
   22,  //D_PIN,
   12,  //E_PIN,
-  2,   //LAT_PIN,
-  15,  //OE_PIN,
+  15,  //LAT_PIN,
+  2,   //OE_PIN,
   16,  //CLK_PIN
 };
 
@@ -51,10 +41,13 @@ HUB75_I2S_CFG mxconfig(
   _pins
 );
 
+MatrixPanel_I2S_DMA *hub75_display;
+PN5180ISO15693 nfc = PN5180ISO15693(PN5180_NSS, PN5180_BUSY, PN5180_RST);
+AsyncWebServer server(80);
+
 String convertToHexString(uint8_t* data, int dataSize) {
   String hexString = "";
   for (int i = 0; i < dataSize; i++) {
-    // Convert each byte to a two-digit hexadecimal representation
     char hexChars[3];
     sprintf(hexChars, "%02X", data[i]);
     hexString += hexChars;
@@ -62,41 +55,55 @@ String convertToHexString(uint8_t* data, int dataSize) {
   return hexString;
 }
 
-void setup() {
-  Serial.begin(115200);
-  Serial.println("starting");
+void setup_wifi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(SSID_NAME, WIFI_PASSWORD);
 
-  SPI.begin(SCK, 39, MOSI, SS);
+  Serial.println("connecting wifi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }  
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    Serial.println(F("SSD1306 allocation failed"));
-    hasDisplay = false;
-  }
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send(200, "text/plain", "Hello, world");
+      hub75_display->print("hello");
+      Serial.println("hello");
+  });
+  server.begin();
+  Serial.println("HTTP server started");
+}
 
-  if (hasDisplay) {
-    Serial.println(F("init display..."));
+void setup_hub75() {
+  hub75_display = new MatrixPanel_I2S_DMA(mxconfig);
+  hub75_display->begin();
+  hub75_display->setBrightness(255);
+  hub75_display->setTextSize(2);     // size 1 == 8 pixels high
+  hub75_display->setTextWrap(true);  // Don't wrap at end of line - will do ourselves
+  hub75_display->clearScreen();
+  hub75_display->setCursor(0, 0);
+  hub75_display->print("hello");
+}
 
-    display.clearDisplay();
+void setup_nfc() {
+  SPI.begin(SCK, MISO, MOSI, SS);
+  Serial.println(F("Initializing nfc..."));
 
-    display.setTextSize(2);  // Draw 2X-scale text
-    display.setTextColor(SSD1306_WHITE);
-    display.println(F("Started"));
-    display.display();
-
-  }
-
-  dma_display = new MatrixPanel_I2S_DMA(mxconfig);
-  dma_display->begin();
-  dma_display->setBrightness(255);
-  dma_display->setTextSize(2);      // size 1 == 8 pixels high
-  dma_display->setTextWrap(true);  // Don't wrap at end of line - will do ourselves
-  dma_display->clearScreen();
-
-  Serial.println(F("Initializing..."));
   nfc.begin();
   nfc.reset();
   Serial.println(F("Enabling RF field..."));
   nfc.setupRF();
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("starting...");
+
+  setup_wifi();
+  setup_hub75();
+  setup_nfc();
 
   Serial.println(F("Setup Complete"));
 }
@@ -105,29 +112,20 @@ uint8_t lastUid[8];
 bool hasCard = false;
 void loop() {
   uint8_t thisUid[8];
-  ISO15693ErrorCode rc = nfc.getInventory(thisUid);
 
+  ISO15693ErrorCode rc = nfc.getInventory(thisUid);
   if (rc == ISO15693_EC_OK) {
     if (hasCard && memcmp(thisUid, lastUid, 8) == 0) {
       return;
     }
     hasCard = true;
-    Serial.print(F("New Card Detected on Reader "));
-    static char str[] = "A";
-    dma_display->clearScreen();
-    dma_display->setCursor(12, 4);
-
+    Serial.print(F("New card detected on reader"));
     String s = convertToHexString(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
-    Serial.println(s);
-    dma_display->print(s);
-    if (hasDisplay) {
-      display.clearDisplay();
 
-      display.setCursor(0, 0);
-      display.println(F("Card.:"));
-      display.println(s);
-      display.display();
-    }
+    hub75_display->clearScreen();
+    hub75_display->setCursor(0, 0);
+    hub75_display->print(s);
+
     for (int j = 0; j < sizeof(thisUid); j++) {
       Serial.print(thisUid[j], HEX);
       Serial.print(" ");
@@ -136,29 +134,14 @@ void loop() {
     Serial.println();
   } else if (rc == EC_NO_CARD) {
     if (hasCard) {
-      dma_display->clearScreen();
+      hub75_display->clearScreen();
+      hub75_display->setCursor(0, 0);
+      hub75_display->println("no card");
+
       hasCard = false;
       Serial.println("Removed card");
-      if (hasDisplay) {
-        display.clearDisplay();
-
-        display.setCursor(10, 0);
-        display.println(F("No card!"));
-        display.display();  // Show initial text
-      }
     }
   } else {
-    Serial.print("not ok");
-    Serial.println(rc, HEX);
+      Serial.print("not ok");
   }
-  // static char str[] = "A";
-  // dma_display->clearScreen();
-  // dma_display->setCursor(12, 4);
-  // dma_display->print(str);
-  // Serial.println(str);
-  // if (str[0]++ == 'Z') {
-  //   str[0] = 'A';
-  // }
-  // delay(300);
-
 }
