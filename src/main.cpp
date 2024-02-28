@@ -7,7 +7,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 
-uint8_t broadcast_address[] = {0xE8, 0x6B, 0xEA, 0xF6, 0xFB, 0x98};
+uint8_t send_address[] = {0xE8, 0x6B, 0xEA, 0xF6, 0xFB, 0x98};
 
 #define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
 #define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
@@ -17,6 +17,10 @@ uint8_t broadcast_address[] = {0xE8, 0x6B, 0xEA, 0xF6, 0xFB, 0x98};
 #define PN5180_BUSY 36
 #define PN5180_NSS 32
 #define PN5180_RST 17
+
+#define BIG_ROW 0
+#define BIG_COL 10
+#define BIG_TEXT_SIZE 9
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -67,8 +71,8 @@ void on_data_recv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   Serial.print("Char: ");
   Serial.println(message_letter.letter);
   hub75_display->clearScreen();
-  hub75_display->setCursor(0, 0);
-  hub75_display->setTextSize(10);
+  hub75_display->setCursor(BIG_COL, BIG_ROW);
+  hub75_display->setTextSize(BIG_TEXT_SIZE);
 
   hub75_display->print(message_letter.letter);
 }
@@ -87,7 +91,7 @@ void setup_espnow() {
   }
   esp_now_register_send_cb(on_data_sent);
 
-  memcpy(peer_info.peer_addr, broadcast_address, 6);
+  memcpy(peer_info.peer_addr, send_address, 6);
   peer_info.channel = 0;  
   peer_info.encrypt = false;
   
@@ -103,11 +107,11 @@ void setup_hub75() {
   hub75_display = new MatrixPanel_I2S_DMA(mxconfig);
   hub75_display->begin();
   hub75_display->setBrightness(255);
-  hub75_display->setTextSize(10);
+  hub75_display->setTextSize(BIG_TEXT_SIZE);
   hub75_display->setTextWrap(true);
   hub75_display->clearScreen();
-  hub75_display->setCursor(0, 0);
-  hub75_display->print("hello");
+  hub75_display->setCursor(BIG_COL, BIG_ROW);
+  hub75_display->print("W");
 }
 
 void setup_nfc() {
@@ -146,7 +150,7 @@ void loop() {
 
     Serial.println(String("sending..." + String(message_nfcid.id)));
     esp_err_t result = ESP_FAIL;
-    result = esp_now_send(broadcast_address, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
+    result = esp_now_send(send_address, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
     if (result == ESP_OK) {
       Serial.println(String("Success: ") + message_nfcid.id);
     }
