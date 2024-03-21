@@ -99,20 +99,21 @@ void display_current_letter() {
   static uint16_t last_color = 0;
   unsigned long now = millis();
   uint16_t current_color = now < end_highlighting ? GREEN : LETTER_COLOR;
+
   if (current_letter != last_letter) {
     // change letter--turn off highlighting which was probably meant
     // for last letter.
     current_color = LETTER_COLOR;
     end_highlighting = 0;
   }
-  if (current_letter != last_letter || last_color != current_color) {
-    hub75_display->setCursor(BIG_COL, BIG_ROW);
-    hub75_display->setTextColor(current_color, BLACK);
-    hub75_display->setTextSize(BIG_TEXT_SIZE);
-    hub75_display->print(current_letter);
-    last_letter = current_letter;
-    last_color = current_color;
-  }
+
+  hub75_display->setCursor(BIG_COL, BIG_ROW);
+  hub75_display->setTextColor(current_color, BLACK);
+  hub75_display->setTextSize(BIG_TEXT_SIZE);
+  hub75_display->print(current_letter);
+  last_letter = current_letter;
+  last_color = current_color;
+
   hub75_display->drawFastVLine(63, 16, 32, has_card ? YELLOW : BLACK);
 }
 
