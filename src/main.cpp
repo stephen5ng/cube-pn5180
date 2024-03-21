@@ -17,7 +17,8 @@
 #define YELLOW   0xFFE0 
 #define WHITE    0xFFFF
 
-uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x75, 0x5C};
+#define LETTER_COLOR 0x9260
+uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x68, 0x64};
 
 #define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
 #define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
@@ -32,7 +33,7 @@ uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x75, 0x5C};
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 9
 #define BRIGHTNESS 128
-#define VERSION "v0.19"
+#define VERSION "v0.22"
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -92,16 +93,27 @@ String convert_to_hex_string(uint8_t* data, int dataSize) {
 }
 
 static char last_letter = ' ';
+long end_highlighting = 0;
 void display_current_letter() {
-  hub75_display->drawFastVLine(63, 16, 32, has_card ? YELLOW : BLACK);
-  if (current_letter == last_letter) {
-    return;
+  static long last_highlighted = 0;
+  static uint16_t last_color = 0;
+  unsigned long now = millis();
+  uint16_t current_color = now < end_highlighting ? GREEN : LETTER_COLOR;
+  if (current_letter != last_letter) {
+    // change letter--turn off highlighting which was probably meant
+    // for last letter.
+    current_color = LETTER_COLOR;
+    end_highlighting = 0;
   }
-  hub75_display->setCursor(BIG_COL, BIG_ROW);
-  hub75_display->setTextColor(0x9260, BLACK);
-  hub75_display->setTextSize(BIG_TEXT_SIZE);
-  hub75_display->print(current_letter);
-  last_letter = current_letter;
+  if (current_letter != last_letter || last_color != current_color) {
+    hub75_display->setCursor(BIG_COL, BIG_ROW);
+    hub75_display->setTextColor(current_color, BLACK);
+    hub75_display->setTextSize(BIG_TEXT_SIZE);
+    hub75_display->print(current_letter);
+    last_letter = current_letter;
+    last_color = current_color;
+  }
+  hub75_display->drawFastVLine(63, 16, 32, has_card ? YELLOW : BLACK);
 }
 
 void setup_nfc() {
@@ -119,8 +131,12 @@ void on_data_recv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   memcpy(&message_letter, incomingData, sizeof(message_letter));
   Serial.print(" Char: ");
   Serial.println(message_letter.letter);
+  if (message_letter.letter == '_') {
+    end_highlighting = millis() + 2000;
+    return;
+  }
   current_letter = message_letter.letter;
-
+  
   // new letter might be due to game cycling--re-send NFC info
   nfc_rebroadcast_interval = 1;
   last_nfc_broadcast = millis();
@@ -129,7 +145,6 @@ void on_data_recv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.print(status == ESP_NOW_SEND_SUCCESS ? "1" : "0");
 }
-
 
 void setup_espnow() {
   static esp_now_peer_info_t peer_info;
@@ -193,7 +208,6 @@ ISO15693ErrorCode getInventory(uint8_t* uid) {
 
 void esp_resend() {
   unsigned long now = millis();
-  // Serial.println(String(now) + ", " + String(last_nfc_broadcast) + ", " + String(nfc_rebroadcast_interval));
   if (last_nfc_broadcast == 0) {
     return;
   }
