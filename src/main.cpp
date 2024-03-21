@@ -32,7 +32,7 @@ uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x75, 0x5C};
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 9
 #define BRIGHTNESS 128
-#define VERSION "v0.16"
+#define VERSION "v0.19"
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -75,7 +75,11 @@ uint8_t NO_DEBUG_NFC[NFCID_LENGTH] = {
 char current_letter = '?';
 long loop_count = 0;
 bool debug = false;
+bool has_card = false;
 
+static String last_esp_message = String();
+static int nfc_rebroadcast_interval = 1;
+static unsigned long last_nfc_broadcast = 0;
 
 String convert_to_hex_string(uint8_t* data, int dataSize) {
   String hexString = "";
@@ -89,11 +93,12 @@ String convert_to_hex_string(uint8_t* data, int dataSize) {
 
 static char last_letter = ' ';
 void display_current_letter() {
+  hub75_display->drawFastVLine(63, 16, 32, has_card ? YELLOW : BLACK);
   if (current_letter == last_letter) {
     return;
   }
   hub75_display->setCursor(BIG_COL, BIG_ROW);
-  hub75_display->setTextColor(WHITE, BLACK);
+  hub75_display->setTextColor(0x9260, BLACK);
   hub75_display->setTextSize(BIG_TEXT_SIZE);
   hub75_display->print(current_letter);
   last_letter = current_letter;
@@ -115,6 +120,10 @@ void on_data_recv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   Serial.print(" Char: ");
   Serial.println(message_letter.letter);
   current_letter = message_letter.letter;
+
+  // new letter might be due to game cycling--re-send NFC info
+  nfc_rebroadcast_interval = 1;
+  last_nfc_broadcast = millis();
 }
 
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
@@ -178,21 +187,47 @@ void setup() {
   Serial.println(F("Setup Complete"));
 }
 
-ISO15693ErrorCode getInventory(uint8_t* uid){
+ISO15693ErrorCode getInventory(uint8_t* uid) {
   return nfc.getInventory(uid);
 }
 
-bool hasCard = false;
+void esp_resend() {
+  unsigned long now = millis();
+  // Serial.println(String(now) + ", " + String(last_nfc_broadcast) + ", " + String(nfc_rebroadcast_interval));
+  if (last_nfc_broadcast == 0) {
+    return;
+  }
+  if (nfc_rebroadcast_interval > 1000000 || now < last_nfc_broadcast + nfc_rebroadcast_interval) {
+    return;
+  }
+
+  Serial.println("resending: " + last_esp_message);
+
+  last_esp_message.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
+  esp_now_send(SEND_ADDRESS, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
+  nfc_rebroadcast_interval *= 2;
+}
+
+esp_err_t esp_send(String s) {
+  last_esp_message = s;
+  nfc_rebroadcast_interval = 1;
+  last_nfc_broadcast = millis();
+  s.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
+  return esp_now_send(SEND_ADDRESS, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
+}
+
 void loop() {
   static uint16_t heartbeat_color = 3;
   hub75_display->drawPixel(1, 1, heartbeat_color);
   heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
-
   display_current_letter();
+  esp_resend();
 
   // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
   ISO15693ErrorCode rc = getInventory(thisUid);
+  // Serial.println("looping getinv ");
+  // return;
   if (rc == ISO15693_EC_OK) {
     if (memcmp(thisUid, DEBUG_NFC, NFCID_LENGTH) == 0) {
       debug = true;
@@ -208,23 +243,18 @@ void loop() {
       return;
     }
 
-    if (hasCard && memcmp(thisUid, last_nfcid, NFCID_LENGTH) == 0) {
+    if (has_card && memcmp(thisUid, last_nfcid, NFCID_LENGTH) == 0) {
       return;
     }
-
-    hasCard = true;
+    has_card = true;
     Serial.println(F("New card"));
     String s = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
-    s.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
+    // s.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
     hub75log(s);
 
-    Serial.println(String("Sending..." + String(message_nfcid.id)));
-    esp_err_t result = ESP_FAIL;
-    result = esp_now_send(SEND_ADDRESS, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
-    if (result == ESP_OK) {
-      Serial.println(String("Success: ") + message_nfcid.id);
-    }
-    else {
+    Serial.println(String("Sending..." + s));
+    esp_err_t result = esp_send(s);
+    if (result != ESP_OK) {
       Serial.print("fail");
     }
     
@@ -232,11 +262,10 @@ void loop() {
       last_nfcid[j] = thisUid[j];
     }
   } else if (rc == EC_NO_CARD) {
-    if (hasCard) {
+    if (has_card) {
       hub75log("no nfc                  ");
-      message_nfcid.id[0] = '\0';
-      esp_now_send(SEND_ADDRESS, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
-      hasCard = false;
+      esp_send("");
+      has_card = false;
     }
   } else {
       Serial.print("not ok");
