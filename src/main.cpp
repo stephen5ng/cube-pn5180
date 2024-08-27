@@ -17,9 +17,13 @@
 #define YELLOW   0xFFE0 
 #define WHITE    0xFFFF
 
-#define LETTER_COLOR 0x9260
-uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x68, 0x64};
-
+#define LETTER_COLOR 0xFDCC
+#define HIGHLIGHT_LETTER_COLOR GREEN
+#define LAST_LETTER_COLOR 0x71c0
+// uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x68, 0x64};
+uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x5B, 0xC0};
+// uint8_t SEND_ADDRESS[] = {0xD4, 0x8A, 0xFC, 0x9F, 0xB0, 0xC0};
+// D4:8A:FC:9F:B0:C0
 #define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
 #define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
@@ -32,8 +36,9 @@ uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x68, 0x64};
 #define BIG_ROW 0
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 9
-#define BRIGHTNESS 128
-#define VERSION "v0.22"
+#define BRIGHTNESS 255
+#define HIGHLIGHT_TIME_MS 2000
+#define VERSION "v0.32c"
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -73,6 +78,7 @@ uint8_t NO_DEBUG_NFC[NFCID_LENGTH] = {
   0xbc, 0x10, 0xf8, 0xb8,
   0x50, 0x01, 0x04, 0xe0};
 
+char last_letter = ' ';
 char current_letter = '?';
 long loop_count = 0;
 bool debug = false;
@@ -92,27 +98,50 @@ String convert_to_hex_string(uint8_t* data, int dataSize) {
   return hexString;
 }
 
-static char last_letter = ' ';
 long end_highlighting = 0;
+uint8_t letter_percentage = 100;
+
+void display_letter(uint8_t percent, char letter, uint16_t color) {
+  int16_t row =  (PANEL_RES_Y * percent) / 100 - PANEL_RES_Y;
+
+  // char strBuf[80];
+  // sprintf(strBuf, "display_letter %c: %2d (%8d)", letter, row, color);
+  // Serial.println(strBuf);
+
+  hub75_display->setCursor(BIG_COL, row);
+  hub75_display->setTextColor(color, BLACK);
+  hub75_display->setTextSize(BIG_TEXT_SIZE);
+  hub75_display->print(letter);
+  // delay(100);
+}
+
 void display_current_letter() {
   static long last_highlighted = 0;
-  static uint16_t last_color = 0;
+  static uint16_t speed = 1;
   unsigned long now = millis();
-  uint16_t current_color = now < end_highlighting ? GREEN : LETTER_COLOR;
 
   if (current_letter != last_letter) {
-    // change letter--turn off highlighting which was probably meant
-    // for last letter.
-    current_color = LETTER_COLOR;
+    // turn off highlighting which was probably meant for last letter.
     end_highlighting = 0;
-  }
 
-  hub75_display->setCursor(BIG_COL, BIG_ROW);
-  hub75_display->setTextColor(current_color, BLACK);
-  hub75_display->setTextSize(BIG_TEXT_SIZE);
-  hub75_display->print(current_letter);
-  last_letter = current_letter;
-  last_color = current_color;
+    if (letter_percentage == 100) {
+      // Begin transition.
+      letter_percentage = 0;
+      speed = 1;
+    } else {
+      letter_percentage = min(letter_percentage + speed, 100);
+      speed += 1;
+      // End transition.
+      if (letter_percentage == 100) {
+        last_letter = current_letter;
+      }
+    }
+  }
+  uint16_t current_color = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+
+  // Serial.println("display_current_letter: " + String(last_letter) + ", "+ String(current_letter) + ", " + String(letter_percentage));
+  display_letter(letter_percentage, current_letter, current_color);
+  display_letter(100 + letter_percentage, last_letter, RED);
 
   hub75_display->drawFastVLine(63, 16, 32, has_card ? YELLOW : BLACK);
 }
@@ -130,21 +159,28 @@ void setup_nfc() {
 void on_data_recv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   static int hang_count = 0;
   memcpy(&message_letter, incomingData, sizeof(message_letter));
-  Serial.print(" Char: ");
-  Serial.println(message_letter.letter);
+  // Serial.print(" Char: ");
+  // Serial.println(message_letter.letter);
+  // if (message_letter.secret != '$')
+  //   return;
   if (message_letter.letter == '_') {
-    end_highlighting = millis() + 2000;
+    end_highlighting = millis() + HIGHLIGHT_TIME_MS;
     return;
   }
+  if (message_letter.letter == current_letter) {
+    return;
+  }
+  if (message_letter.letter == '?') {
+    // Game restarted, re-send NFC data.
+    nfc_rebroadcast_interval = 1;
+  }
+  if (message_letter.letter < 'A' || message_letter.letter > 'Z')
+    return;
   current_letter = message_letter.letter;
-  
-  // new letter might be due to game cycling--re-send NFC info
-  nfc_rebroadcast_interval = 1;
-  last_nfc_broadcast = millis();
 }
 
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print(status == ESP_NOW_SEND_SUCCESS ? "1" : "0");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "1" : "0");
 }
 
 void setup_espnow() {
@@ -169,10 +205,19 @@ void setup_espnow() {
 
 void setup_hub75() {
   mxconfig.clkphase = false;
+  // mxconfig.driver = HUB75_I2S_CFG::ICN2038S;
+  
+  // mxconfig.double_buff = true;
   hub75_display = new MatrixPanel_I2S_DMA(mxconfig);
   hub75_display->begin();
-  hub75_display->setBrightness(BRIGHTNESS);
+  // hub75_display->setBrightness(BRIGHTNESS);
+  hub75_display->setBrightness8(BRIGHTNESS);
+  // hub75_display->setPanelBrightness(BRIGHTNESS);
+  // hub75_display->fillScreenRGB888(255,0,0);
+  // sleep(2);
+
   hub75_display->setTextWrap(true);
+  hub75_display->clearScreen();
 }
 
 void hub75log(const String& s) {
@@ -197,8 +242,9 @@ void setup() {
   debug = true;
   hub75log(VERSION);
   debug = false;
-  delay(1000);
   Serial.println(WiFi.macAddress());
+  delay(1000);
+  // delay(10000);
   hub75_display->clearScreen();
   Serial.println(F("Setup Complete"));
 }
@@ -238,6 +284,9 @@ void loop() {
   display_current_letter();
   esp_resend();
 
+  nfc.reset();
+  nfc.setupRF();
+
   // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
   ISO15693ErrorCode rc = getInventory(thisUid);
@@ -267,10 +316,11 @@ void loop() {
     // s.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
     hub75log(s);
 
-    Serial.println(String("Sending..." + s));
+    Serial.print(F("Sending..."));
+    Serial.println(s);
     esp_err_t result = esp_send(s);
     if (result != ESP_OK) {
-      Serial.print("fail");
+      Serial.println("fail");
     }
     
     for (int j = 0; j < sizeof(thisUid); j++) {
@@ -283,6 +333,6 @@ void loop() {
       has_card = false;
     }
   } else {
-      Serial.print("not ok");
+      Serial.println("not ok");
   }
 }
