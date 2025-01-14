@@ -38,7 +38,7 @@ uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x5B, 0xC0};
 #define BIG_TEXT_SIZE 9
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.32c"
+#define VERSION "v0.32d"
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -161,8 +161,8 @@ void on_data_recv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   memcpy(&message_letter, incomingData, sizeof(message_letter));
   // Serial.print(" Char: ");
   // Serial.println(message_letter.letter);
-  // if (message_letter.secret != '$')
-  //   return;
+  if (message_letter.secret != '$')
+    return;
   if (message_letter.letter == '_') {
     end_highlighting = millis() + HIGHLIGHT_TIME_MS;
     return;
