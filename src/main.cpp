@@ -2,11 +2,12 @@
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
-#include <esp_now.h>
 #include <PN5180ISO15693.h>
+#include <PubSubClient.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <secrets.h>
 
 #define BLACK    0x0000
 #define BLUE     0x001F
@@ -20,10 +21,6 @@
 #define LETTER_COLOR 0xFDCC
 #define HIGHLIGHT_LETTER_COLOR GREEN
 #define LAST_LETTER_COLOR 0x71c0
-// uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x68, 0x64};
-uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x5B, 0xC0};
-// uint8_t SEND_ADDRESS[] = {0xD4, 0x8A, 0xFC, 0x9F, 0xB0, 0xC0};
-// D4:8A:FC:9F:B0:C0
 #define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
 #define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
@@ -38,7 +35,7 @@ uint8_t SEND_ADDRESS[] = {0xA8, 0x42, 0xE3, 0xA9, 0x5B, 0xC0};
 #define BIG_TEXT_SIZE 9
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.32d"
+#define VERSION "v0.4"
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -83,10 +80,28 @@ char current_letter = '?';
 long loop_count = 0;
 bool debug = false;
 bool has_card = false;
+const char* ssid = SSID_NAME;
+const char* password = WIFI_PASSWORD;
+const char* mqtt_server = "192.168.0.211";
 
-static String last_esp_message = String();
+WiFiClient espClient;
+PubSubClient client(espClient);
+long lastMsg = 0;
+char msg[50];
+int value = 0;
 static int nfc_rebroadcast_interval = 1;
 static unsigned long last_nfc_broadcast = 0;
+static String mac_id;
+
+String removeColons(const String& str) {
+  String result = ""; 
+  for (int i = 0; i < str.length(); i++) {
+    if (str.charAt(i) != ':') {
+      result += str.charAt(i); 
+    }
+  }
+  return result;
+}
 
 String convert_to_hex_string(uint8_t* data, int dataSize) {
   String hexString = "";
@@ -156,53 +171,6 @@ void setup_nfc() {
   nfc.setupRF();
 }
 
-void on_data_recv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  static int hang_count = 0;
-  memcpy(&message_letter, incomingData, sizeof(message_letter));
-  // Serial.print(" Char: ");
-  // Serial.println(message_letter.letter);
-  if (message_letter.secret != '$')
-    return;
-  if (message_letter.letter == '_') {
-    end_highlighting = millis() + HIGHLIGHT_TIME_MS;
-    return;
-  }
-  if (message_letter.letter == current_letter) {
-    return;
-  }
-  if (message_letter.letter == '?') {
-    // Game restarted, re-send NFC data.
-    nfc_rebroadcast_interval = 1;
-  }
-  if (message_letter.letter < 'A' || message_letter.letter > 'Z')
-    return;
-  current_letter = message_letter.letter;
-}
-
-void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "1" : "0");
-}
-
-void setup_espnow() {
-  static esp_now_peer_info_t peer_info;
-  WiFi.mode(WIFI_STA);
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
-  esp_now_register_send_cb(on_data_sent);
-
-  memcpy(peer_info.peer_addr, SEND_ADDRESS, 6);
-  peer_info.channel = 0;
-  peer_info.encrypt = false;
-  
-  if (esp_now_add_peer(&peer_info) != ESP_OK){
-    Serial.println("Failed to add peer");
-    return;
-  }
-  esp_now_register_recv_cb(on_data_recv);
-}
-
 void setup_hub75() {
   mxconfig.clkphase = false;
   // mxconfig.driver = HUB75_I2S_CFG::ICN2038S;
@@ -231,18 +199,79 @@ void hub75log(const String& s) {
   hub75_display->print(s);
 }
 
+void setup_wifi() {
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect(mac_id.c_str())) {
+      Serial.println("connected");
+      String s = "cube/" + mac_id + "/#";
+      client.subscribe(s.c_str());
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void callback(char* topic, byte* message, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String messageTemp;
+  
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)message[i]);
+    messageTemp += (char)message[i];
+  }
+  Serial.println();
+
+  if (strstr(topic, "letter") != nullptr) {
+    current_letter = messageTemp.charAt(0);
+  }
+  if (strstr(topic, "flash") != nullptr) {
+    end_highlighting = millis() + HIGHLIGHT_TIME_MS;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
   Serial.println("starting....");
 
-  setup_espnow();
+  setup_wifi();
+  Serial.println(WiFi.macAddress());
+  mac_id = removeColons(WiFi.macAddress());
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+
   setup_hub75();
   setup_nfc();
   debug = true;
   hub75log(VERSION);
   debug = false;
-  Serial.println(WiFi.macAddress());
   delay(1000);
   // delay(10000);
   hub75_display->clearScreen();
@@ -253,36 +282,16 @@ ISO15693ErrorCode getInventory(uint8_t* uid) {
   return nfc.getInventory(uid);
 }
 
-void esp_resend() {
-  unsigned long now = millis();
-  if (last_nfc_broadcast == 0) {
-    return;
-  }
-  if (nfc_rebroadcast_interval > 1000000 || now < last_nfc_broadcast + nfc_rebroadcast_interval) {
-    return;
-  }
-
-  Serial.println("resending: " + last_esp_message);
-
-  last_esp_message.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
-  esp_now_send(SEND_ADDRESS, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
-  nfc_rebroadcast_interval *= 2;
-}
-
-esp_err_t esp_send(String s) {
-  last_esp_message = s;
-  nfc_rebroadcast_interval = 1;
-  last_nfc_broadcast = millis();
-  s.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
-  return esp_now_send(SEND_ADDRESS, (uint8_t *) &message_nfcid, sizeof(message_nfcid));
-}
-
 void loop() {
   static uint16_t heartbeat_color = 3;
   hub75_display->drawPixel(1, 1, heartbeat_color);
   heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
   display_current_letter();
-  esp_resend();
+  // esp_resend();
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
 
   nfc.reset();
   nfc.setupRF();
@@ -312,16 +321,12 @@ void loop() {
     }
     has_card = true;
     Serial.println(F("New card"));
-    String s = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
-    // s.toCharArray(message_nfcid.id, sizeof(message_nfcid.id));
+    String s = mac_id + ":";
+    s += convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
     hub75log(s);
-
+    client.publish("cube/nfc", s.c_str(), true);
     Serial.print(F("Sending..."));
     Serial.println(s);
-    esp_err_t result = esp_send(s);
-    if (result != ESP_OK) {
-      Serial.println("fail");
-    }
     
     for (int j = 0; j < sizeof(thisUid); j++) {
       last_nfcid[j] = thisUid[j];
@@ -329,7 +334,8 @@ void loop() {
   } else if (rc == EC_NO_CARD) {
     if (has_card) {
       hub75log("no nfc                  ");
-      esp_send("");
+      String s = mac_id + ":";
+      client.publish("cube/nfc", s.c_str(), true);
       has_card = false;
     }
   } else {
