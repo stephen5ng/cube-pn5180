@@ -86,12 +86,8 @@ const char* mqtt_server = "192.168.0.211";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-long lastMsg = 0;
-char msg[50];
-int value = 0;
-static int nfc_rebroadcast_interval = 1;
-static unsigned long last_nfc_broadcast = 0;
 static String mac_id;
+static String topic_out;
 
 String removeColons(const String& str) {
   String result = ""; 
@@ -200,8 +196,6 @@ void hub75log(const String& s) {
 }
 
 void setup_wifi() {
-  delay(10);
-  // We start by connecting to a WiFi network
   Serial.println();
   Serial.print("Connecting to ");
   Serial.println(ssid);
@@ -209,7 +203,7 @@ void setup_wifi() {
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(100);
     Serial.print(".");
   }
 
@@ -229,9 +223,8 @@ void reconnect() {
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
+      Serial.println(" retrying...");
+      delay(200);
     }
   }
 }
@@ -260,20 +253,28 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
   Serial.println("starting....");
+  debug = true;
+  setup_hub75();
+  hub75log(VERSION);
+  debug = false;
+  delay(200);
 
+  display_letter(100, '3', MAGENTA);
+  Serial.println("setting up wifi...");
   setup_wifi();
-  Serial.println(WiFi.macAddress());
+  display_letter(100, '2', MAGENTA);
   mac_id = removeColons(WiFi.macAddress());
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
+  reconnect();
+  
+  topic_out = String("cube/nfc/");
+  topic_out += mac_id;
 
-  setup_hub75();
+  display_letter(100, '1', MAGENTA);
+  Serial.println(WiFi.macAddress());
+
   setup_nfc();
-  debug = true;
-  hub75log(VERSION);
-  debug = false;
-  delay(1000);
-  // delay(10000);
   hub75_display->clearScreen();
   Serial.println(F("Setup Complete"));
 }
@@ -283,6 +284,7 @@ ISO15693ErrorCode getInventory(uint8_t* uid) {
 }
 
 void loop() {
+  static long last_nfc_ms = 0;
   static uint16_t heartbeat_color = 3;
   hub75_display->drawPixel(1, 1, heartbeat_color);
   heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
@@ -321,21 +323,28 @@ void loop() {
     }
     has_card = true;
     Serial.println(F("New card"));
-    String s = mac_id + ":";
-    s += convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
+    String s = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
     hub75log(s);
-    client.publish("cube/nfc", s.c_str(), true);
+    client.publish(topic_out.c_str(), s.c_str(), true);
     Serial.print(F("Sending..."));
     Serial.println(s);
     
     for (int j = 0; j < sizeof(thisUid); j++) {
       last_nfcid[j] = thisUid[j];
     }
+    last_nfc_ms = millis();
   } else if (rc == EC_NO_CARD) {
     if (has_card) {
+      String delay_msg("last delay: ");
+      long delay = millis() - last_nfc_ms;
+      delay_msg += String(delay);
+      Serial.println(delay_msg);
       hub75log("no nfc                  ");
-      String s = mac_id + ":";
-      client.publish("cube/nfc", s.c_str(), true);
+      client.publish("cube/delay", delay_msg.c_str(), true);
+      if (delay < 500) {
+        return;
+      }
+      client.publish(topic_out.c_str(), "", true);
       has_card = false;
     }
   } else {
