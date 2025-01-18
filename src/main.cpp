@@ -1,6 +1,7 @@
 #include "cube_messages.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
+#include <Fonts/FreeSans18pt7b.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <PN5180ISO15693.h>
 #include <PubSubClient.h>
@@ -8,6 +9,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <secrets.h>
+#include "font.h"
 
 #define BLACK    0x0000
 #define BLUE     0x001F
@@ -32,7 +34,7 @@
 
 #define BIG_ROW 0
 #define BIG_COL 10
-#define BIG_TEXT_SIZE 9
+#define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
 #define VERSION "v0.4"
@@ -89,6 +91,10 @@ PubSubClient client(espClient);
 static String mac_id;
 static String topic_out;
 
+void setFont(MatrixPanel_I2S_DMA* hub75_display) {
+  hub75_display->setFont(&Roboto_Mono_Bold_78);
+}
+
 String removeColons(const String& str) {
   String result = ""; 
   for (int i = 0; i < str.length(); i++) {
@@ -112,14 +118,14 @@ String convert_to_hex_string(uint8_t* data, int dataSize) {
 long end_highlighting = 0;
 uint8_t letter_percentage = 100;
 
-void display_letter(uint8_t percent, char letter, uint16_t color) {
-  int16_t row =  (PANEL_RES_Y * percent) / 100 - PANEL_RES_Y;
+void display_letter(uint16_t percent, char letter, uint16_t color) {
+  int16_t row = (PANEL_RES_Y * percent) / 100;
 
   // char strBuf[80];
   // sprintf(strBuf, "display_letter %c: %2d (%8d)", letter, row, color);
   // Serial.println(strBuf);
 
-  hub75_display->setCursor(BIG_COL, row);
+  hub75_display->setCursor(BIG_COL, row-4);
   hub75_display->setTextColor(color, BLACK);
   hub75_display->setTextSize(BIG_TEXT_SIZE);
   hub75_display->print(letter);
@@ -155,6 +161,8 @@ void display_current_letter() {
   display_letter(100 + letter_percentage, last_letter, RED);
 
   hub75_display->drawFastVLine(63, 16, 32, has_card ? YELLOW : BLACK);
+  hub75_display->flipDMABuffer();    
+  hub75_display->clearScreen();
 }
 
 void setup_nfc() {
@@ -171,9 +179,11 @@ void setup_hub75() {
   mxconfig.clkphase = false;
   // mxconfig.driver = HUB75_I2S_CFG::ICN2038S;
   
-  // mxconfig.double_buff = true;
+  mxconfig.double_buff = true;
   hub75_display = new MatrixPanel_I2S_DMA(mxconfig);
   hub75_display->begin();
+  setFont(hub75_display);
+
   // hub75_display->setBrightness(BRIGHTNESS);
   hub75_display->setBrightness8(BRIGHTNESS);
   // hub75_display->setPanelBrightness(BRIGHTNESS);
@@ -189,10 +199,14 @@ void hub75log(const String& s) {
   if (!debug) {
     return;
   }
+  hub75_display->setFont();
   hub75_display->setTextColor(RED, BLACK);
-  hub75_display->setCursor(0, 0);
+  hub75_display->setCursor(0, PANEL_RES_Y/2);
   hub75_display->setTextSize(1);
   hub75_display->print(s);
+  setFont(hub75_display);
+  hub75_display->flipDMABuffer();    
+  hub75_display->clearScreen();
 }
 
 void setup_wifi() {
@@ -260,9 +274,13 @@ void setup() {
   delay(200);
 
   display_letter(100, '3', MAGENTA);
+  hub75_display->flipDMABuffer();    
+  hub75_display->clearScreen();
   Serial.println("setting up wifi...");
   setup_wifi();
   display_letter(100, '2', MAGENTA);
+  hub75_display->flipDMABuffer();    
+  hub75_display->clearScreen();
   mac_id = removeColons(WiFi.macAddress());
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
@@ -272,6 +290,8 @@ void setup() {
   topic_out += mac_id;
 
   display_letter(100, '1', MAGENTA);
+  hub75_display->flipDMABuffer();    
+  hub75_display->clearScreen();
   Serial.println(WiFi.macAddress());
 
   setup_nfc();
