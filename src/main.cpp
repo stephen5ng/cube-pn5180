@@ -37,7 +37,7 @@
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.4"
+#define VERSION "v0.4d"
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -79,6 +79,7 @@ uint8_t NO_DEBUG_NFC[NFCID_LENGTH] = {
 
 char last_letter = ' ';
 char current_letter = '?';
+char border = ' ';
 long loop_count = 0;
 bool debug = false;
 bool has_card = false;
@@ -153,14 +154,30 @@ void display_current_letter() {
         last_letter = current_letter;
       }
     }
+    display_letter(100 + letter_percentage, last_letter, RED);
   }
   uint16_t current_color = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
 
   // Serial.println("display_current_letter: " + String(last_letter) + ", "+ String(current_letter) + ", " + String(letter_percentage));
   display_letter(letter_percentage, current_letter, current_color);
-  display_letter(100 + letter_percentage, last_letter, RED);
 
-  hub75_display->drawFastVLine(63, 16, 32, has_card ? YELLOW : BLACK);
+  if (has_card) {
+    hub75_display->drawFastVLine(63, 30, 4, 0x7c51);
+  }
+  if (border != ' ') {
+    hub75_display->drawFastHLine(0, 0, PANEL_RES_X, BLUE);
+    hub75_display->drawFastHLine(0, 1, PANEL_RES_X, 0x0019);
+
+    hub75_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, BLUE);
+    hub75_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, 0x0019);
+  } 
+  if (border == '[') {
+    hub75_display->drawFastVLine(0, 2, PANEL_RES_Y-4, BLUE);
+    hub75_display->drawFastVLine(1, 2, PANEL_RES_Y-4, 0x0019);
+  } else if (border == ']') {
+    hub75_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, BLUE);
+    hub75_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, 0x0019);
+  }
   hub75_display->flipDMABuffer();    
   hub75_display->clearScreen();
 }
@@ -244,9 +261,9 @@ void reconnect() {
 }
 
 void callback(char* topic, byte* message, unsigned int length) {
-  Serial.print("Message arrived on topic: ");
+  Serial.print("Message: ");
   Serial.print(topic);
-  Serial.print(". Message: ");
+  Serial.print(", ");
   String messageTemp;
   
   for (int i = 0; i < length; i++) {
@@ -261,6 +278,9 @@ void callback(char* topic, byte* message, unsigned int length) {
   if (strstr(topic, "flash") != nullptr) {
     end_highlighting = millis() + HIGHLIGHT_TIME_MS;
   }
+  if (strstr(topic, "border") != nullptr) {
+    border = messageTemp.charAt(0);
+  }
 }
 
 void setup() {
@@ -271,7 +291,7 @@ void setup() {
   setup_hub75();
   hub75log(VERSION);
   debug = false;
-  delay(200);
+  delay(800);
 
   display_letter(100, '3', MAGENTA);
   hub75_display->flipDMABuffer();    
@@ -304,9 +324,13 @@ ISO15693ErrorCode getInventory(uint8_t* uid) {
 }
 
 void loop() {
+  static unsigned long last_loop_time = millis();
+  static uint16_t last_nfc_reset = 0;
+  static uint16_t nfc_reset_count = 1;
   static long last_nfc_ms = 0;
   static uint16_t heartbeat_color = 3;
-  hub75_display->drawPixel(1, 1, heartbeat_color);
+  // hub75_display->drawPixel(4, 4, heartbeat_color);
+  hub75_display->drawFastHLine(4, 5, nfc_reset_count, heartbeat_color);
   heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
   display_current_letter();
   // esp_resend();
@@ -315,39 +339,30 @@ void loop() {
   }
   client.loop();
 
-  nfc.reset();
-  nfc.setupRF();
-
+  unsigned long now = millis();
+  // Serial.println(now - last_loop_time);
+  if (now - last_loop_time > 100) {
+    Serial.println("reseting nfc");
+    nfc.reset();
+    nfc.setupRF();
+    // hub75_display->drawPixel(10, 10, heartbeat_color);
+    nfc_reset_count++;
+    last_nfc_reset = 0;
+  }
+  last_loop_time = now;
   // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
   ISO15693ErrorCode rc = getInventory(thisUid);
   // Serial.println("looping getinv ");
   // return;
   if (rc == ISO15693_EC_OK) {
-    if (memcmp(thisUid, DEBUG_NFC, NFCID_LENGTH) == 0) {
-      debug = true;
-      hub75log("DEBUG ON");
-      return;
-    }
-    if (memcmp(thisUid, NO_DEBUG_NFC, NFCID_LENGTH) == 0) {
-      debug = false;
-      hub75_display->clearScreen();
-      last_letter = ' ';
-      display_current_letter();
-      hub75log("DEBUG OFF");
-      return;
-    }
-
     if (has_card && memcmp(thisUid, last_nfcid, NFCID_LENGTH) == 0) {
       return;
     }
     has_card = true;
     Serial.println(F("New card"));
     String s = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
-    hub75log(s);
     client.publish(topic_out.c_str(), s.c_str(), true);
-    Serial.print(F("Sending..."));
-    Serial.println(s);
     
     for (int j = 0; j < sizeof(thisUid); j++) {
       last_nfcid[j] = thisUid[j];
@@ -361,7 +376,7 @@ void loop() {
       Serial.println(delay_msg);
       hub75log("no nfc                  ");
       client.publish("cube/delay", delay_msg.c_str(), true);
-      if (delay < 500) {
+      if (delay < 100) { // DEBOUNCE
         return;
       }
       client.publish(topic_out.c_str(), "", true);
