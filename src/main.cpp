@@ -38,7 +38,8 @@
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.5e"
+#define VERSION "v0.6a"
+bool FRONT_DISPLAY = false;
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -84,6 +85,7 @@ uint8_t NO_DEBUG_NFC[NFCID_LENGTH] = {
 char last_letter = ' ';
 char current_letter = '?';
 char border = ' ';
+uint16_t border_color = WHITE;
 bool border_is_word = false;
 long loop_count = 0;
 bool debug = false;
@@ -92,7 +94,7 @@ const char* ssid = SSID_NAME;
 const char* password = WIFI_PASSWORD;
 #define MQTT_SERVER_MACBOOK_ALBANY "192.168.0.211"
 #define MQTT_SERVER_MACBOOK_YACHATS "192.168.0.161"
-const char* mqtt_server_macbook = MQTT_SERVER_MACBOOK_YACHATS;
+const char* mqtt_server_macbook = MQTT_SERVER_MACBOOK_ALBANY;
 const char* mqtt_server_pi = "192.168.0.247";
 
 WiFiClient espClient;
@@ -176,7 +178,9 @@ void display_current_letter() {
   if (current_letter == ' ') {
     border = ' ';
   }
-  uint16_t border_color = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : WHITE;
+  // uint16_t highlight_bc = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : border_color;
+  // Serial.print("border color: ");
+  // Serial.println(border_color);
   if (border != ' ') {
     hub75_display->drawFastHLine(0, 0, PANEL_RES_X, border_color);
     hub75_display->drawFastHLine(0, 1, PANEL_RES_X, border_color);
@@ -196,10 +200,22 @@ void display_current_letter() {
 }
 
 void setup_nfc() {
+  if (FRONT_DISPLAY) {
+    return;
+  }
   SPI.begin(SCK, MISO, MOSI, SS);
   Serial.println(F("Initializing nfc..."));
 
   nfc.begin();
+  // uint8_t firmwareVersion[16];
+  // nfc.readEEprom(DIE_IDENTIFIER, firmwareVersion, sizeof(firmwareVersion));
+  // Serial.print(F("Firmware version="));
+  // Serial.print(firmwareVersion[1]);
+  // Serial.print(".");
+  // Serial.println(firmwareVersion[0]);  
+  // // if (firmwareVersion[0] == 0 && firmwareVersion[1] == 0) {
+  //   FRONT_DISPLAY = true;
+  // }
   nfc.reset();
   Serial.println(F("Enabling RF field..."));
   nfc.setupRF();
@@ -218,7 +234,7 @@ void setup_hub75() {
   // hub75_display->setPanelBrightness(BRIGHTNESS);
   // hub75_display->fillScreenRGB888(255,0,0);
   // sleep(2);
-
+  hub75_display->setRotation(3);
   hub75_display->setTextWrap(true);
   hub75_display->clearScreen();
 }
@@ -250,7 +266,6 @@ void setup_wifi() {
   IPAddress subnet(255, 255, 255, 0);
   IPAddress primaryDNS(8, 8, 8, 8);   //optional
   IPAddress secondaryDNS(8, 8, 4, 4); //optional
-
 
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
     Serial.println("STA Failed to configure");
@@ -328,30 +343,37 @@ void callback(char* topic, byte* message, unsigned int length) {
       esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
       esp_deep_sleep_start();
     }
-    return;
   }
-  if (strstr(topic, "reboot") != nullptr) {
+  else if (strstr(topic, "reboot") != nullptr) {
     ESP.restart();
-    return;
   }
   else if (strstr(topic, "reset") != nullptr) {
     nfc.reset();
     nfc.setupRF();
-    return;
   } else if (strstr(topic, "letter") != nullptr) {
     current_letter = messageTemp.charAt(0);
     start_ease = millis();
-    return;
-  }
-  else if (strstr(topic, "flash") != nullptr) {
+  } else if (strstr(topic, "flash") != nullptr) {
     end_highlighting = millis() + HIGHLIGHT_TIME_MS;
     border_is_word = true;
-    return;
-  }
-  else if (strstr(topic, "border") != nullptr) {
+    border_color = GREEN;
+  } else if (strstr(topic, "border_line") != nullptr) {
     border = messageTemp.charAt(0);
+  } else if (strstr(topic, "border_color") != nullptr) {
+    switch (messageTemp.charAt(0)) {
+      case 'Y':
+        border_color = YELLOW;
+        break;
+      case 'W':
+        border_color = WHITE;
+        break;
+      case 'G':
+        border_color = GREEN;
+        break;
+    }
     border_is_word = false;
-    return;
+  } else if (strstr(topic, "old") != nullptr) {
+    border_color = YELLOW;
   }
 }
 
@@ -406,7 +428,7 @@ void setup() {
   Serial.println("setting up wifi...");
   setup_wifi();
   mac_id = removeColons(WiFi.macAddress());
-  debugPrint((String("ip,mac:") + WiFi.localIP().toString()+
+  debugPrint((String("ip,mac:") + WiFi.localIP().toString() +
     ", " + mac_id.c_str()).c_str());
   client.setCallback(callback);
   reconnect();
@@ -453,23 +475,38 @@ void loop() {
     client.publish(loop_delay_topic.c_str(), loop_delay_msg.c_str());
   }
 
-  if (now - last_loop_time > 100) {
+  if (now - last_loop_time > 100 && ! FRONT_DISPLAY) {
+    Serial.println(now - last_loop_time);
     nfc.reset();
     nfc.setupRF();
     static String loop_delay_topic = createTopic("loop_delay_reset");
     String loop_delay_msg = String(now - last_loop_time);
     client.publish(loop_delay_topic.c_str(), loop_delay_msg.c_str());
-    // Serial.println("reseting nfc");
+
+    // Serial.println("resetting nfc");
+    // uint8_t firmwareVersion[2];
+    // nfc.readEEprom(FIRMWARE_VERSION, firmwareVersion, sizeof(firmwareVersion));
+    // Serial.print(F("Firmware version="));
+    // Serial.print(firmwareVersion[1]);
+    // Serial.print(".");
+    // Serial.println(firmwareVersion[0]);  
+  
     // hub75_display->drawPixel(10, 10, heartbeat_color);
     nfc_reset_count++;
     last_nfc_reset = 0;
   }
 
   last_loop_time = now;
+  if (FRONT_DISPLAY) {
+    return;
+  }
   // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
+  Serial.print("getInventory: ");
+  Serial.println(millis());
   ISO15693ErrorCode rc = getInventory(thisUid);
-  // Serial.println(rc);
+  Serial.println(millis());
+  Serial.println(rc);
   if (rc == ISO15693_EC_OK) {
     String neighbor = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
     if (neighbor.equals(last_neighbor)) {
@@ -477,7 +514,7 @@ void loop() {
       return;
     }
     if (now - last_nfc_publish_time < 1000) {
-      Serial.println("skipping: pause");
+      // Serial.println("skipping: pause");
       return;
     }
 
@@ -491,7 +528,7 @@ void loop() {
       return;
     }
     if (now - last_nfc_publish_time < 1000) {
-      Serial.println("skipping 0: pause");
+      // Serial.println("skipping 0: pause");
       return;
     }
     long delay = now - last_nfc_publish_time;
@@ -511,4 +548,3 @@ void loop() {
       Serial.println("not ok");
   }
 }
-
