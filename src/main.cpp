@@ -17,7 +17,7 @@ const char *macTable[] = {
   "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
   "CC:DB:A7:98:54:2C", "CC:DB:A7:9B:5D:9C",
   "CC:DB:A7:9F:C2:84", "94:54:C5:ED:C6:34",
-  "E4:65:B8:77:03:40", "94:54:C5:EE:87:F0",
+  "E4:65:B8:77:03:40", "94:54:C5:F1:AF:00",
   "14:2B:2F:DA:FB:F4", "D8:BC:38:F9:39:30"
 };
 
@@ -49,7 +49,7 @@ const char *macTable[] = {
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.6a"
+#define VERSION "v0.7a"
 bool front_display = false;
 
 HUB75_I2S_CFG::i2s_pins _pins = {
@@ -129,7 +129,8 @@ void setFont(MatrixPanel_I2S_DMA* hub75_display) {
 }
 
 String removeColons(const String& str) {
-  String result = ""; 
+  String result;
+  result.reserve(str.length());  // Pre-allocate to avoid reallocations
   for (int i = 0; i < str.length(); i++) {
     if (str.charAt(i) != ':') {
       result += str.charAt(i); 
@@ -139,10 +140,11 @@ String removeColons(const String& str) {
 }
 
 String convert_to_hex_string(uint8_t* data, int dataSize) {
-  String hexString = "";
+  String hexString;
+  hexString.reserve(dataSize * 2);  // Pre-allocate for hex string
   for (int i = 0; i < dataSize; i++) {
     char hexChars[3];
-    sprintf(hexChars, "%02X", data[i]);
+    snprintf(hexChars, sizeof(hexChars), "%02X", data[i]);
     hexString += hexChars;
   }
   return hexString;
@@ -358,13 +360,14 @@ void callback(char* topic, byte* message, unsigned int length) {
   Serial.print("Message: ");
   Serial.print(topic);
   Serial.print(", ");
-  String messageTemp;
   
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)message[i]);
-    messageTemp += (char)message[i];
-  }
-  Serial.println();
+  // Create a buffer for the message
+  char messageBuffer[length + 1];
+  memcpy(messageBuffer, message, length);
+  messageBuffer[length] = '\0';
+  String messageTemp(messageBuffer);
+  
+  Serial.println(messageTemp);
 
   if (strstr(topic, "game/nfc") != nullptr) {
     last_neighbor = messageTemp;
@@ -412,10 +415,9 @@ void callback(char* topic, byte* message, unsigned int length) {
 }
 
 String createTopic(String s) {
-  String t = String("cube/");
-  t += s + String("/");
-  t += cube_id;
-  return t;
+  char topic[128];  // Large enough for any reasonable topic
+  snprintf(topic, sizeof(topic), "cube/%s/%s", s.c_str(), cube_id.c_str());
+  return String(topic);
 }
 
 uint8_t print_wakeup_reason(){
@@ -435,8 +437,7 @@ uint8_t print_wakeup_reason(){
   return wakeup_reason;
 }
 
-void debugPrint(const char* s)
-{
+void debugPrint(const char* s) {
   hub75_display->setCursor(0, 0);
   hub75_display->setTextColor(RED, BLACK);
   hub75_display->print(s);
@@ -464,8 +465,15 @@ void setup() {
   if (front_display) {
     hub75_display->setRotation(2);
   }
-  debugPrint((WiFi.localIP().toString() +
-    ", " +WiFi.macAddress() + "," + cube_id.c_str()).c_str());
+  
+  // Display IP info using snprintf
+  char ipDisplay[128];  // Large enough for IP + MAC + cube_id
+  snprintf(ipDisplay, sizeof(ipDisplay), "%s, %s,%s", 
+    WiFi.localIP().toString().c_str(),
+    WiFi.macAddress().c_str(),
+    cube_id.c_str());
+  debugPrint(ipDisplay);
+  
   client.setCallback(callback);
   reconnect();
   static String nfc_topic = createTopic("nfc");
@@ -489,6 +497,9 @@ ISO15693ErrorCode getInventory(uint8_t* uid) {
 unsigned long last_nfc_publish_time = 0;
 
 void loop() {
+  nfc.reset();
+  nfc.setupRF();
+
   static unsigned long last_loop_time = millis();
   static uint16_t last_nfc_reset = 0;
   static uint16_t nfc_reset_count = 1;
