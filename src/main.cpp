@@ -12,6 +12,17 @@
 #include <secrets.h>
 #include "font.h"
 
+const char *macTable[] = {
+  "C4:DD:57:8E:46:C8", "94:54:C5:EE:82:5C",
+  "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
+  "CC:DB:A7:98:54:2C", "CC:DB:A7:9B:5D:9C",
+  "CC:DB:A7:9F:C2:84", "94:54:C5:ED:C6:34",
+  "E4:65:B8:77:03:40", "94:54:C5:EE:87:F0",
+  "14:2B:2F:DA:FB:F4", "D8:BC:38:F9:39:30"
+};
+
+#define NUM_MAC_ADDRESSES (sizeof(macTable) / sizeof(macTable[0]))
+
 #define BLACK    0x0000
 #define BLUE     0x001F
 #define RED      0xF800
@@ -39,7 +50,7 @@
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
 #define VERSION "v0.6a"
-bool FRONT_DISPLAY = false;
+bool front_display = false;
 
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
@@ -99,10 +110,19 @@ const char* mqtt_server_pi = "192.168.0.247";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-static String mac_id;
+static String cube_id;
 const char* topic_out;
 
 EasingFunc<Ease::BounceOut> easing;
+
+int getMACPosition(const char *macStr) {
+  for (int i = 0; i < NUM_MAC_ADDRESSES; i++) {
+      if (strcmp(macStr, macTable[i]) == 0) {
+        return i;
+      }
+  }
+  return -1;
+}
 
 void setFont(MatrixPanel_I2S_DMA* hub75_display) {
   hub75_display->setFont(&Roboto_Mono_Bold_78);
@@ -200,22 +220,13 @@ void display_current_letter() {
 }
 
 void setup_nfc() {
-  if (FRONT_DISPLAY) {
+  if (front_display) {
     return;
   }
   SPI.begin(SCK, MISO, MOSI, SS);
   Serial.println(F("Initializing nfc..."));
 
   nfc.begin();
-  // uint8_t firmwareVersion[16];
-  // nfc.readEEprom(DIE_IDENTIFIER, firmwareVersion, sizeof(firmwareVersion));
-  // Serial.print(F("Firmware version="));
-  // Serial.print(firmwareVersion[1]);
-  // Serial.print(".");
-  // Serial.println(firmwareVersion[0]);  
-  // // if (firmwareVersion[0] == 0 && firmwareVersion[1] == 0) {
-  //   FRONT_DISPLAY = true;
-  // }
   nfc.reset();
   Serial.println(F("Enabling RF field..."));
   nfc.setupRF();
@@ -248,19 +259,31 @@ unsigned int simpleHash(const char* str) {
 }
 
 uint8_t getIpOctet() {
-  const char* char_array = WiFi.macAddress().c_str();
-  unsigned int hashedNumber = simpleHash(char_array);
-  return hashedNumber % 98 + 2; // Map to range 2-99
+  // uint8_t mac[6];
+  // esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  String mac_address = WiFi.macAddress();
+  int mac_position = getMACPosition(mac_address.c_str());
+  int cube_ix = mac_position - (mac_position % 2);
+  cube_id = removeColons(macTable[cube_ix]);
+  front_display = (mac_position % 2) == 1;
+  Serial.print("mac_address: ");
+  Serial.println(mac_address);
+  Serial.print("mac_position: ");
+  Serial.println(mac_position);
+  Serial.print("cube_id: ");
+  Serial.println(cube_id);
+  Serial.print("front display: ");
+  Serial.println(front_display);
+  return 20 + mac_position;
 }
 
 void setup_wifi() {
-  Serial.println("mac address: ");
+  Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
   Serial.print("Connecting to ");
   Serial.println(ssid);
-  // Set your Static IP address
+  
   IPAddress local_IP(192, 168, 0, getIpOctet());
-  // Set your Gateway IP address
   IPAddress gateway(192, 168, 0, 1);
 
   IPAddress subnet(255, 255, 255, 0);
@@ -296,11 +319,22 @@ void reconnect() {
 
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    if (client.connect(mac_id.c_str(), topic_out, 0, true, "")) {
+    String client_name = cube_id;
+    if (front_display) {
+      client_name += ".F";
+    }
+    Serial.print("client name: ");
+    Serial.println(client_name);
+    Serial.print("mac name: ");
+    Serial.println(WiFi.macAddress());
+
+    if (client.connect(client_name.c_str(), topic_out, 0, true, "")) {
       Serial.print("connected, pi_server: ");
       Serial.println(pi_server);
-      client.subscribe(String("cube/" + mac_id + "/#").c_str());
-      client.subscribe(String("game/nfc/" + mac_id).c_str());
+      Serial.print("subscribing: ");
+      Serial.print(String("cube/" + cube_id + "/#").c_str());
+      client.subscribe(String("cube/" + cube_id + "/#").c_str());
+      client.subscribe(String("game/nfc/" + cube_id).c_str());
     } else {
       pi_server = ! pi_server;
       client.setServer(pi_server ? mqtt_server_macbook : mqtt_server_pi, 1883);
@@ -380,7 +414,7 @@ void callback(char* topic, byte* message, unsigned int length) {
 String createTopic(String s) {
   String t = String("cube/");
   t += s + String("/");
-  t += mac_id;
+  t += cube_id;
   return t;
 }
 
@@ -427,9 +461,11 @@ void setup() {
   debugPrint((String("wake up:") + String(wakeup)).c_str());
   Serial.println("setting up wifi...");
   setup_wifi();
-  mac_id = removeColons(WiFi.macAddress());
-  debugPrint((String("ip,mac:") + WiFi.localIP().toString() +
-    ", " + mac_id.c_str()).c_str());
+  if (front_display) {
+    hub75_display->setRotation(2);
+  }
+  debugPrint((WiFi.localIP().toString() +
+    ", " +WiFi.macAddress() + "," + cube_id.c_str()).c_str());
   client.setCallback(callback);
   reconnect();
   static String nfc_topic = createTopic("nfc");
@@ -475,7 +511,7 @@ void loop() {
     client.publish(loop_delay_topic.c_str(), loop_delay_msg.c_str());
   }
 
-  if (now - last_loop_time > 100 && ! FRONT_DISPLAY) {
+  if (now - last_loop_time > 100 && ! front_display) {
     Serial.println(now - last_loop_time);
     nfc.reset();
     nfc.setupRF();
@@ -497,16 +533,16 @@ void loop() {
   }
 
   last_loop_time = now;
-  if (FRONT_DISPLAY) {
+  if (front_display) {
     return;
   }
   // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
-  Serial.print("getInventory: ");
-  Serial.println(millis());
+  // Serial.print("getInventory: ");
+  // Serial.println(millis());
   ISO15693ErrorCode rc = getInventory(thisUid);
-  Serial.println(millis());
-  Serial.println(rc);
+  // Serial.println(millis());
+  // Serial.println(rc);
   if (rc == ISO15693_EC_OK) {
     String neighbor = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
     if (neighbor.equals(last_neighbor)) {
