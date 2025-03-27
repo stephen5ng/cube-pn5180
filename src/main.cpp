@@ -13,12 +13,12 @@
 #include "font.h"
 
 const char *macTable[] = {
-  "C4:DD:57:8E:46:C8", "94:54:C5:EE:82:5C",
+  "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
   "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
   "CC:DB:A7:98:54:2C", "CC:DB:A7:9B:5D:9C",
   "CC:DB:A7:9F:C2:84", "94:54:C5:ED:C6:34",
   "E4:65:B8:77:03:40", "94:54:C5:F1:AF:00",
-  "14:2B:2F:DA:FB:F4", "D8:BC:38:F9:39:30"
+  "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
 };
 
 #define NUM_MAC_ADDRESSES (sizeof(macTable) / sizeof(macTable[0]))
@@ -357,18 +357,21 @@ void reconnect() {
 String last_neighbor = "INIT";
 
 void callback(char* topic, byte* message, unsigned int length) {
-  Serial.print("Message: ");
-  Serial.print(topic);
-  Serial.print(", ");
-  
+
+  if (debug) {  
+    Serial.print("Message: ");
+    Serial.print(topic);
+    Serial.print(", ");
+  }
   // Create a buffer for the message
   char messageBuffer[length + 1];
   memcpy(messageBuffer, message, length);
   messageBuffer[length] = '\0';
   String messageTemp(messageBuffer);
   
-  Serial.println(messageTemp);
-
+  if (debug) {  
+    Serial.println(messageTemp);
+  }
   if (strstr(topic, "game/nfc") != nullptr) {
     last_neighbor = messageTemp;
   }
@@ -497,9 +500,10 @@ ISO15693ErrorCode getInventory(uint8_t* uid) {
 unsigned long last_nfc_publish_time = 0;
 
 void loop() {
-  nfc.reset();
-  nfc.setupRF();
-
+  if (!front_display) {
+    nfc.reset();
+    nfc.setupRF();
+  }
   static unsigned long last_loop_time = millis();
   static uint16_t last_nfc_reset = 0;
   static uint16_t nfc_reset_count = 1;
@@ -513,6 +517,9 @@ void loop() {
     reconnect();
   }
   client.loop();
+  if (front_display) {
+    return;
+  }
 
   unsigned long now = millis();
   static uint32_t loop_count = 0;
@@ -544,9 +551,6 @@ void loop() {
   }
 
   last_loop_time = now;
-  if (front_display) {
-    return;
-  }
   // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
   // Serial.print("getInventory: ");
