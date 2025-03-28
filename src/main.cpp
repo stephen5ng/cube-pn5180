@@ -49,7 +49,10 @@ const char *macTable[] = {
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.7a"
+#define VERSION "v0.7c"
+#define PRINT_DEBUG false
+#define FRONT_DISPLAY false
+
 bool front_display = false;
 
 HUB75_I2S_CFG::i2s_pins _pins = {
@@ -114,6 +117,38 @@ static String cube_id;
 const char* topic_out;
 
 EasingFunc<Ease::BounceOut> easing;
+
+void debugPrint(const char* s) {
+  hub75_display->setCursor(0, 0);
+  hub75_display->setTextColor(RED, BLACK);
+  hub75_display->print(s);
+  hub75_display->flipDMABuffer();    
+  hub75_display->clearScreen();
+}
+
+void debug_print(const char* message) {
+  if (PRINT_DEBUG) {
+    Serial.print(message);
+  }
+}
+
+void debug_println(const char* message) {
+  if (PRINT_DEBUG) {
+    Serial.println(message);
+  }
+}
+
+void debug_print(const __FlashStringHelper* message) {
+  if (PRINT_DEBUG) {
+    Serial.print(message);
+  }
+}
+
+void debug_println(const __FlashStringHelper* message) {
+  if (PRINT_DEBUG) {
+    Serial.println(message);
+  }
+}
 
 int getMACPosition(const char *macStr) {
   for (int i = 0; i < NUM_MAC_ADDRESSES; i++) {
@@ -325,6 +360,7 @@ void reconnect() {
     if (front_display) {
       client_name += ".F";
     }
+    client_name += String(".") + VERSION;
     Serial.print("client name: ");
     Serial.println(client_name);
     Serial.print("mac name: ");
@@ -357,21 +393,17 @@ void reconnect() {
 String last_neighbor = "INIT";
 
 void callback(char* topic, byte* message, unsigned int length) {
-
-  if (debug) {  
-    Serial.print("Message: ");
-    Serial.print(topic);
-    Serial.print(", ");
-  }
   // Create a buffer for the message
   char messageBuffer[length + 1];
   memcpy(messageBuffer, message, length);
   messageBuffer[length] = '\0';
   String messageTemp(messageBuffer);
-  
-  if (debug) {  
-    Serial.println(messageTemp);
-  }
+
+  debug_print("Message: ");
+  debug_print(topic);
+  debug_print(", ");
+  debug_println(messageTemp.c_str());
+
   if (strstr(topic, "game/nfc") != nullptr) {
     last_neighbor = messageTemp;
   }
@@ -379,7 +411,7 @@ void callback(char* topic, byte* message, unsigned int length) {
   if (strstr(topic, "sleep") != nullptr) {
     char sleep = messageTemp.charAt(0);
     if (sleep == '1') {
-      Serial.println("sleeping due to /sleep");
+      debug_println("sleeping due to /sleep");
       esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
       esp_deep_sleep_start();
     }
@@ -440,22 +472,14 @@ uint8_t print_wakeup_reason(){
   return wakeup_reason;
 }
 
-void debugPrint(const char* s) {
-  hub75_display->setCursor(0, 0);
-  hub75_display->setTextColor(RED, BLACK);
-  hub75_display->print(s);
-  hub75_display->flipDMABuffer();    
-  hub75_display->clearScreen();
-}
-
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
-  Serial.println("starting....");
-  debug = true;
+  debug_println("starting....");
   setup_hub75();
+  #if DEBUG
   debugPrint(VERSION);
-  debug = false;
+  #endif
   delay(600);
   uint8_t wakeup = print_wakeup_reason();
 
@@ -463,14 +487,14 @@ void setup() {
   easing.scale(100);
 
   debugPrint((String("wake up:") + String(wakeup)).c_str());
-  Serial.println("setting up wifi...");
+  debug_println("setting up wifi...");
   setup_wifi();
   if (front_display) {
     hub75_display->setRotation(2);
   }
   
   // Display IP info using snprintf
-  char ipDisplay[128];  // Large enough for IP + MAC + cube_id
+  char ipDisplay[128];
   snprintf(ipDisplay, sizeof(ipDisplay), "%s, %s,%s", 
     WiFi.localIP().toString().c_str(),
     WiFi.macAddress().c_str(),
@@ -484,13 +508,13 @@ void setup() {
   client.publish(createTopic("version").c_str(), VERSION);
 
   debugPrint("nfc...");
-  Serial.println(WiFi.macAddress());
+  debug_println(WiFi.macAddress().c_str());
 
   setup_nfc();
   hub75_display->clearScreen();
   setFont(hub75_display);
 
-  Serial.println(F("Setup Complete"));
+  debug_println(F("Setup Complete"));
 }
 
 ISO15693ErrorCode getInventory(uint8_t* uid) {
@@ -530,7 +554,7 @@ void loop() {
   }
 
   if (now - last_loop_time > 100 && ! front_display) {
-    Serial.println(now - last_loop_time);
+    // debug_println(now - last_loop_time);
     nfc.reset();
     nfc.setupRF();
     static String loop_delay_topic = createTopic("loop_delay_reset");
@@ -569,7 +593,7 @@ void loop() {
       return;
     }
 
-    Serial.println(F("New card"));
+    debug_println(F("New card"));
     client.publish(topic_out, neighbor.c_str(), true);
 
     last_nfc_publish_time = millis();
@@ -584,10 +608,10 @@ void loop() {
     }
     long delay = now - last_nfc_publish_time;
     if (delay < 100) { // DEBOUNCE
-      Serial.println("skipping 0: debounce");
+      debug_println("skipping 0: debounce");
       return;
     }
-    Serial.println("publishing no-link");
+    debug_println("publishing no-link");
     client.publish(topic_out, "", true);
     last_nfc_publish_time = millis();
   } else {
@@ -596,6 +620,6 @@ void loop() {
       nfc.setupRF();
       client.publish(reset_topic.c_str(), String(nfc_reset_count++).c_str());
 
-      Serial.println("not ok");
+      debug_println("not ok");
   }
 }
