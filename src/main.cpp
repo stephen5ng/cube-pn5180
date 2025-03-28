@@ -102,7 +102,6 @@ char border = ' ';
 uint16_t border_color = WHITE;
 bool border_is_word = false;
 long loop_count = 0;
-bool debug = false;
 bool last_has_card = false;
 const char* ssid = SSID_NAME;
 const char* password = WIFI_PASSWORD;
@@ -477,9 +476,7 @@ void setup() {
   Serial.setTimeout(0);
   debug_println("starting....");
   setup_hub75();
-  #if DEBUG
   debugPrint(VERSION);
-  #endif
   delay(600);
   uint8_t wakeup = print_wakeup_reason();
 
