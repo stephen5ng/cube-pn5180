@@ -116,7 +116,6 @@ EspMQTTClient mqtt_client(
 );
 
 WiFiClient espClient;
-PubSubClient client(espClient);
 static String cube_id;
 const char* topic_out;
 
@@ -300,8 +299,6 @@ unsigned int simpleHash(const char* str) {
 }
 
 uint8_t getIpOctet() {
-  // uint8_t mac[6];
-  // esp_read_mac(mac, ESP_MAC_WIFI_STA);
   String mac_address = WiFi.macAddress();
   int mac_position = getMACPosition(mac_address.c_str());
   if (mac_position == -1) {
@@ -412,7 +409,7 @@ void callback(const String& topic, const String& messageTemp) {
     border_color = YELLOW;
   } else if (strstr(topic.c_str(), "ping") != nullptr) {
     static String echo_topic = createTopic("echo");
-    client.publish(echo_topic.c_str(), messageTemp.c_str());
+    mqtt_client.publish(echo_topic, messageTemp);
   }
 }
 
@@ -432,10 +429,6 @@ uint8_t print_wakeup_reason(){
   }
   return wakeup_reason;
 }
-
-// void callback_new(const String& topic, const String& message) {
-//   callback(topic.c_str(), (byte*) message.c_str(), message.length());
-// }
 
 void onConnectionEstablished() {
   mqtt_client.subscribe(String("cube/" + cube_id + "/#"), callback);
@@ -475,7 +468,7 @@ void setup() {
   
   static String nfc_topic = createTopic("nfc");
   topic_out = nfc_topic.c_str();
-  client.publish(createTopic("version").c_str(), VERSION);
+  mqtt_client.publish(createTopic("version"), VERSION);
 
   debugPrint("nfc...");
   debug_println(WiFi.macAddress().c_str());
@@ -508,7 +501,6 @@ void loop() {
   hub75_display->drawFastHLine(4, 5, nfc_reset_count, heartbeat_color);
   heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
   display_current_letter();
-  client.loop();
   if (front_display) {
     return;
   }
@@ -518,7 +510,7 @@ void loop() {
   if (loop_count++ % 1000 == 0) {
     static String loop_delay_topic = createTopic("loop_delay");
     String loop_delay_msg = String(now - last_loop_time);
-    client.publish(loop_delay_topic.c_str(), loop_delay_msg.c_str());
+    mqtt_client.publish(loop_delay_topic, loop_delay_msg);
   }
 
   if (now - last_loop_time > 100 && ! front_display) {
@@ -527,7 +519,7 @@ void loop() {
     nfc.setupRF();
     static String loop_delay_topic = createTopic("loop_delay_reset");
     String loop_delay_msg = String(now - last_loop_time);
-    client.publish(loop_delay_topic.c_str(), loop_delay_msg.c_str());
+    mqtt_client.publish(loop_delay_topic, loop_delay_msg);
 
     // Serial.println("resetting nfc");
     // uint8_t firmwareVersion[2];
@@ -562,7 +554,7 @@ void loop() {
     }
 
     debug_println(F("New card"));
-    client.publish(topic_out, neighbor.c_str(), true);
+    mqtt_client.publish(topic_out, neighbor, true);
 
     last_nfc_publish_time = millis();
   } else if (rc == EC_NO_CARD) {
@@ -580,13 +572,13 @@ void loop() {
       return;
     }
     debug_println("publishing no-link");
-    client.publish(topic_out, "", true);
+    mqtt_client.publish(topic_out, "", true);
     last_nfc_publish_time = millis();
   } else {
       static String reset_topic = createTopic("reset");
       nfc.reset();
       nfc.setupRF();
-      client.publish(reset_topic.c_str(), String(nfc_reset_count++).c_str());
+      mqtt_client.publish(reset_topic, String(nfc_reset_count++));
 
       debug_println("not ok");
   }
