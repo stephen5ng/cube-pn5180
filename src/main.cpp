@@ -17,7 +17,7 @@ const char *macTable[] = {
   "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
   "CC:DB:A7:98:54:2C", "CC:DB:A7:9B:5D:9C",
   "CC:DB:A7:9F:C2:84", "94:54:C5:ED:C6:34",
-  "E4:65:B8:77:03:40", "94:54:C5:F1:AF:00",
+  "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
   "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
 };
 
@@ -49,9 +49,8 @@ const char *macTable[] = {
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.7c"
-#define PRINT_DEBUG false
-#define FRONT_DISPLAY false
+#define VERSION "v0.7d"
+#define PRINT_DEBUG true
 
 bool front_display = false;
 
@@ -103,10 +102,8 @@ uint16_t border_color = WHITE;
 bool border_is_word = false;
 long loop_count = 0;
 bool last_has_card = false;
-const char* ssid = SSID_NAME;
-const char* password = WIFI_PASSWORD;
 #define MQTT_SERVER_MACBOOK_ALBANY "192.168.0.211"
-#define MQTT_SERVER_MACBOOK_YACHATS "192.168.0.161"
+#define MQTT_SERVER_MACBOOK_YACHATS "192.168.0.247"
 const char* mqtt_server_macbook = MQTT_SERVER_MACBOOK_ALBANY;
 const char* mqtt_server_pi = "192.168.0.247";
 
@@ -299,6 +296,9 @@ uint8_t getIpOctet() {
   // esp_read_mac(mac, ESP_MAC_WIFI_STA);
   String mac_address = WiFi.macAddress();
   int mac_position = getMACPosition(mac_address.c_str());
+  if (mac_position == -1) {
+    mac_position = 1;
+  }
   int cube_ix = mac_position - (mac_position % 2);
   cube_id = removeColons(macTable[cube_ix]);
   front_display = (mac_position % 2) == 1;
@@ -314,10 +314,9 @@ uint8_t getIpOctet() {
 }
 
 void setup_wifi() {
+  bool try_portable = true;
   Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
   
   IPAddress local_IP(192, 168, 0, getIpOctet());
   IPAddress gateway(192, 168, 0, 1);
@@ -329,17 +328,16 @@ void setup_wifi() {
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
     Serial.println("STA Failed to configure");
   }
-  WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
-    uint16_t retries = 0;
+    const char* ssid = try_portable ? SSID_NAME_PORTABLE : SSID_NAME;
+    const char* password = try_portable ? WIFI_PASSWORD_PORTABLE : WIFI_PASSWORD;
+    Serial.print("Connecting to ");
+    Serial.println(ssid);
+    WiFi.begin(ssid, password);
 
-    delay(100);
-    Serial.print(".");
-    if (retries++ > 50) {
-        esp_sleep_enable_timer_wakeup(5 * uS_TO_S_FACTOR);
-        esp_deep_sleep_start();
-    }
+    delay(1000);
+    try_portable = ! try_portable;
   }
 
   Serial.println("");
@@ -390,6 +388,12 @@ void reconnect() {
 }
 
 String last_neighbor = "INIT";
+
+String createTopic(String s) {
+  char topic[128];  // Large enough for any reasonable topic
+  snprintf(topic, sizeof(topic), "cube/%s/%s", s.c_str(), cube_id.c_str());
+  return String(topic);
+}
 
 void callback(char* topic, byte* message, unsigned int length) {
   // Create a buffer for the message
@@ -445,13 +449,10 @@ void callback(char* topic, byte* message, unsigned int length) {
     border_is_word = false;
   } else if (strstr(topic, "old") != nullptr) {
     border_color = YELLOW;
+  } else if (strstr(topic, "ping") != nullptr) {
+    static String echo_topic = createTopic("echo");
+    client.publish(echo_topic.c_str(), messageTemp.c_str());
   }
-}
-
-String createTopic(String s) {
-  char topic[128];  // Large enough for any reasonable topic
-  snprintf(topic, sizeof(topic), "cube/%s/%s", s.c_str(), cube_id.c_str());
-  return String(topic);
 }
 
 uint8_t print_wakeup_reason(){
@@ -530,7 +531,6 @@ void loop() {
   static uint16_t nfc_reset_count = 1;
   static long last_nfc_ms = 0;
   static uint16_t heartbeat_color = 3;
-  // hub75_display->drawPixel(4, 4, heartbeat_color);
   hub75_display->drawFastHLine(4, 5, nfc_reset_count, heartbeat_color);
   heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
   display_current_letter();
