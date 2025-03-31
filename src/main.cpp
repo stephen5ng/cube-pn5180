@@ -4,8 +4,8 @@
 #include <Easing.h>
 #include <Fonts/FreeSans18pt7b.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#include <EspMQTTClient.h>
 #include <PN5180ISO15693.h>
-#include <PubSubClient.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -15,7 +15,7 @@
 const char *macTable[] = {
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
   "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
-  "CC:DB:A7:98:54:2C", "CC:DB:A7:9B:5D:9C",
+  "CC:DB:A7:98:54:2C", "CC:DB:A7:99:0F:E0",
   "CC:DB:A7:9F:C2:84", "94:54:C5:ED:C6:34",
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
   "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
@@ -106,6 +106,14 @@ bool last_has_card = false;
 #define MQTT_SERVER_MACBOOK_YACHATS "192.168.0.247"
 const char* mqtt_server_macbook = MQTT_SERVER_MACBOOK_ALBANY;
 const char* mqtt_server_pi = "192.168.0.247";
+
+EspMQTTClient mqtt_client(
+  mqtt_server_pi,
+  1883,
+  "",
+  "",
+  "TestClient"
+);
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -346,47 +354,6 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
-void reconnect() {
-  uint16_t retries = 0;
-  bool pi_server = true;
-  client.setServer(mqtt_server_pi, 1883);
-
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    String client_name = cube_id;
-    if (front_display) {
-      client_name += ".F";
-    }
-    client_name += String(".") + VERSION;
-    Serial.print("client name: ");
-    Serial.println(client_name);
-    Serial.print("mac name: ");
-    Serial.println(WiFi.macAddress());
-
-    if (client.connect(client_name.c_str(), topic_out, 0, true, "")) {
-      Serial.print("connected, pi_server: ");
-      Serial.println(pi_server);
-      Serial.print("subscribing: ");
-      Serial.print(String("cube/" + cube_id + "/#").c_str());
-      client.subscribe(String("cube/" + cube_id + "/#").c_str());
-      client.subscribe(String("game/nfc/" + cube_id).c_str());
-    } else {
-      pi_server = ! pi_server;
-      client.setServer(pi_server ? mqtt_server_macbook : mqtt_server_pi, 1883);
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.print(" retries=");
-      Serial.println(retries);
-      if (retries++ > 20) {
-        esp_sleep_enable_timer_wakeup(5 * uS_TO_S_FACTOR);
-        esp_deep_sleep_start();
-      }
-      Serial.println(" retrying...");
-      delay(200);
-    }
-  }
-}
-
 String last_neighbor = "INIT";
 
 String createTopic(String s) {
@@ -395,23 +362,17 @@ String createTopic(String s) {
   return String(topic);
 }
 
-void callback(char* topic, byte* message, unsigned int length) {
-  // Create a buffer for the message
-  char messageBuffer[length + 1];
-  memcpy(messageBuffer, message, length);
-  messageBuffer[length] = '\0';
-  String messageTemp(messageBuffer);
-
+void callback(const String& topic, const String& messageTemp) {
   debug_print("Message: ");
-  debug_print(topic);
+  debug_print(topic.c_str());
   debug_print(", ");
   debug_println(messageTemp.c_str());
 
-  if (strstr(topic, "game/nfc") != nullptr) {
+  if (strstr(topic.c_str(), "game/nfc") != nullptr) {
     last_neighbor = messageTemp;
   }
 
-  if (strstr(topic, "sleep") != nullptr) {
+  if (strstr(topic.c_str(), "sleep") != nullptr) {
     char sleep = messageTemp.charAt(0);
     if (sleep == '1') {
       debug_println("sleeping due to /sleep");
@@ -419,22 +380,22 @@ void callback(char* topic, byte* message, unsigned int length) {
       esp_deep_sleep_start();
     }
   }
-  else if (strstr(topic, "reboot") != nullptr) {
+  else if (strstr(topic.c_str(), "reboot") != nullptr) {
     ESP.restart();
   }
-  else if (strstr(topic, "reset") != nullptr) {
+  else if (strstr(topic.c_str(), "reset") != nullptr) {
     nfc.reset();
     nfc.setupRF();
-  } else if (strstr(topic, "letter") != nullptr) {
+  } else if (strstr(topic.c_str(), "letter") != nullptr) {
     current_letter = messageTemp.charAt(0);
     start_ease = millis();
-  } else if (strstr(topic, "flash") != nullptr) {
+  } else if (strstr(topic.c_str(), "flash") != nullptr) {
     end_highlighting = millis() + HIGHLIGHT_TIME_MS;
     border_is_word = true;
     border_color = GREEN;
-  } else if (strstr(topic, "border_line") != nullptr) {
+  } else if (strstr(topic.c_str(), "border_line") != nullptr) {
     border = messageTemp.charAt(0);
-  } else if (strstr(topic, "border_color") != nullptr) {
+  } else if (strstr(topic.c_str(), "border_color") != nullptr) {
     switch (messageTemp.charAt(0)) {
       case 'Y':
         border_color = YELLOW;
@@ -447,9 +408,9 @@ void callback(char* topic, byte* message, unsigned int length) {
         break;
     }
     border_is_word = false;
-  } else if (strstr(topic, "old") != nullptr) {
+  } else if (strstr(topic.c_str(), "old") != nullptr) {
     border_color = YELLOW;
-  } else if (strstr(topic, "ping") != nullptr) {
+  } else if (strstr(topic.c_str(), "ping") != nullptr) {
     static String echo_topic = createTopic("echo");
     client.publish(echo_topic.c_str(), messageTemp.c_str());
   }
@@ -472,9 +433,19 @@ uint8_t print_wakeup_reason(){
   return wakeup_reason;
 }
 
+// void callback_new(const String& topic, const String& message) {
+//   callback(topic.c_str(), (byte*) message.c_str(), message.length());
+// }
+
+void onConnectionEstablished() {
+  mqtt_client.subscribe(String("cube/" + cube_id + "/#"), callback);
+  mqtt_client.subscribe(String("game/nfc") + cube_id, callback);  
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
+  mqtt_client.enableDebuggingMessages(true);
   debug_println("starting....");
   setup_hub75();
   debugPrint(VERSION);
@@ -487,6 +458,9 @@ void setup() {
   debugPrint((String("wake up:") + String(wakeup)).c_str());
   debug_println("setting up wifi...");
   setup_wifi();
+  static String client_name = cube_id + front_display ? "_F" : "";
+  Serial.println(client_name);
+  mqtt_client.setMqttClientName(client_name.c_str());
   if (front_display) {
     hub75_display->setRotation(2);
   }
@@ -499,8 +473,6 @@ void setup() {
     cube_id.c_str());
   debugPrint(ipDisplay);
   
-  client.setCallback(callback);
-  reconnect();
   static String nfc_topic = createTopic("nfc");
   topic_out = nfc_topic.c_str();
   client.publish(createTopic("version").c_str(), VERSION);
@@ -522,6 +494,8 @@ ISO15693ErrorCode getInventory(uint8_t* uid) {
 unsigned long last_nfc_publish_time = 0;
 
 void loop() {
+  mqtt_client.loop();
+
   if (!front_display) {
     nfc.reset();
     nfc.setupRF();
@@ -534,9 +508,6 @@ void loop() {
   hub75_display->drawFastHLine(4, 5, nfc_reset_count, heartbeat_color);
   heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
   display_current_letter();
-  if (!client.connected()) {
-    reconnect();
-  }
   client.loop();
   if (front_display) {
     return;
