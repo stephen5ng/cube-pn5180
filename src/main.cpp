@@ -14,7 +14,7 @@
 
 // ============= Configuration =============
 // MAC Address Table
-const char *macTable[] = {
+const char *CUBE_MAC_ADDRESSES[] = {
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
   "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
   "CC:DB:A7:98:54:2C", "CC:DB:A7:99:0F:E0",
@@ -22,7 +22,7 @@ const char *macTable[] = {
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
   "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
 };
-#define NUM_MAC_ADDRESSES (sizeof(macTable) / sizeof(macTable[0]))
+#define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
 // Display Configuration
 #define BLACK    0x0000
@@ -64,10 +64,10 @@ const char *macTable[] = {
 #define MQTT_SERVER_PI "192.168.0.247"
 
 // ============= Global Variables =============
-bool front_display = false;
+bool is_front_display = false;
 
 // HUB75 Display Configuration
-HUB75_I2S_CFG::i2s_pins _pins = {
+HUB75_I2S_CFG::i2s_pins display_pins = {
   25,  //R1_PIN,
   26,  //G1_PIN,
   33,  //B1_PIN,
@@ -84,37 +84,37 @@ HUB75_I2S_CFG::i2s_pins _pins = {
   16,  //CLK_PIN
 };
 
-HUB75_I2S_CFG mxconfig(
+HUB75_I2S_CFG display_config(
   PANEL_RES_X,
   PANEL_RES_Y,
   PANEL_CHAIN,
-  _pins
+  display_pins
 );
 
 // Hardware Objects
-MatrixPanel_I2S_DMA *hub75_display;
-PN5180ISO15693 nfc = PN5180ISO15693(PN5180_NSS, PN5180_BUSY, PN5180_RST);
+MatrixPanel_I2S_DMA *led_display;
+PN5180ISO15693 nfc_reader = PN5180ISO15693(PN5180_NSS, PN5180_BUSY, PN5180_RST);
 
 // Message Objects
-MessageLetter message_letter;
-MessageNfcId message_nfcid;
+MessageLetter letter_message;
+MessageNfcId nfc_message;
 
 // NFC State
-uint8_t last_nfcid[NFCID_LENGTH];
-uint8_t DEBUG_NFC[NFCID_LENGTH] = {
+uint8_t last_nfc_id[NFCID_LENGTH];
+uint8_t DEBUG_NFC_ID[NFCID_LENGTH] = {
   0xdd, 0x11, 0xf8, 0xb8,
   0x50, 0x01, 0x04, 0xe0};
-uint8_t NO_DEBUG_NFC[NFCID_LENGTH] = {
+uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
   0xbc, 0x10, 0xf8, 0xb8,
   0x50, 0x01, 0x04, 0xe0};
 
 // Display State
-char last_letter = ' ';
+char previous_letter = ' ';
 char current_letter = '?';
-char border = ' ';
+char border_style = ' ';
 uint16_t border_color = WHITE;
-bool border_is_word = false;
-bool last_has_card = false;
+bool is_border_word = false;
+bool has_card_present = false;
 
 // Network Objects
 EspMQTTClient mqtt_client(
@@ -124,195 +124,195 @@ EspMQTTClient mqtt_client(
   "",
   "TestClient"
 );
-WiFiClient espClient;
-static String cube_id;
-const char* topic_out;
+WiFiClient wifi_client;
+static String cube_identifier;
+const char* nfc_topic_out;
 
 // Animation
-EasingFunc<Ease::BounceOut> easing;
-long end_highlighting = 0;
-unsigned long start_ease = 0;
-String last_neighbor = "INIT";
+EasingFunc<Ease::BounceOut> letter_animation;
+long highlight_end_time = 0;
+unsigned long animation_start_time = 0;
+String last_neighbor_id = "INIT";
 unsigned long last_nfc_publish_time = 0;
 
 // ============= Debug Functions =============
-void debugPrint(const char* s) {
-  hub75_display->setCursor(0, 0);
-  hub75_display->setTextColor(RED, BLACK);
-  hub75_display->print(s);
-  hub75_display->flipDMABuffer();    
-  hub75_display->clearScreen();
+void displayDebugMessage(const char* message) {
+  led_display->setCursor(0, 0);
+  led_display->setTextColor(RED, BLACK);
+  led_display->print(message);
+  led_display->flipDMABuffer();    
+  led_display->clearScreen();
 }
 
-void debug_print(const char* message) {
+void debugPrint(const char* message) {
   if (PRINT_DEBUG) {
     Serial.print(message);
   }
 }
 
-void debug_println(const char* message) {
+void debugPrintln(const char* message) {
   if (PRINT_DEBUG) {
     Serial.println(message);
   }
 }
 
-void debug_print(const __FlashStringHelper* message) {
+void debugPrint(const __FlashStringHelper* message) {
   if (PRINT_DEBUG) {
     Serial.print(message);
   }
 }
 
-void debug_println(const __FlashStringHelper* message) {
+void debugPrintln(const __FlashStringHelper* message) {
   if (PRINT_DEBUG) {
     Serial.println(message);
   }
 }
 
 // ============= Utility Functions =============
-int getMACPosition(const char *macStr) {
-  for (int i = 0; i < NUM_MAC_ADDRESSES; i++) {
-      if (strcmp(macStr, macTable[i]) == 0) {
-        return i;
-      }
+int findMacAddressPosition(const char *mac_address) {
+  for (int i = 0; i < NUM_CUBE_MAC_ADDRESSES; i++) {
+    if (strcmp(mac_address, CUBE_MAC_ADDRESSES[i]) == 0) {
+      return i;
+    }
   }
   return -1;
 }
 
-void setFont(MatrixPanel_I2S_DMA* hub75_display) {
-  hub75_display->setFont(&Roboto_Mono_Bold_78);
+void configureDisplayFont(MatrixPanel_I2S_DMA* display) {
+  display->setFont(&Roboto_Mono_Bold_78);
 }
 
-String removeColons(const String& str) {
+String removeColonsFromMac(const String& mac_address) {
   String result;
-  result.reserve(str.length());  // Pre-allocate to avoid reallocations
-  for (int i = 0; i < str.length(); i++) {
-    if (str.charAt(i) != ':') {
-      result += str.charAt(i); 
+  result.reserve(mac_address.length());  // Pre-allocate to avoid reallocations
+  for (int i = 0; i < mac_address.length(); i++) {
+    if (mac_address.charAt(i) != ':') {
+      result += mac_address.charAt(i); 
     }
   }
   return result;
 }
 
-String convert_to_hex_string(uint8_t* data, int dataSize) {
-  String hexString;
-  hexString.reserve(dataSize * 2);  // Pre-allocate for hex string
-  for (int i = 0; i < dataSize; i++) {
-    char hexChars[3];
-    snprintf(hexChars, sizeof(hexChars), "%02X", data[i]);
-    hexString += hexChars;
+String convertNfcIdToHexString(uint8_t* nfc_id, int id_length) {
+  String hex_string;
+  hex_string.reserve(id_length * 2);  // Pre-allocate for hex string
+  for (int i = 0; i < id_length; i++) {
+    char hex_chars[3];
+    snprintf(hex_chars, sizeof(hex_chars), "%02X", nfc_id[i]);
+    hex_string += hex_chars;
   }
-  return hexString;
+  return hex_string;
 }
 
-String createTopic(String s) {
+String createMqttTopic(const String& topic_suffix) {
   char topic[128];  // Large enough for any reasonable topic
-  snprintf(topic, sizeof(topic), "cube/%s/%s", s.c_str(), cube_id.c_str());
+  snprintf(topic, sizeof(topic), "cube/%s/%s", topic_suffix.c_str(), cube_identifier.c_str());
   return String(topic);
 }
 
 // ============= Display Functions =============
-void display_letter(uint16_t percent, char letter, uint16_t color) {
-  int16_t row = (PANEL_RES_Y * percent) / 100;
-  hub75_display->setCursor(BIG_COL, row-4);
-  hub75_display->setTextColor(color, BLACK);
-  hub75_display->setTextSize(BIG_TEXT_SIZE);
-  hub75_display->print(letter);
+void displayLetter(uint16_t vertical_position, char letter, uint16_t color) {
+  int16_t row = (PANEL_RES_Y * vertical_position) / 100;
+  led_display->setCursor(BIG_COL, row-4);
+  led_display->setTextColor(color, BLACK);
+  led_display->setTextSize(BIG_TEXT_SIZE);
+  led_display->print(letter);
 }
 
-void display_current_letter() {
-  static long last_highlighted = 0;
-  static uint16_t speed = 1;
-  unsigned long now = millis();
-  uint8_t letter_percentage = 100;
+void updateDisplay() {
+  static long last_highlight_time = 0;
+  static uint16_t animation_speed = 1;
+  unsigned long current_time = millis();
+  uint8_t letter_position = 100;
 
-  if (current_letter != last_letter) {
-    end_highlighting = 0;
-    float duration = now - start_ease;
-    if (now - start_ease >= easing.duration()) {
-      last_letter = current_letter;
+  if (current_letter != previous_letter) {
+    highlight_end_time = 0;
+    float animation_duration = current_time - animation_start_time;
+    if (current_time - animation_start_time >= letter_animation.duration()) {
+      previous_letter = current_letter;
     } else {
-      letter_percentage = easing.get(duration);
+      letter_position = letter_animation.get(animation_duration);
     }
-    display_letter(100 + letter_percentage, last_letter, RED);
+    displayLetter(100 + letter_position, previous_letter, RED);
   }
   
-  uint16_t current_color = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
-  display_letter(letter_percentage, current_letter, current_color);
+  uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+  displayLetter(letter_position, current_letter, current_color);
 
-  if (last_has_card) {
-    hub75_display->drawFastVLine(62, 30, 2, 0x7c51);
+  if (has_card_present) {
+    led_display->drawFastVLine(62, 30, 2, 0x7c51);
   }
   if (current_letter == ' ') {
-    border = ' ';
+    border_style = ' ';
   }
-  if (border != ' ') {
-    hub75_display->drawFastHLine(0, 0, PANEL_RES_X, border_color);
-    hub75_display->drawFastHLine(0, 1, PANEL_RES_X, border_color);
-    hub75_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, border_color);
-    hub75_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, border_color);
+  if (border_style != ' ') {
+    led_display->drawFastHLine(0, 0, PANEL_RES_X, border_color);
+    led_display->drawFastHLine(0, 1, PANEL_RES_X, border_color);
+    led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, border_color);
+    led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, border_color);
   } 
-  if (border == '[') {
-    hub75_display->drawFastVLine(0, 2, PANEL_RES_Y-4, border_color);
-    hub75_display->drawFastVLine(1, 2, PANEL_RES_Y-4, border_color);
-  } else if (border == ']') {
-    hub75_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, border_color);
-    hub75_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, border_color);
+  if (border_style == '[') {
+    led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, border_color);
+    led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, border_color);
+  } else if (border_style == ']') {
+    led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, border_color);
+    led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, border_color);
   }
-  hub75_display->flipDMABuffer();    
-  hub75_display->clearScreen();
+  led_display->flipDMABuffer();    
+  led_display->clearScreen();
 }
 
 // ============= Hardware Setup Functions =============
-void setup_nfc() {
-  if (front_display) {
+void setupNfcReader() {
+  if (is_front_display) {
     return;
   }
   SPI.begin(SCK, MISO, MOSI, SS);
   Serial.println(F("Initializing nfc..."));
-  nfc.begin();
-  nfc.reset();
+  nfc_reader.begin();
+  nfc_reader.reset();
   Serial.println(F("Enabling RF field..."));
-  nfc.setupRF();
+  nfc_reader.setupRF();
 }
 
-void setup_hub75() {
-  mxconfig.clkphase = false;
-  mxconfig.double_buff = true;
-  hub75_display = new MatrixPanel_I2S_DMA(mxconfig);
-  hub75_display->begin();
-  hub75_display->setBrightness8(BRIGHTNESS);
-  hub75_display->setRotation(3);
-  hub75_display->setTextWrap(true);
-  hub75_display->clearScreen();
+void setupLedDisplay() {
+  display_config.clkphase = false;
+  display_config.double_buff = true;
+  led_display = new MatrixPanel_I2S_DMA(display_config);
+  led_display->begin();
+  led_display->setBrightness8(BRIGHTNESS);
+  led_display->setRotation(3);
+  led_display->setTextWrap(true);
+  led_display->clearScreen();
 }
 
 // ============= Network Functions =============
-uint8_t getIpOctet() {
+uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
-  int mac_position = getMACPosition(mac_address.c_str());
+  int mac_position = findMacAddressPosition(mac_address.c_str());
   if (mac_position == -1) {
     mac_position = 1;
   }
-  int cube_ix = mac_position - (mac_position % 2);
-  cube_id = removeColons(macTable[cube_ix]);
-  front_display = (mac_position % 2) == 1;
+  int cube_index = mac_position - (mac_position % 2);
+  cube_identifier = removeColonsFromMac(CUBE_MAC_ADDRESSES[cube_index]);
+  is_front_display = (mac_position % 2) == 1;
   Serial.print("mac_address: ");
   Serial.println(mac_address);
   Serial.print("mac_position: ");
   Serial.println(mac_position);
   Serial.print("cube_id: ");
-  Serial.println(cube_id);
+  Serial.println(cube_identifier);
   Serial.print("front display: ");
-  Serial.println(front_display);
+  Serial.println(is_front_display);
   return 20 + mac_position;
 }
 
-void setup_wifi() {
+void setupWiFiConnection() {
   bool try_portable = true;
   Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
   
-  IPAddress local_IP(192, 168, 0, getIpOctet());
+  IPAddress local_IP(192, 168, 0, getCubeIpOctet());
   IPAddress gateway(192, 168, 0, 1);
   IPAddress subnet(255, 255, 255, 0);
   IPAddress primaryDNS(8, 8, 8, 8);   //optional
@@ -340,44 +340,44 @@ void setup_wifi() {
 
 // ============= MQTT Functions =============
 void onConnectionEstablished() {
-  String topic_cube_cube_id = "cube/" + cube_id;
+  String topic_cube_cube_id = "cube/" + cube_identifier;
   mqtt_client.subscribe(topic_cube_cube_id + "/sleep", [](const String& message) {
     if (message == "1") {
-      debug_println("sleeping due to /sleep");
+      debugPrintln("sleeping due to /sleep");
       esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
       esp_deep_sleep_start();
     }
   });
   mqtt_client.subscribe(topic_cube_cube_id + "/reboot", [](const String& message) {
-    debug_println("rebooting due to /reboot");
+    debugPrintln("rebooting due to /reboot");
     ESP.restart();
   });
 
   mqtt_client.subscribe(topic_cube_cube_id + "/reset", [](const String& message) {
-    debug_println("resetting due to /reset");
-    nfc.reset();
-    nfc.setupRF();
+    debugPrintln("resetting due to /reset");
+    nfc_reader.reset();
+    nfc_reader.setupRF();
   });
 
   mqtt_client.subscribe(topic_cube_cube_id + "/letter", [](const String& message) {
-    debug_println("setting letter due to /letter");
+    debugPrintln("setting letter due to /letter");
     current_letter = message.charAt(0);
-    start_ease = millis();
+    animation_start_time = millis();
   });
 
   mqtt_client.subscribe(topic_cube_cube_id + "/flash", [](const String& message) {
-    debug_println("flashing due to /flash");
-    end_highlighting = millis() + HIGHLIGHT_TIME_MS;
-    border_is_word = true;
+    debugPrintln("flashing due to /flash");
+    highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
+    is_border_word = true;
     border_color = GREEN;
   });
   mqtt_client.subscribe(topic_cube_cube_id + "/border_line", [](const String& message) {
-    debug_println("setting border line due to /border_line");
-    border = message.charAt(0);
+    debugPrintln("setting border line due to /border_line");
+    border_style = message.charAt(0);
   });
 
   mqtt_client.subscribe(topic_cube_cube_id + "/border_color", [](const String& message) {
-    debug_println("setting border color due to /border_color");
+    debugPrintln("setting border color due to /border_color");
     switch (message.charAt(0)) {
       case 'Y':
         border_color = YELLOW;  
@@ -389,31 +389,30 @@ void onConnectionEstablished() {
         border_color = GREEN;
         break;
     }
-    border_is_word = false;
+    is_border_word = false;
   });
   mqtt_client.subscribe(topic_cube_cube_id + "/old", [](const String& message) {
-    debug_println("setting old due to /old");
+    debugPrintln("setting old due to /old");
     border_color = YELLOW;
   });
   mqtt_client.subscribe(topic_cube_cube_id + "/ping", [](const String& message) {
-    debug_println("pinging due to /ping");
-    static String echo_topic = createTopic("echo");
+    debugPrintln("pinging due to /ping");
+    static String echo_topic = createMqttTopic("echo");
     mqtt_client.publish(echo_topic, message);
   });
 
-  mqtt_client.subscribe(String("game/nfc") + cube_id, [](const String& message) {
-    debug_println("nfc due to /nfc");
-    last_neighbor = message;
+  mqtt_client.subscribe(String("game/nfc") + cube_identifier, [](const String& message) {
+    debugPrintln("nfc due to /nfc");
+    last_neighbor_id = message;
   });  
 }
 
 // ============= System Functions =============
-uint8_t print_wakeup_reason(){
+uint8_t getWakeupReason() {
   esp_sleep_wakeup_cause_t wakeup_reason;
   wakeup_reason = esp_sleep_get_wakeup_cause();
 
-  switch(wakeup_reason)
-  {
+  switch(wakeup_reason) {
     case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
     case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
     case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
@@ -425,8 +424,8 @@ uint8_t print_wakeup_reason(){
 }
 
 // ============= NFC Functions =============
-ISO15693ErrorCode getInventory(uint8_t* uid) {
-  return nfc.getInventory(uid);
+ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
+  return nfc_reader.getInventory(card_id);
 }
 
 // ============= Main Functions =============
@@ -434,93 +433,93 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
   mqtt_client.enableDebuggingMessages(true);
-  debug_println("starting....");
-  setup_hub75();
-  debugPrint(VERSION);
+  debugPrintln("starting....");
+  setupLedDisplay();
+  displayDebugMessage(VERSION);
   delay(600);
-  uint8_t wakeup = print_wakeup_reason();
+  uint8_t wakeup = getWakeupReason();
 
-  easing.duration(800);
-  easing.scale(100);
+  letter_animation.duration(800);
+  letter_animation.scale(100);
 
-  debugPrint((String("wake up:") + String(wakeup)).c_str());
-  debug_println("setting up wifi...");
-  setup_wifi();
-  Serial.println(cube_id);
-  static String client_name = cube_id + (front_display ? "_F" : "");
+  displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
+  debugPrintln("setting up wifi...");
+  setupWiFiConnection();
+  Serial.println(cube_identifier);
+  static String client_name = cube_identifier + (is_front_display ? "_F" : "");
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
-  if (front_display) {
-    hub75_display->setRotation(2);
+  if (is_front_display) {
+    led_display->setRotation(2);
   }
   
   char ipDisplay[128];
   snprintf(ipDisplay, sizeof(ipDisplay), "%s, %s,%s", 
     WiFi.localIP().toString().c_str(),
     WiFi.macAddress().c_str(),
-    cube_id.c_str());
-  debugPrint(ipDisplay);
+    cube_identifier.c_str());
+  displayDebugMessage(ipDisplay);
   
-  static String nfc_topic = createTopic("nfc");
-  topic_out = nfc_topic.c_str();
-  mqtt_client.publish(createTopic("version"), VERSION);
+  static String nfc_topic = createMqttTopic("nfc");
+  nfc_topic_out = nfc_topic.c_str();
+  mqtt_client.publish(createMqttTopic("version"), VERSION);
 
-  debugPrint("nfc...");
-  debug_println(WiFi.macAddress().c_str());
+  displayDebugMessage("nfc...");
+  debugPrintln(WiFi.macAddress().c_str());
 
-  setup_nfc();
-  hub75_display->clearScreen();
-  setFont(hub75_display);
+  setupNfcReader();
+  led_display->clearScreen();
+  configureDisplayFont(led_display);
 
-  debug_println(F("Setup Complete"));
+  debugPrintln(F("Setup Complete"));
 }
 
 void loop() {
   mqtt_client.loop();
 
-  if (!front_display) {
-    nfc.reset();
-    nfc.setupRF();
+  if (!is_front_display) {
+    nfc_reader.reset();
+    nfc_reader.setupRF();
   }
 
-  display_current_letter();
-  if (front_display) {
+  updateDisplay();
+  if (is_front_display) {
     return;
   }
 
-  unsigned long now = millis();
+  unsigned long current_time = millis();
 
-  uint8_t thisUid[NFCID_LENGTH];
-  ISO15693ErrorCode rc = getInventory(thisUid);
-  if (rc == ISO15693_EC_OK) {
-    String neighbor = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
-    if (neighbor.equals(last_neighbor)) {
+  uint8_t card_id[NFCID_LENGTH];
+  ISO15693ErrorCode read_result = readNfcCard(card_id);
+  if (read_result == ISO15693_EC_OK) {
+    String neighbor_id = convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]));
+    if (neighbor_id.equals(last_neighbor_id)) {
       return;
     }
-    if (now - last_nfc_publish_time < 1000) {
+    if (current_time - last_nfc_publish_time < 1000) {
       return;
     }
 
-    debug_println(F("New card"));
-    mqtt_client.publish(topic_out, neighbor, true);
+    debugPrintln(F("New card"));
+    mqtt_client.publish(nfc_topic_out, neighbor_id, true);
 
     last_nfc_publish_time = millis();
-  } else if (rc == EC_NO_CARD) {
-    if (last_neighbor.equals("")) {
+  } else if (read_result == EC_NO_CARD) {
+    if (last_neighbor_id.equals("")) {
       return;
     }
-    if (now - last_nfc_publish_time < 1000) {
+    if (current_time - last_nfc_publish_time < 1000) {
       return;
     }
-    long delay = now - last_nfc_publish_time;
-    if (delay < 100) { // DEBOUNCE
-      debug_println("skipping 0: debounce");
+    long time_since_last_publish = current_time - last_nfc_publish_time;
+    if (time_since_last_publish < 100) { // DEBOUNCE
+      debugPrintln("skipping 0: debounce");
       return;
     }
-    debug_println("publishing no-link");
-    mqtt_client.publish(topic_out, "", true);
+    debugPrintln("publishing no-link");
+    mqtt_client.publish(nfc_topic_out, "", true);
     last_nfc_publish_time = millis();
   } else {
-    debug_println("not ok");
+    debugPrintln("not ok");
   }
 }
