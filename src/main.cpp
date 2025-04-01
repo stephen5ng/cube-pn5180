@@ -34,9 +34,13 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define YELLOW   0xFFE0 
 #define WHITE    0xFFFF
 
+// Display Colors
 #define LETTER_COLOR 0xFDCC
 #define HIGHLIGHT_LETTER_COLOR GREEN
 #define LAST_LETTER_COLOR 0x71c0
+#define CARD_INDICATOR_COLOR 0x7c51
+
+// Display Dimensions
 #define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
 #define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
@@ -56,12 +60,20 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define VERSION "v0.7d"
 #define PRINT_DEBUG true
 
+// Timing Constants
+#define NFC_DEBOUNCE_TIME_MS 1000
+#define NFC_MIN_PUBLISH_INTERVAL_MS 100
+#define ANIMATION_DURATION_MS 800
+#define ANIMATION_SCALE 100
+#define DISPLAY_STARTUP_DELAY_MS 600
+
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
 
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.0.247"
+#define MQTT_PORT 1883
 
 // ============= Global Variables =============
 bool is_front_display = false;
@@ -119,10 +131,10 @@ bool has_card_present = false;
 // Network Objects
 EspMQTTClient mqtt_client(
   MQTT_SERVER_PI,
-  1883,
+  MQTT_PORT,
   "",
   "",
-  "TestClient"
+  ""
 );
 WiFiClient wifi_client;
 static String cube_identifier;
@@ -219,12 +231,34 @@ void displayLetter(uint16_t vertical_position, char letter, uint16_t color) {
   led_display->print(letter);
 }
 
+void drawBorder() {
+  if (border_style == ' ') {
+    return;
+  }
+
+  // Draw horizontal border lines
+  led_display->drawFastHLine(0, 0, PANEL_RES_X, border_color);
+  led_display->drawFastHLine(0, 1, PANEL_RES_X, border_color);
+  led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, border_color);
+  led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, border_color);
+
+  // Draw vertical border lines if needed
+  if (border_style == '[') {
+    led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, border_color);
+    led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, border_color);
+  } else if (border_style == ']') {
+    led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, border_color);
+    led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, border_color);
+  }
+}
+
 void updateDisplay() {
   static long last_highlight_time = 0;
   static uint16_t animation_speed = 1;
   unsigned long current_time = millis();
   uint8_t letter_position = 100;
 
+  // Handle letter transition animation
   if (current_letter != previous_letter) {
     highlight_end_time = 0;
     float animation_duration = current_time - animation_start_time;
@@ -236,28 +270,22 @@ void updateDisplay() {
     displayLetter(100 + letter_position, previous_letter, RED);
   }
   
+  // Display current letter with appropriate color
   uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
   displayLetter(letter_position, current_letter, current_color);
 
+  // Draw card indicator if needed
   if (has_card_present) {
-    led_display->drawFastVLine(62, 30, 2, 0x7c51);
+    led_display->drawFastVLine(62, 30, 2, CARD_INDICATOR_COLOR);
   }
+
+  // Handle border display
   if (current_letter == ' ') {
     border_style = ' ';
   }
-  if (border_style != ' ') {
-    led_display->drawFastHLine(0, 0, PANEL_RES_X, border_color);
-    led_display->drawFastHLine(0, 1, PANEL_RES_X, border_color);
-    led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, border_color);
-    led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, border_color);
-  } 
-  if (border_style == '[') {
-    led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, border_color);
-    led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, border_color);
-  } else if (border_style == ']') {
-    led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, border_color);
-    led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, border_color);
-  }
+  drawBorder();
+
+  // Update display
   led_display->flipDMABuffer();    
   led_display->clearScreen();
 }
@@ -339,72 +367,89 @@ void setupWiFiConnection() {
 }
 
 // ============= MQTT Functions =============
+void handleSleepCommand(const String& message) {
+  if (message == "1") {
+    debugPrintln("sleeping due to /sleep");
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    esp_deep_sleep_start();
+  }
+}
+
+void handleRebootCommand(const String& message) {
+  debugPrintln("rebooting due to /reboot");
+  ESP.restart();
+}
+
+void handleResetCommand(const String& message) {
+  debugPrintln("resetting due to /reset");
+  nfc_reader.reset();
+  nfc_reader.setupRF();
+}
+
+void handleLetterCommand(const String& message) {
+  debugPrintln("setting letter due to /letter");
+  current_letter = message.charAt(0);
+  animation_start_time = millis();
+}
+
+void handleFlashCommand(const String& message) {
+  debugPrintln("flashing due to /flash");
+  highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
+  is_border_word = true;
+  border_color = GREEN;
+}
+
+void handleBorderLineCommand(const String& message) {
+  debugPrintln("setting border line due to /border_line");
+  border_style = message.charAt(0);
+}
+
+void handleBorderColorCommand(const String& message) {
+  debugPrintln("setting border color due to /border_color");
+  switch (message.charAt(0)) {
+    case 'Y':
+      border_color = YELLOW;  
+      break;
+    case 'W':
+      border_color = WHITE;
+      break;
+    case 'G':
+      border_color = GREEN;
+      break;
+  }
+  is_border_word = false;
+}
+
+void handleOldCommand(const String& message) {
+  debugPrintln("setting old due to /old");
+  border_color = YELLOW;
+}
+
+void handlePingCommand(const String& message) {
+  debugPrintln("pinging due to /ping");
+  static String echo_topic = createMqttTopic("echo");
+  mqtt_client.publish(echo_topic, message);
+}
+
+void handleNfcCommand(const String& message) {
+  debugPrintln("nfc due to /nfc");
+  last_neighbor_id = message;
+}
+
 void onConnectionEstablished() {
   String topic_cube_cube_id = "cube/" + cube_identifier;
-  mqtt_client.subscribe(topic_cube_cube_id + "/sleep", [](const String& message) {
-    if (message == "1") {
-      debugPrintln("sleeping due to /sleep");
-      esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-      esp_deep_sleep_start();
-    }
-  });
-  mqtt_client.subscribe(topic_cube_cube_id + "/reboot", [](const String& message) {
-    debugPrintln("rebooting due to /reboot");
-    ESP.restart();
-  });
-
-  mqtt_client.subscribe(topic_cube_cube_id + "/reset", [](const String& message) {
-    debugPrintln("resetting due to /reset");
-    nfc_reader.reset();
-    nfc_reader.setupRF();
-  });
-
-  mqtt_client.subscribe(topic_cube_cube_id + "/letter", [](const String& message) {
-    debugPrintln("setting letter due to /letter");
-    current_letter = message.charAt(0);
-    animation_start_time = millis();
-  });
-
-  mqtt_client.subscribe(topic_cube_cube_id + "/flash", [](const String& message) {
-    debugPrintln("flashing due to /flash");
-    highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
-    is_border_word = true;
-    border_color = GREEN;
-  });
-  mqtt_client.subscribe(topic_cube_cube_id + "/border_line", [](const String& message) {
-    debugPrintln("setting border line due to /border_line");
-    border_style = message.charAt(0);
-  });
-
-  mqtt_client.subscribe(topic_cube_cube_id + "/border_color", [](const String& message) {
-    debugPrintln("setting border color due to /border_color");
-    switch (message.charAt(0)) {
-      case 'Y':
-        border_color = YELLOW;  
-        break;
-      case 'W':
-        border_color = WHITE;
-        break;
-      case 'G':
-        border_color = GREEN;
-        break;
-    }
-    is_border_word = false;
-  });
-  mqtt_client.subscribe(topic_cube_cube_id + "/old", [](const String& message) {
-    debugPrintln("setting old due to /old");
-    border_color = YELLOW;
-  });
-  mqtt_client.subscribe(topic_cube_cube_id + "/ping", [](const String& message) {
-    debugPrintln("pinging due to /ping");
-    static String echo_topic = createMqttTopic("echo");
-    mqtt_client.publish(echo_topic, message);
-  });
-
-  mqtt_client.subscribe(String("game/nfc") + cube_identifier, [](const String& message) {
-    debugPrintln("nfc due to /nfc");
-    last_neighbor_id = message;
-  });  
+  
+  // Subscribe to all command topics
+  mqtt_client.subscribe(topic_cube_cube_id + "/sleep", handleSleepCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/reboot", handleRebootCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/reset", handleResetCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/letter", handleLetterCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/flash", handleFlashCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/border_line", handleBorderLineCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/border_color", handleBorderColorCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/old", handleOldCommand);
+  mqtt_client.subscribe(topic_cube_cube_id + "/ping", handlePingCommand);
+  mqtt_client.subscribe(String("game/nfc") + cube_identifier, handleNfcCommand);
 }
 
 // ============= System Functions =============
@@ -436,11 +481,11 @@ void setup() {
   debugPrintln("starting....");
   setupLedDisplay();
   displayDebugMessage(VERSION);
-  delay(600);
+  delay(DISPLAY_STARTUP_DELAY_MS);
   uint8_t wakeup = getWakeupReason();
 
-  letter_animation.duration(800);
-  letter_animation.scale(100);
+  letter_animation.duration(ANIMATION_DURATION_MS);
+  letter_animation.scale(ANIMATION_SCALE);
 
   displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
   debugPrintln("setting up wifi...");
@@ -496,7 +541,7 @@ void loop() {
     if (neighbor_id.equals(last_neighbor_id)) {
       return;
     }
-    if (current_time - last_nfc_publish_time < 1000) {
+    if (current_time - last_nfc_publish_time < NFC_DEBOUNCE_TIME_MS) {
       return;
     }
 
@@ -508,11 +553,11 @@ void loop() {
     if (last_neighbor_id.equals("")) {
       return;
     }
-    if (current_time - last_nfc_publish_time < 1000) {
+    if (current_time - last_nfc_publish_time < NFC_DEBOUNCE_TIME_MS) {
       return;
     }
     long time_since_last_publish = current_time - last_nfc_publish_time;
-    if (time_since_last_publish < 100) { // DEBOUNCE
+    if (time_since_last_publish < NFC_MIN_PUBLISH_INTERVAL_MS) { // DEBOUNCE
       debugPrintln("skipping 0: debounce");
       return;
     }
