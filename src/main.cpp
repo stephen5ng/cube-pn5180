@@ -133,6 +133,9 @@ char border_style = ' ';
 uint16_t border_color = WHITE;
 bool is_border_word = false;
 bool has_card_present = false;
+bool is_string_mode = false;
+String display_string;
+String previous_string;
 
 // Network Objects
 EspMQTTClient mqtt_client(
@@ -273,21 +276,25 @@ void updateDisplay() {
   unsigned long current_time = millis();
   uint8_t letter_position = 100;
 
-  // Handle letter transition animation
-  if (current_letter != previous_letter) {
-    highlight_end_time = 0;
-    float animation_duration = current_time - animation_start_time;
-    if (current_time - animation_start_time >= letter_animation.duration()) {
-      previous_letter = current_letter;
-    } else {
-      letter_position = letter_animation.get(animation_duration);
+  if (is_string_mode) {
+    led_display->setCursor(0, BIG_ROW);
+    led_display->setTextColor(LETTER_COLOR, BLACK);
+    led_display->print(display_string);
+  } else {
+    if (current_letter != previous_letter) {
+      highlight_end_time = 0;
+      float animation_duration = current_time - animation_start_time;
+      if (current_time - animation_start_time >= letter_animation.duration()) {
+        previous_letter = current_letter;
+      } else {
+        letter_position = letter_animation.get(animation_duration);
+      }
+      displayLetter(100 + letter_position, previous_letter, RED);
     }
-    displayLetter(100 + letter_position, previous_letter, RED);
+    
+    uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+    displayLetter(letter_position, current_letter, current_color);
   }
-  
-  // Display current letter with appropriate color
-  uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
-  displayLetter(letter_position, current_letter, current_color);
 
   // Draw card indicator if needed
   if (has_card_present) {
@@ -295,7 +302,7 @@ void updateDisplay() {
   }
 
   // Handle border display
-  if (current_letter == ' ') {
+  if (current_letter == ' ' || is_string_mode) {
     border_style = ' ';
   }
   drawBorder();
@@ -401,10 +408,22 @@ void handleResetCommand(const String& message) {
   nfc_reader.setupRF();
 }
 
+void handleStringCommand(const String& message) {
+  debugPrintln("setting string due to /string");
+  is_string_mode = true;
+  display_string = message;
+  led_display->setFont(nullptr);  // Use default font for string mode
+  led_display->setRotation(is_front_display ? 0 : 3);    // Set rotation to 0 for string mode
+}
+
 void handleLetterCommand(const String& message) {
   debugPrintln("setting letter due to /letter");
+  is_string_mode = false;
   current_letter = message.charAt(0);
   animation_start_time = millis();
+  configureDisplayFont(led_display);  // Restore custom font for letter mode
+  led_display->setTextSize(1);  // Always use size 1 for letter mode
+  led_display->setRotation(is_front_display ? 2 : 3);  // Restore original rotation for letter mode
 }
 
 void handleFlashCommand(const String& message) {
@@ -450,6 +469,18 @@ void handleNfcCommand(const String& message) {
   last_neighbor_id = message;
 }
 
+void handleFontSizeCommand(const String& message) {
+  debugPrintln("setting font size due to /font_size");
+  if (!is_string_mode) {
+    debugPrintln("ignoring font size change in letter mode");
+    return;
+  }
+  int size = message.toInt();
+  if (size > 0) {
+    led_display->setTextSize(size);
+  }
+}
+
 void onConnectionEstablished() {
   // Pre-allocate common topics
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
@@ -462,6 +493,8 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", handleLetterCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/string", handleStringCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", handleFontSizeCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", handleFlashCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/border_line", handleBorderLineCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", handleBorderColorCommand);
