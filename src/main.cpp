@@ -102,13 +102,10 @@ uint16_t border_color = WHITE;
 bool border_is_word = false;
 long loop_count = 0;
 bool last_has_card = false;
-#define MQTT_SERVER_MACBOOK_ALBANY "192.168.0.211"
-#define MQTT_SERVER_MACBOOK_YACHATS "192.168.0.247"
-const char* mqtt_server_macbook = MQTT_SERVER_MACBOOK_ALBANY;
-const char* mqtt_server_pi = "192.168.0.247";
+#define MQTT_SERVER_PI "192.168.0.247"
 
 EspMQTTClient mqtt_client(
-  mqtt_server_pi,
+  MQTT_SERVER_PI,
   1883,
   "",
   "",
@@ -359,60 +356,6 @@ String createTopic(String s) {
   return String(topic);
 }
 
-void callback(const String& topic, const String& messageTemp) {
-  debug_print("Message: ");
-  debug_print(topic.c_str());
-  debug_print(", ");
-  debug_println(messageTemp.c_str());
-
-  if (strstr(topic.c_str(), "game/nfc") != nullptr) {
-    last_neighbor = messageTemp;
-  }
-
-  if (strstr(topic.c_str(), "sleep") != nullptr) {
-    char sleep = messageTemp.charAt(0);
-    if (sleep == '1') {
-      debug_println("sleeping due to /sleep");
-      esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-      esp_deep_sleep_start();
-    }
-  }
-  else if (strstr(topic.c_str(), "reboot") != nullptr) {
-    ESP.restart();
-  }
-  else if (strstr(topic.c_str(), "reset") != nullptr) {
-    nfc.reset();
-    nfc.setupRF();
-  } else if (strstr(topic.c_str(), "letter") != nullptr) {
-    current_letter = messageTemp.charAt(0);
-    start_ease = millis();
-  } else if (strstr(topic.c_str(), "flash") != nullptr) {
-    end_highlighting = millis() + HIGHLIGHT_TIME_MS;
-    border_is_word = true;
-    border_color = GREEN;
-  } else if (strstr(topic.c_str(), "border_line") != nullptr) {
-    border = messageTemp.charAt(0);
-  } else if (strstr(topic.c_str(), "border_color") != nullptr) {
-    switch (messageTemp.charAt(0)) {
-      case 'Y':
-        border_color = YELLOW;
-        break;
-      case 'W':
-        border_color = WHITE;
-        break;
-      case 'G':
-        border_color = GREEN;
-        break;
-    }
-    border_is_word = false;
-  } else if (strstr(topic.c_str(), "old") != nullptr) {
-    border_color = YELLOW;
-  } else if (strstr(topic.c_str(), "ping") != nullptr) {
-    static String echo_topic = createTopic("echo");
-    mqtt_client.publish(echo_topic, messageTemp);
-  }
-}
-
 uint8_t print_wakeup_reason(){
   esp_sleep_wakeup_cause_t wakeup_reason;
 
@@ -431,8 +374,71 @@ uint8_t print_wakeup_reason(){
 }
 
 void onConnectionEstablished() {
-  mqtt_client.subscribe(String("cube/" + cube_id + "/#"), callback);
-  mqtt_client.subscribe(String("game/nfc") + cube_id, callback);  
+  String topic_cube_cube_id = "cube/" + cube_id;
+  mqtt_client.subscribe(topic_cube_cube_id + "/sleep", [](const String& message) {
+    if (message == "1") {
+      debug_println("sleeping due to /sleep");
+      esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+      esp_deep_sleep_start();
+    }
+  });
+  mqtt_client.subscribe(topic_cube_cube_id + "/reboot", [](const String& message) {
+    debug_println("rebooting due to /reboot");
+    ESP.restart();
+  });
+
+  mqtt_client.subscribe(topic_cube_cube_id + "/reset", [](const String& message) {
+    debug_println("resetting due to /reset");
+    nfc.reset();
+    nfc.setupRF();
+  });
+
+  mqtt_client.subscribe(topic_cube_cube_id + "/letter", [](const String& message) {
+    debug_println("setting letter due to /letter");
+    current_letter = message.charAt(0);
+    start_ease = millis();
+  });
+
+  mqtt_client.subscribe(topic_cube_cube_id + "/flash", [](const String& message) {
+    debug_println("flashing due to /flash");
+    end_highlighting = millis() + HIGHLIGHT_TIME_MS;
+    border_is_word = true;
+    border_color = GREEN;
+  });
+  mqtt_client.subscribe(topic_cube_cube_id + "/border_line", [](const String& message) {
+    debug_println("setting border line due to /border_line");
+    border = message.charAt(0);
+  });
+
+  mqtt_client.subscribe(topic_cube_cube_id + "/border_color", [](const String& message) {
+    debug_println("setting border color due to /border_color");
+    switch (message.charAt(0)) {
+      case 'Y':
+        border_color = YELLOW;  
+        break;
+      case 'W':
+        border_color = WHITE;
+        break;
+      case 'G':
+        border_color = GREEN;
+        break;
+    }
+    border_is_word = false;
+  });
+  mqtt_client.subscribe(topic_cube_cube_id + "/old", [](const String& message) {
+    debug_println("setting old due to /old");
+    border_color = YELLOW;
+  });
+  mqtt_client.subscribe(topic_cube_cube_id + "/ping", [](const String& message) {
+    debug_println("pinging due to /ping");
+    static String echo_topic = createTopic("echo");
+    mqtt_client.publish(echo_topic, message);
+  });
+
+  mqtt_client.subscribe(String("game/nfc") + cube_id, [](const String& message) {
+    debug_println("nfc due to /nfc");
+    last_neighbor = message;
+  });  
 }
 
 void setup() {
@@ -451,7 +457,8 @@ void setup() {
   debugPrint((String("wake up:") + String(wakeup)).c_str());
   debug_println("setting up wifi...");
   setup_wifi();
-  static String client_name = cube_id + front_display ? "_F" : "";
+  Serial.println(cube_id);
+  static String client_name = cube_id + (front_display ? "_F" : "");
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
   if (front_display) {
@@ -521,14 +528,6 @@ void loop() {
     String loop_delay_msg = String(now - last_loop_time);
     mqtt_client.publish(loop_delay_topic, loop_delay_msg);
 
-    // Serial.println("resetting nfc");
-    // uint8_t firmwareVersion[2];
-    // nfc.readEEprom(FIRMWARE_VERSION, firmwareVersion, sizeof(firmwareVersion));
-    // Serial.print(F("Firmware version="));
-    // Serial.print(firmwareVersion[1]);
-    // Serial.print(".");
-    // Serial.println(firmwareVersion[0]);  
-  
     // hub75_display->drawPixel(10, 10, heartbeat_color);
     nfc_reset_count++;
     last_nfc_reset = 0;
