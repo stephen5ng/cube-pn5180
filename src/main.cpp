@@ -14,7 +14,8 @@
 
 // ============= Configuration =============
 // MAC Address Table
-const char *CUBE_MAC_ADDRESSES[] = {
+constexpr size_t NUM_CUBE_MAC_ADDRESSES = 12;
+constexpr const char* CUBE_MAC_ADDRESSES[NUM_CUBE_MAC_ADDRESSES] = {
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
   "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
   "CC:DB:A7:98:54:2C", "CC:DB:A7:99:0F:E0",
@@ -22,28 +23,25 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
   "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
 };
-#define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
 // Display Configuration
-#define BLACK    0x0000
-#define BLUE     0x001F
-#define RED      0xF800
-#define GREEN    0x07E0
-#define CYAN     0x07FF
-#define MAGENTA  0xF81F
-#define YELLOW   0xFFE0 
-#define WHITE    0xFFFF
-
-// Display Colors
-#define LETTER_COLOR 0xFDCC
-#define HIGHLIGHT_LETTER_COLOR GREEN
-#define LAST_LETTER_COLOR 0x71c0
-#define CARD_INDICATOR_COLOR 0x7c51
+constexpr uint16_t COLOR_BLACK = 0x0000;
+constexpr uint16_t COLOR_BLUE = 0x001F;
+constexpr uint16_t COLOR_RED = 0xF800;
+constexpr uint16_t COLOR_GREEN = 0x07E0;
+constexpr uint16_t COLOR_CYAN = 0x07FF;
+constexpr uint16_t COLOR_MAGENTA = 0xF81F;
+constexpr uint16_t COLOR_YELLOW = 0xFFE0;
+constexpr uint16_t COLOR_WHITE = 0xFFFF;
+constexpr uint16_t COLOR_LETTER = 0xFDCC;
+constexpr uint16_t COLOR_HIGHLIGHT_LETTER = COLOR_GREEN;
+constexpr uint16_t COLOR_LAST_LETTER = 0x71c0;
+constexpr uint16_t COLOR_CARD_INDICATOR = 0x7c51;
 
 // Display Dimensions
-#define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
-#define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
-#define PANEL_CHAIN 1   // Total number of panels chained one to another
+constexpr uint8_t PANEL_RES_X = 64;  // Number of pixels wide of each INDIVIDUAL panel module.
+constexpr uint8_t PANEL_RES_Y = 64;  // Number of pixels tall of each INDIVIDUAL panel module.
+constexpr uint8_t PANEL_CHAIN = 1;   // Total number of panels chained one to another
 
 // Pin Definitions
 #define MISO 39
@@ -52,34 +50,35 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define PN5180_RST 17
 
 // Display Settings
-#define BIG_ROW 0
-#define BIG_COL 10
-#define BIG_TEXT_SIZE 1
-#define BRIGHTNESS 255
-#define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.7d"
-#define PRINT_DEBUG true
+constexpr uint8_t BIG_ROW = 0;
+constexpr uint8_t BIG_COL = 10;
+constexpr uint8_t BIG_TEXT_SIZE = 1;
+constexpr uint8_t BRIGHTNESS = 255;
+constexpr uint32_t HIGHLIGHT_TIME_MS = 2000;
+constexpr const char* VERSION = "v0.7d";
+constexpr bool PRINT_DEBUG = true;
 
 // Timing Constants
-#define NFC_DEBOUNCE_TIME_MS 1000
-#define NFC_MIN_PUBLISH_INTERVAL_MS 100
-#define ANIMATION_DURATION_MS 800
-#define ANIMATION_SCALE 100
-#define DISPLAY_STARTUP_DELAY_MS 600
+constexpr uint32_t NFC_DEBOUNCE_TIME_MS = 1000;
+constexpr uint32_t NFC_MIN_PUBLISH_INTERVAL_MS = 100;
+constexpr uint32_t ANIMATION_DURATION_MS = 800;
+constexpr uint8_t ANIMATION_SCALE = 100;
+constexpr uint32_t DISPLAY_STARTUP_DELAY_MS = 600;
 
 // Sleep Configuration
-#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
+constexpr uint32_t US_TO_S_FACTOR = 1000000;  /* Conversion factor for micro seconds to seconds */
+constexpr uint32_t TIME_TO_SLEEP = 60;        /* Time ESP32 will go to sleep (in seconds) */
 
 // MQTT Configuration
-#define MQTT_SERVER_PI "192.168.0.247"
-#define MQTT_PORT 1883
+constexpr const char* MQTT_SERVER_PI = "192.168.0.247";
+constexpr uint16_t MQTT_PORT = 1883;
+constexpr const char* MQTT_CLIENT_NAME = "TestClient";
 
 // MQTT Topic Prefixes
-const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
-const char* MQTT_TOPIC_PREFIX_GAME = "game/";
-const char* MQTT_TOPIC_PREFIX_NFC = "nfc";
-const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
+constexpr const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
+constexpr const char* MQTT_TOPIC_PREFIX_GAME = "game/";
+constexpr const char* MQTT_TOPIC_PREFIX_NFC = "nfc";
+constexpr const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
 
 // ============= Global Variables =============
 bool is_front_display = false;
@@ -130,7 +129,7 @@ uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
 char previous_letter = ' ';
 char current_letter = '?';
 char border_style = ' ';
-uint16_t border_color = WHITE;
+uint16_t border_color = COLOR_WHITE;
 bool is_border_word = false;
 bool has_card_present = false;
 
@@ -162,7 +161,7 @@ String mqtt_topic_version;
 // ============= Debug Functions =============
 void displayDebugMessage(const char* message) {
   led_display->setCursor(0, 0);
-  led_display->setTextColor(RED, BLACK);
+  led_display->setTextColor(COLOR_RED, COLOR_BLACK);
   led_display->print(message);
   led_display->flipDMABuffer();    
   led_display->clearScreen();
@@ -238,11 +237,10 @@ String createMqttTopic(const char* suffix) {
 }
 
 // ============= Display Functions =============
-void displayLetter(uint16_t vertical_position, char letter, uint16_t color) {
-  int16_t row = (PANEL_RES_Y * vertical_position) / 100;
-  led_display->setCursor(BIG_COL, row-4);
-  led_display->setTextColor(color, BLACK);
+void displayLetter(uint8_t x, char letter, uint16_t color) {
+  led_display->setTextColor(color);
   led_display->setTextSize(BIG_TEXT_SIZE);
+  led_display->setCursor(x, BIG_ROW);
   led_display->print(letter);
 }
 
@@ -282,16 +280,16 @@ void updateDisplay() {
     } else {
       letter_position = letter_animation.get(animation_duration);
     }
-    displayLetter(100 + letter_position, previous_letter, RED);
+    displayLetter(100 + letter_position, previous_letter, COLOR_RED);
   }
   
   // Display current letter with appropriate color
-  uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+  uint16_t current_color = current_time < highlight_end_time ? COLOR_HIGHLIGHT_LETTER : COLOR_LETTER;
   displayLetter(letter_position, current_letter, current_color);
 
   // Draw card indicator if needed
   if (has_card_present) {
-    led_display->drawFastVLine(62, 30, 2, CARD_INDICATOR_COLOR);
+    led_display->drawFastVLine(62, 30, 2, COLOR_CARD_INDICATOR);
   }
 
   // Handle border display
@@ -385,7 +383,7 @@ void setupWiFiConnection() {
 void handleSleepCommand(const String& message) {
   if (message == "1") {
     debugPrintln("sleeping due to /sleep");
-    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * US_TO_S_FACTOR);
     esp_deep_sleep_start();
   }
 }
@@ -411,7 +409,7 @@ void handleFlashCommand(const String& message) {
   debugPrintln("flashing due to /flash");
   highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
   is_border_word = true;
-  border_color = GREEN;
+  border_color = COLOR_GREEN;
 }
 
 void handleBorderLineCommand(const String& message) {
@@ -423,13 +421,13 @@ void handleBorderColorCommand(const String& message) {
   debugPrintln("setting border color due to /border_color");
   switch (message.charAt(0)) {
     case 'Y':
-      border_color = YELLOW;  
+      border_color = COLOR_YELLOW;  
       break;
     case 'W':
-      border_color = WHITE;
+      border_color = COLOR_WHITE;
       break;
     case 'G':
-      border_color = GREEN;
+      border_color = COLOR_GREEN;
       break;
   }
   is_border_word = false;
@@ -437,7 +435,7 @@ void handleBorderColorCommand(const String& message) {
 
 void handleOldCommand(const String& message) {
   debugPrintln("setting old due to /old");
-  border_color = YELLOW;
+  border_color = COLOR_YELLOW;
 }
 
 void handlePingCommand(const String& message) {
