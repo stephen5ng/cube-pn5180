@@ -12,6 +12,8 @@
 #include <secrets.h>
 #include "font.h"
 
+// ============= Configuration =============
+// MAC Address Table
 const char *macTable[] = {
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
   "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
@@ -20,9 +22,9 @@ const char *macTable[] = {
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
   "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
 };
-
 #define NUM_MAC_ADDRESSES (sizeof(macTable) / sizeof(macTable[0]))
 
+// Display Configuration
 #define BLACK    0x0000
 #define BLUE     0x001F
 #define RED      0xF800
@@ -39,11 +41,13 @@ const char *macTable[] = {
 #define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
 
+// Pin Definitions
 #define MISO 39
 #define PN5180_BUSY 36
 #define PN5180_NSS 32
 #define PN5180_RST 17
 
+// Display Settings
 #define BIG_ROW 0
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 1
@@ -52,8 +56,17 @@ const char *macTable[] = {
 #define VERSION "v0.7d"
 #define PRINT_DEBUG true
 
+// Sleep Configuration
+#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
+
+// MQTT Configuration
+#define MQTT_SERVER_PI "192.168.0.247"
+
+// ============= Global Variables =============
 bool front_display = false;
 
+// HUB75 Display Configuration
 HUB75_I2S_CFG::i2s_pins _pins = {
   25,  //R1_PIN,
   26,  //G1_PIN,
@@ -78,12 +91,15 @@ HUB75_I2S_CFG mxconfig(
   _pins
 );
 
+// Hardware Objects
 MatrixPanel_I2S_DMA *hub75_display;
 PN5180ISO15693 nfc = PN5180ISO15693(PN5180_NSS, PN5180_BUSY, PN5180_RST);
 
+// Message Objects
 MessageLetter message_letter;
 MessageNfcId message_nfcid;
 
+// NFC State
 uint8_t last_nfcid[NFCID_LENGTH];
 uint8_t DEBUG_NFC[NFCID_LENGTH] = {
   0xdd, 0x11, 0xf8, 0xb8,
@@ -92,17 +108,15 @@ uint8_t NO_DEBUG_NFC[NFCID_LENGTH] = {
   0xbc, 0x10, 0xf8, 0xb8,
   0x50, 0x01, 0x04, 0xe0};
 
-#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
-
+// Display State
 char last_letter = ' ';
 char current_letter = '?';
 char border = ' ';
 uint16_t border_color = WHITE;
 bool border_is_word = false;
 bool last_has_card = false;
-#define MQTT_SERVER_PI "192.168.0.247"
 
+// Network Objects
 EspMQTTClient mqtt_client(
   MQTT_SERVER_PI,
   1883,
@@ -110,13 +124,18 @@ EspMQTTClient mqtt_client(
   "",
   "TestClient"
 );
-
 WiFiClient espClient;
 static String cube_id;
 const char* topic_out;
 
+// Animation
 EasingFunc<Ease::BounceOut> easing;
+long end_highlighting = 0;
+unsigned long start_ease = 0;
+String last_neighbor = "INIT";
+unsigned long last_nfc_publish_time = 0;
 
+// ============= Debug Functions =============
 void debugPrint(const char* s) {
   hub75_display->setCursor(0, 0);
   hub75_display->setTextColor(RED, BLACK);
@@ -149,6 +168,7 @@ void debug_println(const __FlashStringHelper* message) {
   }
 }
 
+// ============= Utility Functions =============
 int getMACPosition(const char *macStr) {
   for (int i = 0; i < NUM_MAC_ADDRESSES; i++) {
       if (strcmp(macStr, macTable[i]) == 0) {
@@ -184,23 +204,20 @@ String convert_to_hex_string(uint8_t* data, int dataSize) {
   return hexString;
 }
 
-long end_highlighting = 0;
+String createTopic(String s) {
+  char topic[128];  // Large enough for any reasonable topic
+  snprintf(topic, sizeof(topic), "cube/%s/%s", s.c_str(), cube_id.c_str());
+  return String(topic);
+}
 
+// ============= Display Functions =============
 void display_letter(uint16_t percent, char letter, uint16_t color) {
   int16_t row = (PANEL_RES_Y * percent) / 100;
-
-  // char strBuf[80];
-  // sprintf(strBuf, "display_letter %c: %2d (%8d)", letter, row, color);
-  // Serial.println(strBuf);
-
   hub75_display->setCursor(BIG_COL, row-4);
   hub75_display->setTextColor(color, BLACK);
   hub75_display->setTextSize(BIG_TEXT_SIZE);
   hub75_display->print(letter);
-  // delay(100);
 }
-
-unsigned long start_ease = 0;
 
 void display_current_letter() {
   static long last_highlighted = 0;
@@ -209,12 +226,10 @@ void display_current_letter() {
   uint8_t letter_percentage = 100;
 
   if (current_letter != last_letter) {
-    // turn off highlighting which was probably meant for last letter.
     end_highlighting = 0;
-
     float duration = now - start_ease;
     if (now - start_ease >= easing.duration()) {
-      last_letter = current_letter; // done
+      last_letter = current_letter;
     } else {
       letter_percentage = easing.get(duration);
     }
@@ -222,8 +237,6 @@ void display_current_letter() {
   }
   
   uint16_t current_color = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
-
-  // Serial.println("display_current_letter: " + String(last_letter) + ", "+ String(current_letter) + ", " + String(letter_percentage));
   display_letter(letter_percentage, current_letter, current_color);
 
   if (last_has_card) {
@@ -232,13 +245,9 @@ void display_current_letter() {
   if (current_letter == ' ') {
     border = ' ';
   }
-  // uint16_t highlight_bc = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : border_color;
-  // Serial.print("border color: ");
-  // Serial.println(border_color);
   if (border != ' ') {
     hub75_display->drawFastHLine(0, 0, PANEL_RES_X, border_color);
     hub75_display->drawFastHLine(0, 1, PANEL_RES_X, border_color);
-
     hub75_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, border_color);
     hub75_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, border_color);
   } 
@@ -253,13 +262,13 @@ void display_current_letter() {
   hub75_display->clearScreen();
 }
 
+// ============= Hardware Setup Functions =============
 void setup_nfc() {
   if (front_display) {
     return;
   }
   SPI.begin(SCK, MISO, MOSI, SS);
   Serial.println(F("Initializing nfc..."));
-
   nfc.begin();
   nfc.reset();
   Serial.println(F("Enabling RF field..."));
@@ -268,17 +277,16 @@ void setup_nfc() {
 
 void setup_hub75() {
   mxconfig.clkphase = false;
-  
   mxconfig.double_buff = true;
   hub75_display = new MatrixPanel_I2S_DMA(mxconfig);
   hub75_display->begin();
-
   hub75_display->setBrightness8(BRIGHTNESS);
   hub75_display->setRotation(3);
   hub75_display->setTextWrap(true);
   hub75_display->clearScreen();
 }
 
+// ============= Network Functions =============
 uint8_t getIpOctet() {
   String mac_address = WiFi.macAddress();
   int mac_position = getMACPosition(mac_address.c_str());
@@ -306,7 +314,6 @@ void setup_wifi() {
   
   IPAddress local_IP(192, 168, 0, getIpOctet());
   IPAddress gateway(192, 168, 0, 1);
-
   IPAddress subnet(255, 255, 255, 0);
   IPAddress primaryDNS(8, 8, 8, 8);   //optional
   IPAddress secondaryDNS(8, 8, 4, 4); //optional
@@ -321,7 +328,6 @@ void setup_wifi() {
     Serial.print("Connecting to ");
     Serial.println(ssid);
     WiFi.begin(ssid, password);
-
     delay(1000);
     try_portable = ! try_portable;
   }
@@ -332,31 +338,7 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
-String last_neighbor = "INIT";
-
-String createTopic(String s) {
-  char topic[128];  // Large enough for any reasonable topic
-  snprintf(topic, sizeof(topic), "cube/%s/%s", s.c_str(), cube_id.c_str());
-  return String(topic);
-}
-
-uint8_t print_wakeup_reason(){
-  esp_sleep_wakeup_cause_t wakeup_reason;
-
-  wakeup_reason = esp_sleep_get_wakeup_cause();
-
-  switch(wakeup_reason)
-  {
-    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
-    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
-  }
-  return wakeup_reason;
-}
-
+// ============= MQTT Functions =============
 void onConnectionEstablished() {
   String topic_cube_cube_id = "cube/" + cube_id;
   mqtt_client.subscribe(topic_cube_cube_id + "/sleep", [](const String& message) {
@@ -425,6 +407,29 @@ void onConnectionEstablished() {
   });  
 }
 
+// ============= System Functions =============
+uint8_t print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
+  return wakeup_reason;
+}
+
+// ============= NFC Functions =============
+ISO15693ErrorCode getInventory(uint8_t* uid) {
+  return nfc.getInventory(uid);
+}
+
+// ============= Main Functions =============
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
@@ -449,7 +454,6 @@ void setup() {
     hub75_display->setRotation(2);
   }
   
-  // Display IP info using snprintf
   char ipDisplay[128];
   snprintf(ipDisplay, sizeof(ipDisplay), "%s, %s,%s", 
     WiFi.localIP().toString().c_str(),
@@ -471,12 +475,6 @@ void setup() {
   debug_println(F("Setup Complete"));
 }
 
-ISO15693ErrorCode getInventory(uint8_t* uid) {
-  return nfc.getInventory(uid);
-}
-
-unsigned long last_nfc_publish_time = 0;
-
 void loop() {
   mqtt_client.loop();
 
@@ -492,21 +490,14 @@ void loop() {
 
   unsigned long now = millis();
 
-  // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
-  // Serial.print("getInventory: ");
-  // Serial.println(millis());
   ISO15693ErrorCode rc = getInventory(thisUid);
-  // Serial.println(millis());
-  // Serial.println(rc);
   if (rc == ISO15693_EC_OK) {
     String neighbor = convert_to_hex_string(thisUid, sizeof(thisUid) / sizeof(thisUid[0]));
     if (neighbor.equals(last_neighbor)) {
-      // Serial.println("skipping: server matches");
       return;
     }
     if (now - last_nfc_publish_time < 1000) {
-      // Serial.println("skipping: pause");
       return;
     }
 
@@ -516,11 +507,9 @@ void loop() {
     last_nfc_publish_time = millis();
   } else if (rc == EC_NO_CARD) {
     if (last_neighbor.equals("")) {
-      // Serial.println("skipping 0: server up to date");
       return;
     }
     if (now - last_nfc_publish_time < 1000) {
-      // Serial.println("skipping 0: pause");
       return;
     }
     long delay = now - last_nfc_publish_time;
@@ -532,9 +521,6 @@ void loop() {
     mqtt_client.publish(topic_out, "", true);
     last_nfc_publish_time = millis();
   } else {
-      // nfc.reset();
-      // nfc.setupRF();
-
-      debug_println("not ok");
+    debug_println("not ok");
   }
 }
