@@ -75,6 +75,12 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define MQTT_SERVER_PI "192.168.0.247"
 #define MQTT_PORT 1883
 
+// MQTT Topic Prefixes
+const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
+const char* MQTT_TOPIC_PREFIX_GAME = "game/";
+const char* MQTT_TOPIC_PREFIX_NFC = "nfc";
+const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
+
 // ============= Global Variables =============
 bool is_front_display = false;
 
@@ -147,6 +153,12 @@ unsigned long animation_start_time = 0;
 String last_neighbor_id = "INIT";
 unsigned long last_nfc_publish_time = 0;
 
+// Pre-allocated MQTT topics
+String mqtt_topic_cube;
+String mqtt_topic_nfc;
+String mqtt_topic_echo;
+String mqtt_topic_version;
+
 // ============= Debug Functions =============
 void displayDebugMessage(const char* message) {
   led_display->setCursor(0, 0);
@@ -216,10 +228,13 @@ String convertNfcIdToHexString(uint8_t* nfc_id, int id_length) {
   return hex_string;
 }
 
-String createMqttTopic(const String& topic_suffix) {
-  char topic[128];  // Large enough for any reasonable topic
-  snprintf(topic, sizeof(topic), "cube/%s/%s", topic_suffix.c_str(), cube_identifier.c_str());
-  return String(topic);
+String createMqttTopic(const char* suffix) {
+  static String topic;
+  topic = MQTT_TOPIC_PREFIX_CUBE;
+  topic += cube_identifier;
+  topic += '/';
+  topic += suffix;
+  return topic;
 }
 
 // ============= Display Functions =============
@@ -427,8 +442,7 @@ void handleOldCommand(const String& message) {
 
 void handlePingCommand(const String& message) {
   debugPrintln("pinging due to /ping");
-  static String echo_topic = createMqttTopic("echo");
-  mqtt_client.publish(echo_topic, message);
+  mqtt_client.publish(mqtt_topic_echo, message);
 }
 
 void handleNfcCommand(const String& message) {
@@ -437,19 +451,23 @@ void handleNfcCommand(const String& message) {
 }
 
 void onConnectionEstablished() {
-  String topic_cube_cube_id = "cube/" + cube_identifier;
+  // Pre-allocate common topics
+  mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
+  mqtt_topic_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
+  mqtt_topic_echo = createMqttTopic(MQTT_TOPIC_PREFIX_ECHO);
+  mqtt_topic_version = createMqttTopic("version");
   
   // Subscribe to all command topics
-  mqtt_client.subscribe(topic_cube_cube_id + "/sleep", handleSleepCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/reboot", handleRebootCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/reset", handleResetCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/letter", handleLetterCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/flash", handleFlashCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/border_line", handleBorderLineCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/border_color", handleBorderColorCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/old", handleOldCommand);
-  mqtt_client.subscribe(topic_cube_cube_id + "/ping", handlePingCommand);
-  mqtt_client.subscribe(String("game/nfc") + cube_identifier, handleNfcCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/sleep", handleSleepCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/letter", handleLetterCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/flash", handleFlashCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_line", handleBorderLineCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_color", handleBorderColorCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/old", handleOldCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
+  mqtt_client.subscribe(mqtt_topic_nfc, handleNfcCommand);
 }
 
 // ============= System Functions =============
@@ -505,9 +523,7 @@ void setup() {
     cube_identifier.c_str());
   displayDebugMessage(ipDisplay);
   
-  static String nfc_topic = createMqttTopic("nfc");
-  nfc_topic_out = nfc_topic.c_str();
-  mqtt_client.publish(createMqttTopic("version"), VERSION);
+  mqtt_client.publish(mqtt_topic_version, VERSION);
 
   displayDebugMessage("nfc...");
   debugPrintln(WiFi.macAddress().c_str());
@@ -546,7 +562,7 @@ void loop() {
     }
 
     debugPrintln(F("New card"));
-    mqtt_client.publish(nfc_topic_out, neighbor_id, true);
+    mqtt_client.publish(mqtt_topic_nfc, neighbor_id, true);
 
     last_nfc_publish_time = millis();
   } else if (read_result == EC_NO_CARD) {
@@ -558,13 +574,13 @@ void loop() {
     }
     long time_since_last_publish = current_time - last_nfc_publish_time;
     if (time_since_last_publish < NFC_MIN_PUBLISH_INTERVAL_MS) { // DEBOUNCE
-      debugPrintln("skipping 0: debounce");
+      debugPrintln(F("skipping 0: debounce"));
       return;
     }
-    debugPrintln("publishing no-link");
-    mqtt_client.publish(nfc_topic_out, "", true);
+    debugPrintln(F("publishing no-link"));
+    mqtt_client.publish(mqtt_topic_nfc, "", true);
     last_nfc_publish_time = millis();
   } else {
-    debugPrintln("not ok");
+    debugPrintln(F("not ok"));
   }
 }
