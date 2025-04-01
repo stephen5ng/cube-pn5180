@@ -100,7 +100,6 @@ char current_letter = '?';
 char border = ' ';
 uint16_t border_color = WHITE;
 bool border_is_word = false;
-long loop_count = 0;
 bool last_has_card = false;
 #define MQTT_SERVER_PI "192.168.0.247"
 
@@ -218,12 +217,10 @@ void display_current_letter() {
       last_letter = current_letter; // done
     } else {
       letter_percentage = easing.get(duration);
-      // String s = String("easing: ");
-      // s+= String(duration) + " " + String(letter_percentage);
-      // Serial.println(s);
     }
     display_letter(100 + letter_percentage, last_letter, RED);
   }
+  
   uint16_t current_color = now < end_highlighting ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
 
   // Serial.println("display_current_letter: " + String(last_letter) + ", "+ String(current_letter) + ", " + String(letter_percentage));
@@ -271,28 +268,15 @@ void setup_nfc() {
 
 void setup_hub75() {
   mxconfig.clkphase = false;
-  // mxconfig.driver = HUB75_I2S_CFG::ICN2038S;
   
   mxconfig.double_buff = true;
   hub75_display = new MatrixPanel_I2S_DMA(mxconfig);
   hub75_display->begin();
 
-  // hub75_display->setBrightness(BRIGHTNESS);
   hub75_display->setBrightness8(BRIGHTNESS);
-  // hub75_display->setPanelBrightness(BRIGHTNESS);
-  // hub75_display->fillScreenRGB888(255,0,0);
-  // sleep(2);
   hub75_display->setRotation(3);
   hub75_display->setTextWrap(true);
   hub75_display->clearScreen();
-}
-
-unsigned int simpleHash(const char* str) {
-  unsigned int hash = 0;
-  while (*str) {
-    hash = (hash << 5) - hash + *str++; // Simple hash function
-  }
-  return hash;
 }
 
 uint8_t getIpOctet() {
@@ -500,40 +484,14 @@ void loop() {
     nfc.reset();
     nfc.setupRF();
   }
-  static unsigned long last_loop_time = millis();
-  static uint16_t last_nfc_reset = 0;
-  static uint16_t nfc_reset_count = 1;
-  static long last_nfc_ms = 0;
-  static uint16_t heartbeat_color = 3;
-  hub75_display->drawFastHLine(4, 5, nfc_reset_count, heartbeat_color);
-  heartbeat_color = (heartbeat_color >> 1) | (heartbeat_color << (16 - 1));
+
   display_current_letter();
   if (front_display) {
     return;
   }
 
   unsigned long now = millis();
-  static uint32_t loop_count = 0;
-  if (loop_count++ % 1000 == 0) {
-    static String loop_delay_topic = createTopic("loop_delay");
-    String loop_delay_msg = String(now - last_loop_time);
-    mqtt_client.publish(loop_delay_topic, loop_delay_msg);
-  }
 
-  if (now - last_loop_time > 100 && ! front_display) {
-    // debug_println(now - last_loop_time);
-    nfc.reset();
-    nfc.setupRF();
-    static String loop_delay_topic = createTopic("loop_delay_reset");
-    String loop_delay_msg = String(now - last_loop_time);
-    mqtt_client.publish(loop_delay_topic, loop_delay_msg);
-
-    // hub75_display->drawPixel(10, 10, heartbeat_color);
-    nfc_reset_count++;
-    last_nfc_reset = 0;
-  }
-
-  last_loop_time = now;
   // Loop waiting for NFC changes.
   uint8_t thisUid[NFCID_LENGTH];
   // Serial.print("getInventory: ");
@@ -574,10 +532,8 @@ void loop() {
     mqtt_client.publish(topic_out, "", true);
     last_nfc_publish_time = millis();
   } else {
-      static String reset_topic = createTopic("reset");
-      nfc.reset();
-      nfc.setupRF();
-      mqtt_client.publish(reset_topic, String(nfc_reset_count++));
+      // nfc.reset();
+      // nfc.setupRF();
 
       debug_println("not ok");
   }
