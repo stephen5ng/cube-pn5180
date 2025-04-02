@@ -303,7 +303,7 @@ void updateDisplay() {
   }
 
   // Handle border display
-  if (current_letter == ' ' || is_string_mode) {
+  if (current_letter == ' ' && !is_string_mode) {
     border_style = ' ';
   }
   drawBorder();
