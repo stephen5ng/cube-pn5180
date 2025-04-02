@@ -16,7 +16,7 @@
 // MAC Address Table
 const char *CUBE_MAC_ADDRESSES[] = {
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
-  "D8:BC:38:FD:D0:BC", "D8:BC:38:FD:E0:98",
+  "CC:DB:A7:92:9A:A0", "D8:BC:38:FD:E0:98",
   "CC:DB:A7:98:54:2C", "CC:DB:A7:99:0F:E0",
   "CC:DB:A7:9F:C2:84", "94:54:C5:ED:C6:34",
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
@@ -78,7 +78,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
 // MQTT Topic Prefixes
 const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
 const char* MQTT_TOPIC_PREFIX_GAME = "game/";
-const char* MQTT_TOPIC_PREFIX_NFC = "nfc";
+const char* MQTT_TOPIC_PREFIX_NFC = "nfc/";
 const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
 
 // ============= Global Variables =============
@@ -158,7 +158,8 @@ unsigned long last_nfc_publish_time = 0;
 
 // Pre-allocated MQTT topics
 String mqtt_topic_cube;
-String mqtt_topic_nfc;
+String mqtt_topic_cube_nfc;
+String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_version;
 
@@ -484,7 +485,8 @@ void handleFontSizeCommand(const String& message) {
 void onConnectionEstablished() {
   // Pre-allocate common topics
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
-  mqtt_topic_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
+  mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
+  mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_version = createMqttTopic("version");
   
@@ -500,7 +502,7 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", handleBorderColorCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/old", handleOldCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
-  mqtt_client.subscribe(mqtt_topic_nfc, handleNfcCommand);
+  mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
 }
 
 // ============= System Functions =============
@@ -595,7 +597,7 @@ void loop() {
     }
 
     debugPrintln(F("New card"));
-    mqtt_client.publish(mqtt_topic_nfc, neighbor_id, true);
+    mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
 
     last_nfc_publish_time = millis();
   } else if (read_result == EC_NO_CARD) {
@@ -611,7 +613,7 @@ void loop() {
       return;
     }
     debugPrintln(F("publishing no-link"));
-    mqtt_client.publish(mqtt_topic_nfc, "", true);
+    mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
     last_nfc_publish_time = millis();
   } else {
     debugPrintln(F("not ok"));
