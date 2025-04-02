@@ -110,7 +110,7 @@ HUB75_I2S_CFG display_config(
 );
 
 // Hardware Objects
-MatrixPanel_I2S_DMA *led_display;
+// MatrixPanel_I2S_DMA *led_display;
 PN5180ISO15693 nfc_reader = PN5180ISO15693(PN5180_NSS, PN5180_BUSY, PN5180_RST);
 
 // Message Objects
@@ -164,14 +164,6 @@ String mqtt_topic_echo;
 String mqtt_topic_version;
 
 // ============= Debug Functions =============
-void displayDebugMessage(const char* message) {
-  led_display->setCursor(0, 0);
-  led_display->setTextColor(RED, BLACK);
-  led_display->print(message);
-  led_display->flipDMABuffer();    
-  led_display->clearScreen();
-}
-
 void debugPrint(const char* message) {
   if (PRINT_DEBUG) {
     Serial.print(message);
@@ -196,6 +188,160 @@ void debugPrintln(const __FlashStringHelper* message) {
   }
 }
 
+// ============= DisplayManager Class =============
+class DisplayManager {
+private:
+  MatrixPanel_I2S_DMA* led_display;
+  static long last_highlight_time;
+  static uint16_t animation_speed;
+  bool is_front;
+  bool is_string_mode;
+
+public:
+  DisplayManager(bool is_front) : is_front(is_front), is_string_mode(false) {
+    setupDisplay();
+  }
+
+  void setupDisplay() {
+    display_config.clkphase = false;
+    display_config.double_buff = true;
+    led_display = new MatrixPanel_I2S_DMA(display_config);
+    led_display->begin();
+    led_display->setBrightness8(BRIGHTNESS);
+    led_display->setRotation(is_front ? 2 : 3);
+    led_display->setTextWrap(true);
+    led_display->clearScreen();
+    configureDisplayFont(led_display);
+  }
+
+  void configureDisplayFont(MatrixPanel_I2S_DMA* display) {
+    display->setFont(&Roboto_Mono_Bold_78);
+  }
+  
+  void clearScreen() {
+    led_display->clearScreen();
+  }
+
+  void displayDebugMessage(const char* message) {
+    led_display->setCursor(0, 0);
+    led_display->setTextColor(RED, BLACK);
+    led_display->print(message);
+    led_display->flipDMABuffer();    
+    led_display->clearScreen();
+  }
+
+  void displayLetter(uint16_t vertical_position, char letter, uint16_t color) {
+    int16_t row = (PANEL_RES_Y * vertical_position) / 100;
+    led_display->setCursor(BIG_COL, row-4);
+    led_display->setTextColor(color, BLACK);
+    led_display->setTextSize(BIG_TEXT_SIZE);
+    led_display->print(letter);
+  }
+
+  void drawBorder(char style, uint16_t color) {
+    if (style == ' ') {
+      return;
+    }
+
+    // Draw horizontal border lines
+    led_display->drawFastHLine(0, 0, PANEL_RES_X, color);
+    led_display->drawFastHLine(0, 1, PANEL_RES_X, color);
+    led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, color);
+    led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, color);
+
+    // Draw vertical border lines if needed
+    if (style == '[') {
+      led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, color);
+      led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, color);
+    } else if (style == ']') {
+      led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, color);
+      led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, color);
+    }
+  }
+
+  void updateDisplay(bool is_string_mode, const String& display_string, 
+                    unsigned long current_time, unsigned long animation_start_time,
+                    long highlight_end_time, bool has_card_present,
+                    char border_style, uint16_t border_color) {
+    uint8_t letter_position = 100;
+
+    if (is_string_mode) {
+      led_display->setCursor(0, BIG_ROW);
+      led_display->setTextColor(LETTER_COLOR, BLACK);
+      led_display->print(display_string);
+    } else {
+      if (current_letter != previous_letter) {
+        float animation_duration = current_time - animation_start_time;
+        if (current_time - animation_start_time >= letter_animation.duration()) {
+          previous_letter = current_letter;
+        } else {
+          letter_position = letter_animation.get(animation_duration);
+        }
+        displayLetter(100 + letter_position, previous_letter, RED);
+      }
+      
+      uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+      displayLetter(letter_position, current_letter, current_color);
+    }
+
+    // Draw card indicator if needed
+    if (has_card_present) {
+      led_display->drawFastVLine(62, 30, 2, CARD_INDICATOR_COLOR);
+    }
+
+    // Handle border display
+    if (current_letter == ' ' && !is_string_mode) {
+      border_style = ' ';
+    }
+    drawBorder(border_style, border_color);
+
+    // Update display
+    led_display->flipDMABuffer();    
+    led_display->clearScreen();
+  }
+
+  void handleFontSizeCommand(const String& message) {
+    debugPrintln("setting font size due to /font_size");
+    if (!is_string_mode) {
+      debugPrintln("ignoring font size change in letter mode");
+      return;
+    }
+    int size = message.toInt();
+    if (size > 0) {
+      led_display->setTextSize(size);
+    }
+  }
+
+  void handleStringCommand(const String& message) {
+    debugPrintln("setting string due to /string");
+    is_string_mode = true;
+    display_string = message;
+    led_display->setFont(nullptr);  // Use default font for string mode
+    led_display->setRotation(is_front ? 0 : 3);    // Set rotation to 0 for string mode
+  }
+
+  void handleLetterCommand(const String& message) {
+    debugPrintln("setting letter due to /letter");
+    is_string_mode = false;
+    current_letter = message.charAt(0);
+    animation_start_time = millis();
+    configureDisplayFont(led_display);  // Restore custom font for letter mode
+    led_display->setTextSize(1);  // Always use size 1 for letter mode
+    led_display->setRotation(is_front ? 2 : 3);  // Restore original rotation for letter mode
+  }
+
+  MatrixPanel_I2S_DMA* getDisplay() {
+    return led_display;
+  }
+};
+
+// Static member initialization
+long DisplayManager::last_highlight_time = 0;
+uint16_t DisplayManager::animation_speed = 1;
+
+// ============= Global Variables =============
+DisplayManager* display_manager;
+
 // ============= Utility Functions =============
 int findMacAddressPosition(const char *mac_address) {
   for (int i = 0; i < NUM_CUBE_MAC_ADDRESSES; i++) {
@@ -204,10 +350,6 @@ int findMacAddressPosition(const char *mac_address) {
     }
   }
   return -1;
-}
-
-void configureDisplayFont(MatrixPanel_I2S_DMA* display) {
-  display->setFont(&Roboto_Mono_Bold_78);
 }
 
 String removeColonsFromMac(const String& mac_address) {
@@ -241,78 +383,6 @@ String createMqttTopic(const char* suffix) {
   return topic;
 }
 
-// ============= Display Functions =============
-void displayLetter(uint16_t vertical_position, char letter, uint16_t color) {
-  int16_t row = (PANEL_RES_Y * vertical_position) / 100;
-  led_display->setCursor(BIG_COL, row-4);
-  led_display->setTextColor(color, BLACK);
-  led_display->setTextSize(BIG_TEXT_SIZE);
-  led_display->print(letter);
-}
-
-void drawBorder() {
-  if (border_style == ' ') {
-    return;
-  }
-
-  // Draw horizontal border lines
-  led_display->drawFastHLine(0, 0, PANEL_RES_X, border_color);
-  led_display->drawFastHLine(0, 1, PANEL_RES_X, border_color);
-  led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, border_color);
-  led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, border_color);
-
-  // Draw vertical border lines if needed
-  if (border_style == '[') {
-    led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, border_color);
-    led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, border_color);
-  } else if (border_style == ']') {
-    led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, border_color);
-    led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, border_color);
-  }
-}
-
-void updateDisplay() {
-  static long last_highlight_time = 0;
-  static uint16_t animation_speed = 1;
-  unsigned long current_time = millis();
-  uint8_t letter_position = 100;
-
-  if (is_string_mode) {
-    led_display->setCursor(0, BIG_ROW);
-    led_display->setTextColor(LETTER_COLOR, BLACK);
-    led_display->print(display_string);
-  } else {
-    if (current_letter != previous_letter) {
-      highlight_end_time = 0;
-      float animation_duration = current_time - animation_start_time;
-      if (current_time - animation_start_time >= letter_animation.duration()) {
-        previous_letter = current_letter;
-      } else {
-        letter_position = letter_animation.get(animation_duration);
-      }
-      displayLetter(100 + letter_position, previous_letter, RED);
-    }
-    
-    uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
-    displayLetter(letter_position, current_letter, current_color);
-  }
-
-  // Draw card indicator if needed
-  if (has_card_present) {
-    led_display->drawFastVLine(62, 30, 2, CARD_INDICATOR_COLOR);
-  }
-
-  // Handle border display
-  if (current_letter == ' ' && !is_string_mode) {
-    border_style = ' ';
-  }
-  drawBorder();
-
-  // Update display
-  led_display->flipDMABuffer();    
-  led_display->clearScreen();
-}
-
 // ============= Hardware Setup Functions =============
 void setupNfcReader() {
   if (is_front_display) {
@@ -324,17 +394,6 @@ void setupNfcReader() {
   nfc_reader.reset();
   Serial.println(F("Enabling RF field..."));
   nfc_reader.setupRF();
-}
-
-void setupLedDisplay() {
-  display_config.clkphase = false;
-  display_config.double_buff = true;
-  led_display = new MatrixPanel_I2S_DMA(display_config);
-  led_display->begin();
-  led_display->setBrightness8(BRIGHTNESS);
-  led_display->setRotation(3);
-  led_display->setTextWrap(true);
-  led_display->clearScreen();
 }
 
 // ============= Network Functions =============
@@ -409,24 +468,6 @@ void handleResetCommand(const String& message) {
   nfc_reader.setupRF();
 }
 
-void handleStringCommand(const String& message) {
-  debugPrintln("setting string due to /string");
-  is_string_mode = true;
-  display_string = message;
-  led_display->setFont(nullptr);  // Use default font for string mode
-  led_display->setRotation(is_front_display ? 0 : 3);    // Set rotation to 0 for string mode
-}
-
-void handleLetterCommand(const String& message) {
-  debugPrintln("setting letter due to /letter");
-  is_string_mode = false;
-  current_letter = message.charAt(0);
-  animation_start_time = millis();
-  configureDisplayFont(led_display);  // Restore custom font for letter mode
-  led_display->setTextSize(1);  // Always use size 1 for letter mode
-  led_display->setRotation(is_front_display ? 2 : 3);  // Restore original rotation for letter mode
-}
-
 void handleFlashCommand(const String& message) {
   debugPrintln("flashing due to /flash");
   highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
@@ -470,18 +511,6 @@ void handleNfcCommand(const String& message) {
   last_neighbor_id = message;
 }
 
-void handleFontSizeCommand(const String& message) {
-  debugPrintln("setting font size due to /font_size");
-  if (!is_string_mode) {
-    debugPrintln("ignoring font size change in letter mode");
-    return;
-  }
-  int size = message.toInt();
-  if (size > 0) {
-    led_display->setTextSize(size);
-  }
-}
-
 void onConnectionEstablished() {
   // Pre-allocate common topics
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
@@ -494,9 +523,9 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep", handleSleepCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/letter", handleLetterCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/string", handleStringCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", handleFontSizeCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/string", [](const String& msg) { display_manager->handleStringCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", handleFlashCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/border_line", handleBorderLineCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", handleBorderColorCommand);
@@ -532,56 +561,62 @@ void setup() {
   Serial.setTimeout(0);
   mqtt_client.enableDebuggingMessages(true);
   debugPrintln("starting....");
-  setupLedDisplay();
-  displayDebugMessage(VERSION);
+  
+  // Initialize WiFi and get cube identifier
+  setupWiFiConnection();
+  String cube_id = cube_identifier;
+  bool is_front = (findMacAddressPosition(WiFi.macAddress().c_str()) % 2) == 1;
+  
+  // Create display manager
+  display_manager = new DisplayManager(is_front);
+  display_manager->displayDebugMessage(VERSION);
   delay(DISPLAY_STARTUP_DELAY_MS);
   uint8_t wakeup = getWakeupReason();
 
   letter_animation.duration(ANIMATION_DURATION_MS);
   letter_animation.scale(ANIMATION_SCALE);
 
-  displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
+  display_manager->displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
   debugPrintln("setting up wifi...");
-  setupWiFiConnection();
-  Serial.println(cube_identifier);
-  static String client_name = cube_identifier + (is_front_display ? "_F" : "");
+  Serial.println(cube_id);
+  static String client_name = cube_id + (is_front ? "_F" : "");
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
-  if (is_front_display) {
-    led_display->setRotation(2);
-  }
   
   char ipDisplay[128];
   snprintf(ipDisplay, sizeof(ipDisplay), "%s, %s,%s", 
     WiFi.localIP().toString().c_str(),
     WiFi.macAddress().c_str(),
-    cube_identifier.c_str());
-  displayDebugMessage(ipDisplay);
+    cube_id.c_str());
+  display_manager->displayDebugMessage(ipDisplay);
   
   mqtt_client.publish(mqtt_topic_version, VERSION);
 
-  displayDebugMessage("nfc...");
+  display_manager->displayDebugMessage("nfc...");
   debugPrintln(WiFi.macAddress().c_str());
 
   setupNfcReader();
-  led_display->clearScreen();
-  configureDisplayFont(led_display);
+  display_manager->clearScreen();
 
   debugPrintln(F("Setup Complete"));
 }
 
 void loop() {
+  static int throttle_count = 0;
   mqtt_client.loop();
-
   if (!is_front_display) {
     nfc_reader.reset();
     nfc_reader.setupRF();
   }
+  display_manager->updateDisplay(is_string_mode, display_string,
+                                  millis(), animation_start_time,
+                                  highlight_end_time, has_card_present,
+                                  border_style, border_color);
 
-  updateDisplay();
   if (is_front_display) {
     return;
   }
+  return;
 
   unsigned long current_time = millis();
 
@@ -613,7 +648,7 @@ void loop() {
       return;
     }
     debugPrintln(F("publishing no-link"));
-    mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
+    // mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
     last_nfc_publish_time = millis();
   } else {
     debugPrintln(F("not ok"));
