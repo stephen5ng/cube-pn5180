@@ -59,7 +59,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.7d"
+#define VERSION "v0.8a"
 #define PRINT_DEBUG true
 
 // Timing Constants
