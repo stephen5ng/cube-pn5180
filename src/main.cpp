@@ -11,6 +11,8 @@
 #include <Wire.h>
 #include <secrets.h>
 #include "font.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
 
 // ============= Configuration =============
 // MAC Address Table
@@ -18,7 +20,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
   "CC:DB:A7:92:9A:A0", "D8:BC:38:FD:E0:98",
   "CC:DB:A7:98:54:2C", "CC:DB:A7:99:0F:E0",
-  "CC:DB:A7:9F:C2:84", "94:54:C5:ED:C6:34",
+  "CC:DB:A7:9F:C2:84", "D8:BC:38:FD:D0:BC",
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
   "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
 };
@@ -129,12 +131,8 @@ uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
 // Display State
 char previous_letter = ' ';
 char current_letter = '?';
-char border_style = ' ';
 uint16_t border_color = WHITE;
 bool is_border_word = false;
-bool has_card_present = false;
-bool is_string_mode = false;
-String display_string;
 String previous_string;
 
 // Network Objects
@@ -150,10 +148,7 @@ static String cube_identifier;
 const char* nfc_topic_out;
 
 // Animation
-EasingFunc<Ease::BounceOut> letter_animation;
-long highlight_end_time = 0;
-unsigned long animation_start_time = 0;
-String last_neighbor_id = "INIT";
+char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";
 unsigned long last_nfc_publish_time = 0;
 
 // Pre-allocated MQTT topics
@@ -196,10 +191,25 @@ private:
   static uint16_t animation_speed;
   bool is_front;
   bool is_string_mode;
+  String display_string;
+  char border_style;
+  bool is_border_word;
+  uint16_t border_color;
+  unsigned long animation_start_time;
+  long highlight_end_time;
+  uint8_t letter_position;
+  uint16_t current_letter_color;
+  EasingFunc<Ease::BounceOut> letter_animation;
 
 public:
-  DisplayManager(bool is_front) : is_front(is_front), is_string_mode(false) {
+  bool is_dirty;
+  DisplayManager(bool is_front) : is_front(is_front), is_string_mode(false), is_dirty(true), 
+                                border_style(' '), is_border_word(false), border_color(WHITE),
+                                animation_start_time(0), highlight_end_time(0), letter_position(100),
+                                current_letter_color(LETTER_COLOR) {
     setupDisplay();
+    letter_animation.duration(ANIMATION_DURATION_MS);
+    letter_animation.scale(ANIMATION_SCALE);
   }
 
   void setupDisplay() {
@@ -231,6 +241,7 @@ public:
   }
 
   void displayLetter(uint16_t vertical_position, char letter, uint16_t color) {
+    // Serial.println("displayLetter");
     int16_t row = (PANEL_RES_Y * vertical_position) / 100;
     led_display->setCursor(BIG_COL, row-4);
     led_display->setTextColor(color, BLACK);
@@ -242,7 +253,7 @@ public:
     if (style == ' ') {
       return;
     }
-
+    Serial.println("draw border");
     // Draw horizontal border lines
     led_display->drawFastHLine(0, 0, PANEL_RES_X, color);
     led_display->drawFastHLine(0, 1, PANEL_RES_X, color);
@@ -259,37 +270,80 @@ public:
     }
   }
 
-  void updateDisplay(bool is_string_mode, const String& display_string, 
-                    unsigned long current_time, unsigned long animation_start_time,
-                    long highlight_end_time, bool has_card_present,
-                    char border_style, uint16_t border_color) {
-    uint8_t letter_position = 100;
+  void handleFlashCommand(const String& message) {
+    debugPrintln("flashing due to /flash");
+    highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
+    is_border_word = true;
+    border_color = GREEN;
+    is_dirty = true;
+  }
+
+  void handleBorderColorCommand(const String& message) {
+    debugPrintln("setting border color due to /border_color");
+    switch (message.charAt(0)) {
+      case 'Y':
+        border_color = YELLOW;  
+        break;
+      case 'W':
+        border_color = WHITE;
+        break;
+      case 'G':
+        border_color = GREEN;
+        break;
+    }
+    is_border_word = false;
+    is_dirty = true;  
+  }
+
+  void handleOldCommand(const String& message) {
+    debugPrintln("setting old due to /old");
+    border_color = YELLOW;
+    is_dirty = true;  
+  }
+
+  void animate(unsigned long current_time) {
+    static uint16_t last_letter_color = -1;
+
+    current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+    if (last_letter_color != current_letter_color) {
+      last_letter_color = current_letter_color;
+      is_dirty = true;
+    }
+
+    if (previous_letter != current_letter) {
+      static uint8_t previous_letter_position = -1;
+      if (current_time - animation_start_time >= letter_animation.duration()) {
+        previous_letter = current_letter;
+        letter_position = ANIMATION_SCALE;
+        is_dirty = true;
+      } 
+      else {
+        letter_position = letter_animation.get(current_time - animation_start_time);
+
+        if (letter_position != previous_letter_position) {
+            previous_letter_position = letter_position;
+            is_dirty = true;
+        }
+      }
+    }
+  }
+
+  void updateDisplay(unsigned long current_time) {
+    if (!is_dirty) {
+      return;
+    }
 
     if (is_string_mode) {
       led_display->setCursor(0, BIG_ROW);
       led_display->setTextColor(LETTER_COLOR, BLACK);
       led_display->print(display_string);
-    } else {
+    } else {    
       if (current_letter != previous_letter) {
-        float animation_duration = current_time - animation_start_time;
-        if (current_time - animation_start_time >= letter_animation.duration()) {
-          previous_letter = current_letter;
-        } else {
-          letter_position = letter_animation.get(animation_duration);
-        }
         displayLetter(100 + letter_position, previous_letter, RED);
       }
-      
-      uint16_t current_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
-      displayLetter(letter_position, current_letter, current_color);
+      displayLetter(letter_position, current_letter, current_letter_color);
     }
 
-    // Draw card indicator if needed
-    if (has_card_present) {
-      led_display->drawFastVLine(62, 30, 2, CARD_INDICATOR_COLOR);
-    }
-
-    // Handle border display
     if (current_letter == ' ' && !is_string_mode) {
       border_style = ' ';
     }
@@ -298,6 +352,7 @@ public:
     // Update display
     led_display->flipDMABuffer();    
     led_display->clearScreen();
+    is_dirty = false;
   }
 
   void handleFontSizeCommand(const String& message) {
@@ -318,6 +373,7 @@ public:
     display_string = message;
     led_display->setFont(nullptr);  // Use default font for string mode
     led_display->setRotation(is_front ? 0 : 3);    // Set rotation to 0 for string mode
+    is_dirty = true;
   }
 
   void handleLetterCommand(const String& message) {
@@ -328,6 +384,13 @@ public:
     configureDisplayFont(led_display);  // Restore custom font for letter mode
     led_display->setTextSize(1);  // Always use size 1 for letter mode
     led_display->setRotation(is_front ? 2 : 3);  // Restore original rotation for letter mode
+    is_dirty = true;
+  }
+
+  void handleBorderLineCommand(const String& message) {
+    debugPrintln("setting border line due to /border_line");
+    border_style = message.charAt(0);
+    is_dirty = true;  
   }
 
   MatrixPanel_I2S_DMA* getDisplay() {
@@ -363,15 +426,11 @@ String removeColonsFromMac(const String& mac_address) {
   return result;
 }
 
-String convertNfcIdToHexString(uint8_t* nfc_id, int id_length) {
-  String hex_string;
-  hex_string.reserve(id_length * 2);  // Pre-allocate for hex string
+void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
   for (int i = 0; i < id_length; i++) {
-    char hex_chars[3];
-    snprintf(hex_chars, sizeof(hex_chars), "%02X", nfc_id[i]);
-    hex_string += hex_chars;
+    snprintf(hex_buffer + (i * 2), 3, "%02X", nfc_id[i]);
   }
-  return hex_string;
+  hex_buffer[id_length * 2] = '\0';  // Ensure null termination
 }
 
 String createMqttTopic(const char* suffix) {
@@ -468,39 +527,6 @@ void handleResetCommand(const String& message) {
   nfc_reader.setupRF();
 }
 
-void handleFlashCommand(const String& message) {
-  debugPrintln("flashing due to /flash");
-  highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
-  is_border_word = true;
-  border_color = GREEN;
-}
-
-void handleBorderLineCommand(const String& message) {
-  debugPrintln("setting border line due to /border_line");
-  border_style = message.charAt(0);
-}
-
-void handleBorderColorCommand(const String& message) {
-  debugPrintln("setting border color due to /border_color");
-  switch (message.charAt(0)) {
-    case 'Y':
-      border_color = YELLOW;  
-      break;
-    case 'W':
-      border_color = WHITE;
-      break;
-    case 'G':
-      border_color = GREEN;
-      break;
-  }
-  is_border_word = false;
-}
-
-void handleOldCommand(const String& message) {
-  debugPrintln("setting old due to /old");
-  border_color = YELLOW;
-}
-
 void handlePingCommand(const String& message) {
   debugPrintln("pinging due to /ping");
   mqtt_client.publish(mqtt_topic_echo, message);
@@ -508,7 +534,8 @@ void handlePingCommand(const String& message) {
 
 void handleNfcCommand(const String& message) {
   debugPrintln("nfc due to /nfc");
-  last_neighbor_id = message;
+  strncpy(last_neighbor_id, message.c_str(), sizeof(last_neighbor_id) - 1);
+  last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
 }
 
 void onConnectionEstablished() {
@@ -526,10 +553,10 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/string", [](const String& msg) { display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/flash", handleFlashCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_line", handleBorderLineCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_color", handleBorderColorCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/old", handleOldCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_line", [](const String& msg) { display_manager->handleBorderLineCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_color", [](const String& msg) { display_manager->handleBorderColorCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
 }
@@ -560,7 +587,12 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
   mqtt_client.enableDebuggingMessages(true);
+  mqtt_client.setMqttReconnectionAttemptDelay(5);
   debugPrintln("starting....");
+  
+  // Initialize watchdog timer
+  esp_task_wdt_init(10, true);  // 5 second timeout, panic on timeout
+  esp_task_wdt_add(NULL);      // Add current thread to WDT watch
   
   // Initialize WiFi and get cube identifier
   setupWiFiConnection();
@@ -572,9 +604,6 @@ void setup() {
   display_manager->displayDebugMessage(VERSION);
   delay(DISPLAY_STARTUP_DELAY_MS);
   uint8_t wakeup = getWakeupReason();
-
-  letter_animation.duration(ANIMATION_DURATION_MS);
-  letter_animation.scale(ANIMATION_SCALE);
 
   display_manager->displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
   debugPrintln("setting up wifi...");
@@ -602,29 +631,28 @@ void setup() {
 }
 
 void loop() {
-  static int throttle_count = 0;
+  esp_task_wdt_reset();  // Feed the watchdog timer
+  
   mqtt_client.loop();
   if (!is_front_display) {
     nfc_reader.reset();
     nfc_reader.setupRF();
   }
-  display_manager->updateDisplay(is_string_mode, display_string,
-                                  millis(), animation_start_time,
-                                  highlight_end_time, has_card_present,
-                                  border_style, border_color);
+  display_manager->animate(millis());
+  display_manager->updateDisplay(millis());
 
   if (is_front_display) {
     return;
   }
-  return;
 
   unsigned long current_time = millis();
 
   uint8_t card_id[NFCID_LENGTH];
   ISO15693ErrorCode read_result = readNfcCard(card_id);
   if (read_result == ISO15693_EC_OK) {
-    String neighbor_id = convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]));
-    if (neighbor_id.equals(last_neighbor_id)) {
+    char neighbor_id[NFCID_LENGTH * 2 + 1];
+    convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
+    if (strcmp(neighbor_id, last_neighbor_id) == 0) {
       return;
     }
     if (current_time - last_nfc_publish_time < NFC_DEBOUNCE_TIME_MS) {
@@ -633,12 +661,11 @@ void loop() {
 
     debugPrintln(F("New card"));
     mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
+    strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
+    last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
 
     last_nfc_publish_time = millis();
   } else if (read_result == EC_NO_CARD) {
-    if (last_neighbor_id.equals("")) {
-      return;
-    }
     if (current_time - last_nfc_publish_time < NFC_DEBOUNCE_TIME_MS) {
       return;
     }
@@ -648,7 +675,8 @@ void loop() {
       return;
     }
     debugPrintln(F("publishing no-link"));
-    // mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
+    mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
+    last_neighbor_id[0] = '\0';  // Clear the neighbor ID
     last_nfc_publish_time = millis();
   } else {
     debugPrintln(F("not ok"));
