@@ -22,7 +22,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "CC:DB:A7:98:54:2C", "CC:DB:A7:99:0F:E0",
   "CC:DB:A7:9F:C2:84", "D8:BC:38:FD:D0:BC",
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
-  "14:2B:2F:DA:FB:F4", "94:54:C5:EE:89:4C"
+  "94:54:C5:ED:C6:34", "94:54:C5:EE:89:4C"
 };
 #define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
@@ -187,8 +187,6 @@ void debugPrintln(const __FlashStringHelper* message) {
 class DisplayManager {
 private:
   MatrixPanel_I2S_DMA* led_display;
-  static long last_highlight_time;
-  static uint16_t animation_speed;
   bool is_front;
   bool is_string_mode;
   String display_string;
@@ -200,13 +198,18 @@ private:
   uint8_t letter_position;
   uint16_t current_letter_color;
   EasingFunc<Ease::BounceOut> letter_animation;
+  const GFXfont* current_font;
+  uint8_t text_size;
+  uint8_t rotation;
+  uint8_t font_size;
+  bool is_dirty;
 
 public:
-  bool is_dirty;
   DisplayManager(bool is_front) : is_front(is_front), is_string_mode(false), is_dirty(true), 
                                 border_style(' '), is_border_word(false), border_color(WHITE),
                                 animation_start_time(0), highlight_end_time(0), letter_position(100),
-                                current_letter_color(LETTER_COLOR) {
+                                current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
+                                text_size(1), rotation(is_front ? 2 : 3), font_size(1) {
     setupDisplay();
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
@@ -218,16 +221,13 @@ public:
     led_display = new MatrixPanel_I2S_DMA(display_config);
     led_display->begin();
     led_display->setBrightness8(BRIGHTNESS);
-    led_display->setRotation(is_front ? 2 : 3);
+    led_display->setRotation(rotation);
     led_display->setTextWrap(true);
     led_display->clearScreen();
-    configureDisplayFont(led_display);
+    led_display->setFont(current_font);
+    led_display->setTextSize(text_size);
   }
 
-  void configureDisplayFont(MatrixPanel_I2S_DMA* display) {
-    display->setFont(&Roboto_Mono_Bold_78);
-  }
-  
   void clearScreen() {
     led_display->clearScreen();
   }
@@ -333,9 +333,14 @@ public:
       return;
     }
 
+    led_display->setFont(current_font);
+    led_display->setTextSize(text_size);
+    led_display->setRotation(rotation);
+
     if (is_string_mode) {
       led_display->setCursor(0, BIG_ROW);
       led_display->setTextColor(LETTER_COLOR, BLACK);
+      led_display->setTextSize(font_size);
       led_display->print(display_string);
     } else {    
       if (current_letter != previous_letter) {
@@ -363,7 +368,8 @@ public:
     }
     int size = message.toInt();
     if (size > 0) {
-      led_display->setTextSize(size);
+      font_size = size;
+      is_dirty = true;
     }
   }
 
@@ -371,8 +377,8 @@ public:
     debugPrintln("setting string due to /string");
     is_string_mode = true;
     display_string = message;
-    led_display->setFont(nullptr);  // Use default font for string mode
-    led_display->setRotation(is_front ? 0 : 3);    // Set rotation to 0 for string mode
+    current_font = nullptr;  // Use default font for string mode
+    rotation = is_front ? 0 : 3;    // Set rotation to 0 for string mode
     is_dirty = true;
   }
 
@@ -381,9 +387,9 @@ public:
     is_string_mode = false;
     current_letter = message.charAt(0);
     animation_start_time = millis();
-    configureDisplayFont(led_display);  // Restore custom font for letter mode
-    led_display->setTextSize(1);  // Always use size 1 for letter mode
-    led_display->setRotation(is_front ? 2 : 3);  // Restore original rotation for letter mode
+    current_font = &Roboto_Mono_Bold_78;  // Restore custom font for letter mode
+    text_size = 1;  // Always use size 1 for letter mode
+    rotation = is_front ? 2 : 3;  // Restore original rotation for letter mode
     is_dirty = true;
   }
 
@@ -393,14 +399,10 @@ public:
     is_dirty = true;  
   }
 
-  MatrixPanel_I2S_DMA* getDisplay() {
-    return led_display;
-  }
+  // MatrixPanel_I2S_DMA* getDisplay() {
+  //   return led_display;
+  // }
 };
-
-// Static member initialization
-long DisplayManager::last_highlight_time = 0;
-uint16_t DisplayManager::animation_speed = 1;
 
 // ============= Global Variables =============
 DisplayManager* display_manager;
