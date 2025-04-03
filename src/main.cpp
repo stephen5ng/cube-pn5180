@@ -399,9 +399,6 @@ public:
     is_dirty = true;  
   }
 
-  // MatrixPanel_I2S_DMA* getDisplay() {
-  //   return led_display;
-  // }
 };
 
 // ============= Global Variables =============
