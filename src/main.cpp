@@ -384,6 +384,10 @@ public:
 
   void handleLetterCommand(const String& message) {
     debugPrintln("setting letter due to /letter");
+    if (previous_letter != current_letter) {
+      previous_letter = current_letter;
+    }
+      
     is_string_mode = false;
     current_letter = message.charAt(0);
     animation_start_time = millis();
