@@ -19,8 +19,8 @@
 const char *CUBE_MAC_ADDRESSES[] = {
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
   "CC:DB:A7:92:9A:A0", "D8:BC:38:FD:E0:98",
-  "CC:DB:A7:98:54:2C", "CC:DB:A7:99:0F:E0",
-  "CC:DB:A7:9F:C2:84", "D8:BC:38:FD:D0:BC",
+  "CC:DB:A7:99:0F:E0", "CC:DB:A7:98:54:2C", 
+  "E8:6B:EA:DE:B3:44", "D8:BC:38:FD:D0:BC",
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
   "94:54:C5:ED:C6:34", "94:54:C5:EE:89:4C"
 };
@@ -63,7 +63,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define PRINT_DEBUG true
 
 // Timing Constants
-#define NFC_DEBOUNCE_TIME_MS 1000
+#define NFC_DEBOUNCE_TIME_MS 200
 #define NFC_MIN_PUBLISH_INTERVAL_MS 100
 #define ANIMATION_DURATION_MS 800
 #define ANIMATION_SCALE 100
@@ -253,7 +253,7 @@ public:
     if (style == ' ') {
       return;
     }
-    Serial.println("draw border");
+    // Serial.println("draw border");
     // Draw horizontal border lines
     led_display->drawFastHLine(0, 0, PANEL_RES_X, color);
     led_display->drawFastHLine(0, 1, PANEL_RES_X, color);
@@ -383,6 +383,20 @@ public:
   }
 
   void handleLetterCommand(const String& message) {
+    static unsigned long last_message_time = 0;
+    unsigned long current_time = millis();
+    unsigned long time_since_last = current_time - last_message_time;
+    
+    if (time_since_last > 1000) {
+        Serial.println("----------------------------------------");
+        Serial.printf("[%lu] WARNING: %lu ms since last message\n", current_time, time_since_last);
+        Serial.println("----------------------------------------");
+    }
+    
+    last_message_time = current_time;
+    
+    Serial.printf("[%lu] MQTT message received - Topic: letter, Payload: %s\n", current_time, message.c_str());
+    
     debugPrintln("setting letter due to /letter");
     if (previous_letter != current_letter) {
       previous_letter = current_letter;
@@ -463,7 +477,7 @@ uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
   int mac_position = findMacAddressPosition(mac_address.c_str());
   if (mac_position == -1) {
-    mac_position = 1;
+    mac_position = 21;
   }
   int cube_index = mac_position - (mac_position % 2);
   cube_identifier = removeColonsFromMac(CUBE_MAC_ADDRESSES[cube_index]);
@@ -500,7 +514,7 @@ void setupWiFiConnection() {
     Serial.print("Connecting to ");
     Serial.println(ssid);
     WiFi.begin(ssid, password);
-    delay(1000);
+    delay(2000);
     try_portable = ! try_portable;
   }
 
@@ -594,8 +608,8 @@ void setup() {
   debugPrintln("starting....");
   
   // Initialize watchdog timer
-  esp_task_wdt_init(10, true);  // 5 second timeout, panic on timeout
-  esp_task_wdt_add(NULL);      // Add current thread to WDT watch
+  // esp_task_wdt_init(10, true); 
+  // esp_task_wdt_add(NULL);      // Add current thread to WDT watch
   
   // Initialize WiFi and get cube identifier
   setupWiFiConnection();
@@ -637,16 +651,14 @@ void loop() {
   esp_task_wdt_reset();  // Feed the watchdog timer
   
   mqtt_client.loop();
-  if (!is_front_display) {
-    nfc_reader.reset();
-    nfc_reader.setupRF();
-  }
   display_manager->animate(millis());
   display_manager->updateDisplay(millis());
 
   if (is_front_display) {
     return;
   }
+  nfc_reader.reset();
+  nfc_reader.setupRF();
 
   unsigned long current_time = millis();
 
@@ -663,7 +675,10 @@ void loop() {
     }
 
     debugPrintln(F("New card"));
+    unsigned long publish_start = millis();
     mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
+    unsigned long publish_end = millis();
+    Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s\n", publish_end, publish_end - publish_start, neighbor_id);
     strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
     last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
 
@@ -673,12 +688,15 @@ void loop() {
       return;
     }
     long time_since_last_publish = current_time - last_nfc_publish_time;
-    if (time_since_last_publish < NFC_MIN_PUBLISH_INTERVAL_MS) { // DEBOUNCE
+    if (time_since_last_publish < NFC_MIN_PUBLISH_INTERVAL_MS) {
       debugPrintln(F("skipping 0: debounce"));
       return;
     }
     debugPrintln(F("publishing no-link"));
+    unsigned long publish_start = millis();
     mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
+    unsigned long publish_end = millis();
+    Serial.printf("[%lu] MQTT publish took %lu ms - empty payload\n", publish_end, publish_end - publish_start);
     last_neighbor_id[0] = '\0';  // Clear the neighbor ID
     last_nfc_publish_time = millis();
   } else {
