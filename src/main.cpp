@@ -23,7 +23,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "CC:DB:A7:99:0F:E0", "EC:E3:34:79:8A:BC", 
   "CC:DB:A7:9F:C2:84", "D8:BC:38:FD:D0:BC",
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
-  "EC:E3:34:79:9D:2C", "94:54:C5:EE:89:4C"
+  "EC:E3:34:79:9D:2C", "8C:4F:00:2E:58:40"
 };
 #define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
@@ -514,10 +514,8 @@ void setupWiFiConnection() {
   IPAddress local_IP(192, 168, 0, getCubeIpOctet());
   IPAddress gateway(192, 168, 0, 1);
   IPAddress subnet(255, 255, 255, 0);
-  IPAddress primaryDNS(8, 8, 8, 8);   //optional
-  IPAddress secondaryDNS(8, 8, 4, 4); //optional
 
-  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+  if (!WiFi.config(local_IP, gateway, subnet)) {
     Serial.println("STA Failed to configure");
   }
 
@@ -617,9 +615,17 @@ ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
+
+  debugPrintln("starting....");
+  Serial.print("Chip Model: ");
+  Serial.println(ESP.getChipModel());
+
+  Serial.print("Chip Revision: ");
+  Serial.println(ESP.getChipRevision());
+
   mqtt_client.enableDebuggingMessages(true);
   mqtt_client.setMqttReconnectionAttemptDelay(5);
-  debugPrintln("starting....");
+  mqtt_client.enableOTA();
   
   esp_chip_info_t chip_info;
   esp_chip_info(&chip_info);
@@ -667,9 +673,8 @@ void setup() {
 }
 
 void loop() {
-  esp_task_wdt_reset();  // Feed the watchdog timer
-  
   mqtt_client.loop();
+  esp_task_wdt_reset();  // Feed the watchdog timer
   display_manager->animate(millis());
   display_manager->updateDisplay(millis());
 
