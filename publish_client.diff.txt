@@ -1,0 +1,126 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index d477475..88b0f01 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -136,11 +136,12 @@ bool is_border_word = false;
+ String previous_string;
+ 
+ // Network Objects
+-AsyncMqttClient mqtt_client;
++AsyncMqttClient mqtt_client;  // For receiving messages
++AsyncMqttClient mqtt_publish_client;  // For publishing messages
+ WiFiClient wifi_client;
+ static String cube_identifier;
+ const char* nfc_topic_out;
+-static String client_name;
++String client_name;
+ 
+ // Animation
+ char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";
+@@ -527,7 +528,7 @@ void handleResetCommand(const String& message) {
+ 
+ void handlePingCommand(const String& message) {
+   Serial.printf("Ping command received: %s\n", message.c_str());
+-  mqtt_client.publish(mqtt_topic_echo.c_str(), 0, false, message.c_str(), message.length());
++  mqtt_publish_client.publish(mqtt_topic_echo.c_str(), 0, false, message.c_str(), message.length());
+ }
+ 
+ void handleNfcCommand(const String& message) {
+@@ -536,9 +537,9 @@ void handleNfcCommand(const String& message) {
+   last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+ }
+ 
+-// MQTT Callbacks
++// MQTT Callbacks for receiving client
+ void onMqttConnect(bool sessionPresent) {
+-  Serial.println("Connected to MQTT");
++  Serial.println("Connected to MQTT (receive)");
+   
+   // Pre-allocate common topics
+   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
+@@ -563,7 +564,7 @@ void onMqttConnect(bool sessionPresent) {
+ }
+ 
+ void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+-  Serial.println("Disconnected from MQTT");
++  Serial.println("Disconnected from MQTT (receive)");
+ }
+ 
+ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
+@@ -603,17 +604,37 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties
+   Serial.printf("[%lu] Message processing took %lu ms\n", endTime, endTime - startTime);
+ }
+ 
++// MQTT Callbacks for publishing client
++void onPublishMqttConnect(bool sessionPresent) {
++  Serial.println("Connected to MQTT (publish)");
++}
++
++void onPublishMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
++  Serial.println("Disconnected from MQTT (publish)");
++}
++
+ void setupMqtt() {
++  // Setup receiving client
+   mqtt_client.onConnect(onMqttConnect);
+   mqtt_client.onDisconnect(onMqttDisconnect);
+   mqtt_client.onMessage(onMqttMessage);
+   mqtt_client.setServer(MQTT_SERVER_PI, MQTT_PORT);
+-  mqtt_client.setClientId(client_name.c_str());
++  mqtt_client.setClientId((client_name + "_recv").c_str());
+   mqtt_client.setKeepAlive(30);
+   mqtt_client.setCleanSession(true);
+   mqtt_client.setMaxTopicLength(128);
+   mqtt_client.setWill("status", 0, true, "offline");
+   mqtt_client.connect();
++
++  // Setup publishing client
++  mqtt_publish_client.onConnect(onPublishMqttConnect);
++  mqtt_publish_client.onDisconnect(onPublishMqttDisconnect);
++  mqtt_publish_client.setServer(MQTT_SERVER_PI, MQTT_PORT);
++  mqtt_publish_client.setClientId((client_name + "_pub").c_str());
++  mqtt_publish_client.setKeepAlive(30);
++  mqtt_publish_client.setCleanSession(true);
++  mqtt_publish_client.setMaxTopicLength(128);
++  mqtt_publish_client.connect();
+ }
+ 
+ // ============= System Functions =============
+@@ -661,9 +682,8 @@ void setup() {
+   display_manager->displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
+   debugPrintln("setting up wifi...");
+   Serial.println(cube_id);
+-  static String client_name = cube_id + (is_front ? "_F" : "");
++  client_name = cube_id + (is_front ? "_F" : "");
+   Serial.println(client_name);
+-  mqtt_client.setClientId(client_name.c_str());
+   
+   // Setup MQTT connection
+   setupMqtt();
+@@ -675,7 +695,7 @@ void setup() {
+     cube_id.c_str());
+   display_manager->displayDebugMessage(ipDisplay);
+   
+-  mqtt_client.publish(mqtt_topic_version.c_str(), 0, false, VERSION, strlen(VERSION));
++  mqtt_publish_client.publish(mqtt_topic_version.c_str(), 0, false, VERSION, strlen(VERSION));
+ 
+   display_manager->displayDebugMessage("nfc...");
+   debugPrintln(WiFi.macAddress().c_str());
+@@ -715,7 +735,7 @@ void loop() {
+     }
+ 
+     debugPrintln(F("New card"));
+-    mqtt_client.publish(mqtt_topic_cube_nfc.c_str(), 0, true, neighbor_id, strlen(neighbor_id));
++    mqtt_publish_client.publish(mqtt_topic_cube_nfc.c_str(), 0, true, neighbor_id, strlen(neighbor_id));
+     strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
+     last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+ 
+@@ -730,7 +750,7 @@ void loop() {
+       return;
+     }
+     debugPrintln(F("publishing no-link"));
+-    mqtt_client.publish(mqtt_topic_cube_nfc.c_str(), 0, true, "", 0);
++    mqtt_publish_client.publish(mqtt_topic_cube_nfc.c_str(), 0, true, "", 0);
+     last_neighbor_id[0] = '\0';  // Clear the neighbor ID
+     last_nfc_publish_time = millis();
+   } else {

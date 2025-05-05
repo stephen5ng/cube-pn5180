@@ -17,12 +17,13 @@
 // ============= Configuration =============
 // MAC Address Table
 const char *CUBE_MAC_ADDRESSES[] = {
+  // MAIN SCREEN, FRONT SCREEN
   "C4:DD:57:8E:46:C8", "94:54:C5:EE:87:F0",
-  "CC:DB:A7:92:9A:A0", "D8:BC:38:FD:E0:98",
-  "CC:DB:A7:99:0F:E0", "CC:DB:A7:98:54:2C", 
-  "E8:6B:EA:DE:B3:44", "D8:BC:38:FD:D0:BC",
+  "EC:E3:34:B4:8F:B4", "D8:BC:38:FD:E0:98",
+  "CC:DB:A7:99:0F:E0", "EC:E3:34:79:8A:BC", 
+  "CC:DB:A7:9F:C2:84", "D8:BC:38:FD:D0:BC",
   "CC:DB:A7:95:E7:70", "94:54:C5:F1:AF:00",
-  "94:54:C5:ED:C6:34", "94:54:C5:EE:89:4C"
+  "EC:E3:34:79:9D:2C", "94:54:C5:EE:89:4C"
 };
 #define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
@@ -195,6 +196,7 @@ private:
   uint16_t border_color;
   unsigned long animation_start_time;
   long highlight_end_time;
+  bool is_lock;
   uint8_t letter_position;
   uint16_t current_letter_color;
   EasingFunc<Ease::BounceOut> letter_animation;
@@ -209,7 +211,7 @@ public:
                                 border_style(' '), is_border_word(false), border_color(WHITE),
                                 animation_start_time(0), highlight_end_time(0), letter_position(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), rotation(is_front ? 2 : 3), font_size(1) {
+                                text_size(1), rotation(is_front ? 2 : 3), font_size(1), is_lock(false) {
     setupDisplay();
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
@@ -278,6 +280,14 @@ public:
     is_dirty = true;
   }
 
+  void handleLockCommand(const String& message) {
+    debugPrintln("locking due to /lock");
+    is_lock = message.charAt(0) == '1';
+    Serial.println(is_lock);
+    Serial.println(message);
+    is_dirty = true;
+  }
+
   void handleBorderColorCommand(const String& message) {
     debugPrintln("setting border color due to /border_color");
     switch (message.charAt(0)) {
@@ -305,6 +315,9 @@ public:
     static uint16_t last_letter_color = -1;
 
     current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+    if (is_lock) {
+      current_letter_color = YELLOW;
+    }
     if (last_letter_color != current_letter_color) {
       last_letter_color = current_letter_color;
       is_dirty = true;
@@ -571,6 +584,7 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/string", [](const String& msg) { display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_line", [](const String& msg) { display_manager->handleBorderLineCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", [](const String& msg) { display_manager->handleBorderColorCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
@@ -607,6 +621,11 @@ void setup() {
   mqtt_client.setMqttReconnectionAttemptDelay(5);
   debugPrintln("starting....");
   
+  esp_chip_info_t chip_info;
+  esp_chip_info(&chip_info);
+
+  Serial.printf("Model: %d, Cores: %d, Revision: %d\n", chip_info.model, chip_info.cores, chip_info.revision);
+
   // Initialize watchdog timer
   // esp_task_wdt_init(10, true); 
   // esp_task_wdt_add(NULL);      // Add current thread to WDT watch
@@ -668,10 +687,7 @@ void loop() {
     char neighbor_id[NFCID_LENGTH * 2 + 1];
     convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
     if (strcmp(neighbor_id, last_neighbor_id) == 0) {
-      return;
-    }
-    if (current_time - last_nfc_publish_time < NFC_DEBOUNCE_TIME_MS) {
-      return;
+      return;  // No change in state, don't publish
     }
 
     debugPrintln(F("New card"));
@@ -681,24 +697,16 @@ void loop() {
     Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s\n", publish_end, publish_end - publish_start, neighbor_id);
     strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
     last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-
-    last_nfc_publish_time = millis();
   } else if (read_result == EC_NO_CARD) {
-    if (current_time - last_nfc_publish_time < NFC_DEBOUNCE_TIME_MS) {
-      return;
+    // Only publish if we had a card before and now we don't
+    if (last_neighbor_id[0] != '\0') {
+      debugPrintln(F("Card removed"));
+      unsigned long publish_start = millis();
+      mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
+      unsigned long publish_end = millis();
+      Serial.printf("[%lu] MQTT publish took %lu ms - empty payload\n", publish_end, publish_end - publish_start);
+      last_neighbor_id[0] = '\0';  // Clear the neighbor ID
     }
-    long time_since_last_publish = current_time - last_nfc_publish_time;
-    if (time_since_last_publish < NFC_MIN_PUBLISH_INTERVAL_MS) {
-      debugPrintln(F("skipping 0: debounce"));
-      return;
-    }
-    debugPrintln(F("publishing no-link"));
-    unsigned long publish_start = millis();
-    mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
-    unsigned long publish_end = millis();
-    Serial.printf("[%lu] MQTT publish took %lu ms - empty payload\n", publish_end, publish_end - publish_start);
-    last_neighbor_id[0] = '\0';  // Clear the neighbor ID
-    last_nfc_publish_time = millis();
   } else {
     debugPrintln(F("not ok"));
   }
