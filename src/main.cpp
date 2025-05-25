@@ -76,7 +76,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
 
 // MQTT Configuration
-#define MQTT_SERVER_PI "192.168.0.247"
+#define MQTT_SERVER_PI "192.168.8.247"
 #define MQTT_PORT 1883
 
 // MQTT Topic Prefixes
@@ -613,8 +613,8 @@ void setupWiFiConnection() {
   Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
   
-  IPAddress local_IP(192, 168, 0, getCubeIpOctet());
-  IPAddress gateway(192, 168, 0, 1);
+  IPAddress local_IP(192, 168, 8, getCubeIpOctet());
+  IPAddress gateway(192, 168, 8, 1);
   IPAddress subnet(255, 255, 255, 0);
 
   if (!WiFi.config(local_IP, gateway, subnet)) {
@@ -628,7 +628,7 @@ void setupWiFiConnection() {
     Serial.println(ssid);
     WiFi.begin(ssid, password);
     delay(2000);
-    try_portable = ! try_portable;
+    // try_portable = ! try_portable;
   }
 
   Serial.println("");
