@@ -15,6 +15,8 @@
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 
+#define MINI false
+
 // ============= Configuration =============
 // MAC Address Table
 const char *CUBE_MAC_ADDRESSES[] = {
@@ -50,8 +52,17 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
 
 // Pin Definitions
-#define MISO 39
-#define PN5180_BUSY 36
+#if MINI
+  #define MISO 34
+#else
+  #define MISO 39
+#endif
+
+#if MINI
+  #define PN5180_BUSY 35
+#else
+  #define PN5180_BUSY 36
+#endif
 #define PN5180_NSS 32
 #define PN5180_RST 17
 
@@ -101,8 +112,8 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
   4,   //C_PIN,
   22,  //D_PIN,
   12,  //E_PIN,
-  15,  //LAT_PIN,
-  2,   //OE_PIN,
+  2,   //LAT_PIN,
+  15,  //OE_PIN,
   16,  //CLK_PIN
 };
 
