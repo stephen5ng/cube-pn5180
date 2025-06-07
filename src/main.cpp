@@ -9,6 +9,7 @@
 #include <SPI.h>
 #include "mbedtls/base64.h"
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <Wire.h>
 #include <secrets.h>
 #include "font.h"
@@ -171,6 +172,11 @@ String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_version;
 
+// UDP Configuration
+#define UDP_PORT 54321  // Port for ping-pong
+WiFiUDP udp;
+char udpBuffer[255];
+
 // ============= Debug Functions =============
 void debugPrint(const char* message) {
   if (PRINT_DEBUG) {
@@ -299,9 +305,9 @@ public:
     } else if (style == ']') {
       led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, color);
       led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, color);
-    }
+    } 
 
-    if (style != '[' && style != ']') {
+    if (style != '[' && style != ']' && style != '-') {
       return;
     }
 
@@ -310,7 +316,6 @@ public:
     led_display->drawFastHLine(0, 1, PANEL_RES_X, color);
     led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, color);
     led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, color);
-
   }
 
   void handleFlashCommand(const String& message) {
@@ -725,6 +730,44 @@ ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
   return nfc_reader.getInventory(card_id);
 }
 
+void setupUDP() {
+  udp.begin(UDP_PORT);
+  Serial.printf("UDP server listening on port %d\n", UDP_PORT);
+}
+
+void handleUDP() {
+  int packetSize = udp.parsePacket();
+  if (packetSize) {
+    Serial.printf("packetSize: %d\n", packetSize);
+    int len = udp.read(udpBuffer, sizeof(udpBuffer)-1);
+    Serial.printf("len: %d\n", len);
+    if (len > 0) {
+      udpBuffer[len] = 0; // Null terminate
+      
+      // Check if message is "ping"
+      if (strcmp(udpBuffer, "ping") == 0) {
+        // Send "pong" back to sender
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)"pong", 4);
+        udp.endPacket();
+        
+        Serial.printf("Received ping from %s:%d\n", udp.remoteIP().toString().c_str(), udp.remotePort());
+      }
+      // Check if message is "rssi"
+      else if (strcmp(udpBuffer, "rssi") == 0) {
+        char rssiStr[32];
+        snprintf(rssiStr, sizeof(rssiStr), "%d", WiFi.RSSI());
+        
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)rssiStr, strlen(rssiStr));
+        udp.endPacket();
+        
+        Serial.printf("Sent RSSI to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), rssiStr);
+      }
+    }
+  }
+}
+
 // ============= Main Functions =============
 void setup() {
   Serial.begin(115200);
@@ -783,6 +826,8 @@ void setup() {
   setupNfcReader();
   display_manager->clearScreen();
 
+  setupUDP(); // Add UDP setup
+
   debugPrintln(F("Setup Complete"));
 }
 
@@ -791,6 +836,7 @@ void loop() {
   esp_task_wdt_reset();  // Feed the watchdog timer
   display_manager->animate(millis());
   display_manager->updateDisplay(millis());
+  handleUDP();
 
   if (is_front_display) {
     return;
