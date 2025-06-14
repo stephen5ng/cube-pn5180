@@ -222,6 +222,8 @@ private:
   uint16_t current_letter_color;
   uint16_t hline_color1;
   uint16_t hline_color2;
+  uint16_t vline_color_right;
+  uint16_t vline_color_left;
   EasingFunc<Ease::BounceOut> letter_animation;
   const GFXfont* current_font;
   uint8_t text_size;
@@ -296,16 +298,16 @@ public:
     }
   }
 
-  void drawBorderHLine(uint16_t color1, uint16_t color2) {
-    if (color1 == 0) {
+  void drawBorderHLine() {
+    if (hline_color1 == 0) {
       return;
     }
-    if (color2 == 0) {
+    if (hline_color2 == 0) {
       // Draw two lines at top and bottom with color1
-      led_display->drawFastHLine(0, 0, PANEL_RES_X, color1);
-      led_display->drawFastHLine(0, 1, PANEL_RES_X, color1);
-      led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, color1);
-      led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, color1);
+      led_display->drawFastHLine(0, 0, PANEL_RES_X, hline_color1);
+      led_display->drawFastHLine(0, 1, PANEL_RES_X, hline_color1);
+      led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, hline_color1);
+      led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, hline_color1);
       return;
     }
 
@@ -323,9 +325,20 @@ public:
       }
       for(uint8_t band = 0; band < 4; band++) {
         // Start with color2 for bottom rows
-        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? color1 : color2;
+        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? hline_color1 : hline_color2;
         led_display->drawFastHLine(band * bandWidth, yPos, bandWidth, color);
       }
+    }
+  }
+
+  void drawBorderVLines() {
+    if (vline_color_left != 0) {
+      led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, vline_color_left);
+      led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, vline_color_left);
+    }
+    if (vline_color_right != 0) {
+      led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, vline_color_right);
+      led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, vline_color_right);
     }
   }
 
@@ -397,7 +410,20 @@ public:
 
     is_dirty = true;
   }
-  
+  void handleBorderVLineRightCommand(const String& message) {
+    debugPrintln("setting border vline right color due to /border_vline_right");
+    uint16_t color = strtol(message.c_str(), NULL, 16);
+    vline_color_right = color;
+    is_dirty = true;
+  }
+
+  void handleBorderVLineLeftCommand(const String& message) {
+    debugPrintln("setting border vline left color due to /border_vline_left");
+    uint16_t color = strtol(message.c_str(), NULL, 16);
+    vline_color_left = color;
+    is_dirty = true;
+  }
+
   void handleBorderHLine2Command(const String& message) {
     debugPrintln("setting border hline color due to /border_hline2");
     Serial.println(message);
@@ -503,8 +529,8 @@ public:
     }
     drawBorder(border_style, border_color);
     drawBorderSides();
-    drawBorderHLine(hline_color1, hline_color2);
-
+    drawBorderHLine();
+    drawBorderVLines();
     led_display->flipDMABuffer();    
     led_display->clearScreen();
     is_dirty = false;
@@ -764,6 +790,8 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", [](const String& msg) { display_manager->handleBorderColorCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline", [](const String& msg) { display_manager->handleBorderHLineCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline2", [](const String& msg) { display_manager->handleBorderHLine2Command(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
