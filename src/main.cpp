@@ -315,13 +315,15 @@ public:
     // Draw both top and bottom borders (two lines each)
     for(uint8_t y = 0; y < 4; y++) {
       uint16_t yPos;
+      bool isBottom = y >= 2;
       if (y < 2) {
         yPos = y;  // Top two lines
       } else {
         yPos = PANEL_RES_Y - 4 + y;  // Bottom two lines
       }
       for(uint8_t band = 0; band < 4; band++) {
-        uint16_t color = (band % 2) == 0 ? color1 : color2;
+        // Start with color2 for bottom rows
+        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? color1 : color2;
         led_display->drawFastHLine(band * bandWidth, yPos, bandWidth, color);
       }
     }
