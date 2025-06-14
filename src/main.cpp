@@ -74,7 +74,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
 #define VERSION "v0.8a"
-#define PRINT_DEBUG false
+#define PRINT_DEBUG true
 
 // Timing Constants
 #define NFC_DEBOUNCE_TIME_MS 200
@@ -220,6 +220,8 @@ private:
   bool is_lock;
   uint8_t letter_position;
   uint16_t current_letter_color;
+  uint16_t hline_color1;
+  uint16_t hline_color2;
   EasingFunc<Ease::BounceOut> letter_animation;
   const GFXfont* current_font;
   uint8_t text_size;
@@ -294,6 +296,37 @@ public:
     }
   }
 
+  void drawBorderHLine(uint16_t color1, uint16_t color2) {
+    if (color1 == 0) {
+      return;
+    }
+    if (color2 == 0) {
+      // Draw two lines at top and bottom with color1
+      led_display->drawFastHLine(0, 0, PANEL_RES_X, color1);
+      led_display->drawFastHLine(0, 1, PANEL_RES_X, color1);
+      led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, color1);
+      led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, color1);
+      return;
+    }
+
+    // Draw alternating bands of color1 and color2
+    uint16_t bandWidth = PANEL_RES_X/4;
+    
+    // Draw both top and bottom borders (two lines each)
+    for(uint8_t y = 0; y < 4; y++) {
+      uint16_t yPos;
+      if (y < 2) {
+        yPos = y;  // Top two lines
+      } else {
+        yPos = PANEL_RES_Y - 4 + y;  // Bottom two lines
+      }
+      for(uint8_t band = 0; band < 4; band++) {
+        uint16_t color = (band % 2) == 0 ? color1 : color2;
+        led_display->drawFastHLine(band * bandWidth, yPos, bandWidth, color);
+      }
+    }
+  }
+
   void drawBorder(char style, uint16_t color) {
     if (style == ' ') {
       return;
@@ -354,6 +387,28 @@ public:
     is_dirty = true;  
   }
 
+  void handleBorderHLineCommand(const String& message) {
+    debugPrintln("setting border hline color due to /border_hline");
+    uint16_t color = strtol(message.c_str(), NULL, 16);
+    hline_color1 = color;
+    hline_color2 = 0;
+
+    is_dirty = true;
+  }
+  
+  void handleBorderHLine2Command(const String& message) {
+    debugPrintln("setting border hline color due to /border_hline2");
+    Serial.println(message);
+    int commaIndex = message.indexOf(',');
+    Serial.println(commaIndex);
+    hline_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
+    hline_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
+    Serial.println(hline_color1);
+    Serial.println(hline_color2);
+
+    is_dirty = true;
+  }
+  
   void handleOldCommand(const String& message) {
     debugPrintln("setting old due to /old");
     border_color = YELLOW;
@@ -446,6 +501,7 @@ public:
     }
     drawBorder(border_style, border_color);
     drawBorderSides();
+    drawBorderHLine(hline_color1, hline_color2);
 
     led_display->flipDMABuffer();    
     led_display->clearScreen();
@@ -704,6 +760,8 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_line", [](const String& msg) { display_manager->handleBorderLineCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_side", [](const String& msg) { display_manager->handleBorderSideCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", [](const String& msg) { display_manager->handleBorderColorCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline", [](const String& msg) { display_manager->handleBorderHLineCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline2", [](const String& msg) { display_manager->handleBorderHLine2Command(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
