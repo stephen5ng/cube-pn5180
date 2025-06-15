@@ -592,6 +592,7 @@ public:
 
   void handleImageCommand(const String& message) {
     Serial.println("handling image");
+    Serial.printf("message length: %d\n", message.length());
     static unsigned long last_message_time = 0;
     is_image_mode = true;
     image_b64 = message;
@@ -871,7 +872,8 @@ void setup() {
   Serial.print("Chip Revision: ");
   Serial.println(ESP.getChipRevision());
 
-  mqtt_client.setMaxPacketSize(65535);
+  mqtt_client.setMaxPacketSize(11999);
+  Serial.printf("memory available: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
   mqtt_client.setMqttReconnectionAttemptDelay(5);
   mqtt_client.enableOTA();
@@ -948,20 +950,24 @@ void loop() {
 
     debugPrintln(F("New card"));
     unsigned long publish_start = millis();
-    mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
+    bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
     unsigned long publish_end = millis();
-    Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s\n", publish_end, publish_end - publish_start, neighbor_id);
-    strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
-    last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+    Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
+    if (success) {
+      strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
+      last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+    }
   } else if (read_result == EC_NO_CARD) {
     // Only publish if we had a card before and now we don't
     if (last_neighbor_id[0] != '\0') {
       debugPrintln(F("Card removed"));
       unsigned long publish_start = millis();
-      mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
+      bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
       unsigned long publish_end = millis();
-      Serial.printf("[%lu] MQTT publish took %lu ms - empty payload\n", publish_end, publish_end - publish_start);
-      last_neighbor_id[0] = '\0';  // Clear the neighbor ID
+      Serial.printf("[%lu] MQTT publish took %lu ms - empty payload, success: %d\n", publish_end, publish_end - publish_start, success);
+      if (success) {
+        last_neighbor_id[0] = '\0';  // Clear the neighbor ID
+      }
     }
   } else {
     debugPrintln(F("not ok"));
