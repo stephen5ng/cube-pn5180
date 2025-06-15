@@ -473,6 +473,41 @@ public:
     }
   }
 
+  void handleImageMode() {
+    led_display->setCursor(0, BIG_ROW);
+    led_display->setTextColor(LETTER_COLOR, BLACK);
+    led_display->setTextSize(font_size);
+    
+    // First get the required buffer size
+    size_t outputLen = 0;
+    int ret = mbedtls_base64_decode(nullptr, 0, &outputLen, 
+        (const unsigned char*)image_b64.c_str(), image_b64.length());
+    
+    if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+      debugPrintln("Failed to determine base64 decode size");
+      debugPrintln(image_b64.c_str());
+      return;
+    }
+
+    // Allocate buffer and decode
+    uint8_t* decoded = (uint8_t*)malloc(outputLen);
+    if (!decoded) {
+      debugPrintln("Failed to allocate memory for base64 decode");
+      return;
+    }
+
+    ret = mbedtls_base64_decode(decoded, outputLen, &outputLen,
+        (const unsigned char*)image_b64.c_str(), image_b64.length());
+    
+    if (ret != 0) {
+      debugPrintln("Failed to decode base64 data");
+      free(decoded);
+      return;
+    }
+
+    led_display->drawRGBBitmap(0, 0, (uint16_t*)decoded, 64, 64);
+    free(decoded);
+  }
 
   void updateDisplay(unsigned long current_time) {
     if (!is_dirty) {
@@ -484,39 +519,7 @@ public:
     led_display->setRotation(rotation);
 
     if (is_image_mode) {
-      led_display->setCursor(0, BIG_ROW);
-      led_display->setTextColor(LETTER_COLOR, BLACK);
-      led_display->setTextSize(font_size);
-      
-      // First get the required buffer size
-      size_t outputLen = 0;
-      int ret = mbedtls_base64_decode(nullptr, 0, &outputLen, 
-          (const unsigned char*)image_b64.c_str(), image_b64.length());
-      
-      if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        debugPrintln("Failed to determine base64 decode size");
-        debugPrintln(image_b64.c_str());
-        return;
-      }
-
-      // Allocate buffer and decode
-      uint8_t* decoded = (uint8_t*)malloc(outputLen);
-      if (!decoded) {
-        debugPrintln("Failed to allocate memory for base64 decode");
-        return;
-      }
-
-      ret = mbedtls_base64_decode(decoded, outputLen, &outputLen,
-          (const unsigned char*)image_b64.c_str(), image_b64.length());
-      
-      if (ret != 0) {
-        debugPrintln("Failed to decode base64 data");
-        free(decoded);
-        return;
-      }
-
-      led_display->drawRGBBitmap(0, 0, (uint16_t*)decoded, 64, 64);
-      free(decoded);
+      handleImageMode();
     } else {    
       if (current_letter != previous_letter) {
         displayLetter(100 + letter_position, previous_letter, RED);
