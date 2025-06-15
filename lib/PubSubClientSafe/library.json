@@ -1,0 +1,29 @@
+{
+    "name": "PubSubClientSafe",
+    "version": "2.8.1",
+    "description": "A memory-safe fork of PubSubClient with improved buffer handling and safety checks",
+    "keywords": "mqtt, iot, esp32, esp8266",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/knolleary/pubsubclient.git"
+    },
+    "authors": [
+        {
+            "name": "Nick O'Leary",
+            "email": "nick.oleary@gmail.com",
+            "url": "http://knolleary.net"
+        }
+    ],
+    "license": "MIT",
+    "frameworks": "arduino",
+    "platforms": ["espressif32", "espressif8266"],
+    "dependencies": {
+    },
+    "build": {
+        "srcDir": "src",
+        "includeDir": "src"
+    },
+    "export": {
+        "include": "src/PubSubClientSafe.h"
+    }
+} 
