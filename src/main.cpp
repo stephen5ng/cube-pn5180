@@ -527,6 +527,7 @@ public:
   }
 
   void updateDisplay(unsigned long current_time) {
+    return;
     if (!is_dirty) {
       return;
     }
@@ -617,12 +618,14 @@ public:
       Serial.println("Empty message received, ignoring");
       return;
     }
-
     // Process in chunks of 1024 bytes
-    const size_t CHUNK_SIZE = 1024;
+    const size_t CHUNK_SIZE = 11000;
+    Serial.printf("message.length(): %d\n", message.length());
+    char* chunk = new char[message.length()];
+    return;
     image_b64 = "";
     image_b64.reserve(message.length());
-    
+    return;
     for (size_t i = 0; i < message.length(); i += CHUNK_SIZE) {
       size_t chunk_size = min(CHUNK_SIZE, message.length() - i);
       String chunk = message.substring(i, i + chunk_size);
@@ -634,6 +637,7 @@ public:
           millis(), i + chunk_size, message.length(), ESP.getFreeHeap());
       }
     }
+    return;
     
     Serial.printf("[%lu] Final image_b64 length: %d, free heap: %d\n", 
       current_time, image_b64.length(), ESP.getFreeHeap());
@@ -826,8 +830,10 @@ void onConnectionEstablished() {
   mqtt_client.setKeepAlive(60);  // Increase keepalive to 60 seconds
   
   // Subscribe to all command topics with a static buffer for the callback
-  static char mqtt_buffer[12000];  // Slightly larger than max message size
+  // static char mqtt_buffer[12000];  // Slightly larger than max message size
   mqtt_client.subscribe(mqtt_topic_cube + "/image", [](const String& msg) { 
+    char* chunk = new char[msg.length()];
+    return;
     Serial.printf("MQTT callback: len=%d, free heap: %d\n", 
       msg.length(), ESP.getFreeHeap());
       
@@ -837,7 +843,7 @@ void onConnectionEstablished() {
     }
 
     // Process the message directly
-    display_manager->handleImageCommand(msg);
+    // display_manager->handleImageCommand(msg);
   });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
@@ -921,7 +927,7 @@ void handleUDP() {
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
-
+  sleep(2);
   debugPrintln("starting....");
   Serial.print("Chip Model: ");
   Serial.println(ESP.getChipModel());
@@ -929,6 +935,7 @@ void setup() {
   Serial.print("Chip Revision: ");
   Serial.println(ESP.getChipRevision());
 
+  Serial.printf("MQTT DEBUG: setup() setMaxPacketSize: %u\n", 65535);
   mqtt_client.setMaxPacketSize(65535);
   mqtt_client.enableDebuggingMessages(false);
   mqtt_client.setMqttReconnectionAttemptDelay(5);
