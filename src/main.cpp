@@ -236,7 +236,8 @@ public:
                                 border_style(' '), is_border_word(false), border_color(WHITE),
                                 animation_start_time(0), highlight_end_time(0), letter_position(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), rotation(0), font_size(1), is_lock(false) {
+                                text_size(1), rotation(0), font_size(1), is_lock(false),
+                                hline_color1(0), hline_color2(0), vline_color_right(0), vline_color_left(0) {
     setupDisplay();
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
@@ -478,13 +479,24 @@ public:
     led_display->setTextColor(LETTER_COLOR, BLACK);
     led_display->setTextSize(font_size);
     
+    Serial.printf("image mode, len: %d, free heap: %d\n", 
+      image_b64.length(), 
+      ESP.getFreeHeap());
+      
+    if (image_b64.length() == 0) {
+      Serial.println("null image, clearing screen");
+      led_display->clearScreen();
+      return;
+    }
+
     // First get the required buffer size
     size_t outputLen = 0;
     int ret = mbedtls_base64_decode(nullptr, 0, &outputLen, 
         (const unsigned char*)image_b64.c_str(), image_b64.length());
     
     if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-      debugPrintln("Failed to determine base64 decode size");
+      Serial.printf("Failed to determine base64 decode size: %d, free heap: %d\n", 
+        ret, ESP.getFreeHeap());
       debugPrintln(image_b64.c_str());
       return;
     }
@@ -492,7 +504,8 @@ public:
     // Allocate buffer and decode
     uint8_t* decoded = (uint8_t*)malloc(outputLen);
     if (!decoded) {
-      debugPrintln("Failed to allocate memory for base64 decode");
+      Serial.printf("Failed to allocate %d bytes, free heap: %d\n", 
+        outputLen, ESP.getFreeHeap());
       return;
     }
 
@@ -500,13 +513,17 @@ public:
         (const unsigned char*)image_b64.c_str(), image_b64.length());
     
     if (ret != 0) {
-      debugPrintln("Failed to decode base64 data");
+      Serial.printf("Failed to decode base64 data: %d, free heap: %d\n", 
+        ret, ESP.getFreeHeap());
       free(decoded);
       return;
     }
 
     led_display->drawRGBBitmap(0, 0, (uint16_t*)decoded, 64, 64);
     free(decoded);
+    
+    // Clear the base64 string to free memory
+    image_b64 = "";
   }
 
   void updateDisplay(unsigned long current_time) {
@@ -591,11 +608,37 @@ public:
   }
 
   void handleImageCommand(const String& message) {
-    Serial.println("handling image");
-    static unsigned long last_message_time = 0;
+    unsigned long current_time = millis();
+    
+    Serial.printf("[%lu] handleImageCommand: len=%d, free heap: %d\n", 
+      current_time, message.length(), ESP.getFreeHeap());
+    
+    if (message.length() == 0) {
+      Serial.println("Empty message received, ignoring");
+      return;
+    }
+
+    // Process in chunks of 1024 bytes
+    const size_t CHUNK_SIZE = 1024;
+    image_b64 = "";
+    image_b64.reserve(message.length());
+    
+    for (size_t i = 0; i < message.length(); i += CHUNK_SIZE) {
+      size_t chunk_size = min(CHUNK_SIZE, message.length() - i);
+      String chunk = message.substring(i, i + chunk_size);
+      image_b64 += chunk;
+      
+      // Print progress every 4 chunks
+      if ((i / CHUNK_SIZE) % 4 == 0) {
+        Serial.printf("[%lu] Processed %d/%d bytes, free heap: %d\n", 
+          millis(), i + chunk_size, message.length(), ESP.getFreeHeap());
+      }
+    }
+    
+    Serial.printf("[%lu] Final image_b64 length: %d, free heap: %d\n", 
+      current_time, image_b64.length(), ESP.getFreeHeap());
+    
     is_image_mode = true;
-    image_b64 = message;
-    // rotation = is_front ? 0 : 0;  // Restore original rotation for letter mode
     is_dirty = true;
   }
 
@@ -779,11 +822,23 @@ void onConnectionEstablished() {
   mqtt_topic_echo = createMqttTopic(MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_version = createMqttTopic("version");
   
-  // Subscribe to all command topics
-  mqtt_client.subscribe(mqtt_topic_cube + "/sleep", handleSleepCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/image", [](const String& msg) { display_manager->handleImageCommand(msg); });
+  // Configure MQTT client for more reliable message delivery
+  mqtt_client.setKeepAlive(60);  // Increase keepalive to 60 seconds
+  
+  // Subscribe to all command topics with a static buffer for the callback
+  static char mqtt_buffer[12000];  // Slightly larger than max message size
+  mqtt_client.subscribe(mqtt_topic_cube + "/image", [](const String& msg) { 
+    Serial.printf("MQTT callback: len=%d, free heap: %d\n", 
+      msg.length(), ESP.getFreeHeap());
+      
+    if (msg.length() == 0) {
+      Serial.println("Empty message received, ignoring");
+      return;
+    }
+
+    // Process the message directly
+    display_manager->handleImageCommand(msg);
+  });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
@@ -797,6 +852,9 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/sleep", handleSleepCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
 }
 
