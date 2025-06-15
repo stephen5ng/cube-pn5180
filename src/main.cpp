@@ -936,7 +936,16 @@ void setup() {
   Serial.println(ESP.getChipRevision());
 
   Serial.printf("MQTT DEBUG: setup() setMaxPacketSize: %u\n", 65535);
-  mqtt_client.setMaxPacketSize(65535);
+  // mqtt_client.setMaxPacketSize(65535);
+  // 57151 bad
+  // mqtt_client.setMaxPacketSize(52959);
+  Serial.printf("setup DEBUG: new payloadCopy\n");
+  char* payloadCopy = new char[10925];
+  Serial.printf("setup DEBUG: new chunk\n");
+  char* chunk = new char[10924];
+  Serial.printf("setup chunk: %p\n", chunk);
+  Serial.printf("setup payloadCopy: %p\n", payloadCopy);
+  Serial.printf("free heap: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
   mqtt_client.setMqttReconnectionAttemptDelay(5);
   mqtt_client.enableOTA();
@@ -988,11 +997,18 @@ void setup() {
 }
 
 void loop() {
+  static unsigned long last_print = 0;
+  unsigned long current = millis();
+  
+  if (current - last_print >= 1000) {
+    Serial.printf("Uptime: %lu seconds\n", current / 1000);
+    last_print = current;
+  }
   mqtt_client.loop();
   esp_task_wdt_reset();  // Feed the watchdog timer
   display_manager->animate(millis());
   display_manager->updateDisplay(millis());
-  handleUDP();
+  // handleUDP();
 
   if (is_front_display) {
     return;

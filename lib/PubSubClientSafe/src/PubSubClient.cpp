@@ -333,8 +333,9 @@ uint32_t PubSubClient::readPacket(uint8_t* lengthLength) {
     } while ((digit & 128) != 0);
     *lengthLength = len-1;
 
-    if (isPublish) {
+    if (false && isPublish) {
         // Read in topic length to calculate bytes to skip over for Stream writing
+        Serial.printf("MQTT DEBUG: isPublish len: %d\n", len);
         if(!readByte(this->buffer, &len)) return 0;
         if(!readByte(this->buffer, &len)) return 0;
         skip = (this->buffer[*lengthLength+1]<<8)+this->buffer[*lengthLength+2];
@@ -345,17 +346,23 @@ uint32_t PubSubClient::readPacket(uint8_t* lengthLength) {
         }
     }
     uint32_t idx = len;
-
+    Serial.printf("readPacket: idx: %d, len: %d, length: %d\n", idx, len, length);
     for (uint32_t i = start;i<length;i++) {
         if(!readByte(&digit)) return 0;
         if (this->stream) {
             if (isPublish && idx-*lengthLength-2>skip) {
+                Serial.printf("MQTT DEBUG: stream write: %d\n", digit);
                 this->stream->write(digit);
             }
         }
 
         if (len < this->bufferSize) {
-            this->buffer[len] = digit;
+            // Serial.printf("readPacket: len: %d\n", len);
+            if (!isPublish) {
+                this->buffer[len] = digit;
+            } else {
+                // Serial.printf("skipping read: %d\n", len);
+            }
             len++;
         }
         idx++;
@@ -368,6 +375,7 @@ uint32_t PubSubClient::readPacket(uint8_t* lengthLength) {
 }
 
 boolean PubSubClient::loop() {
+    // return true;
     if (connected()) {
         unsigned long t = millis();
         if ((t - lastInActivity > this->keepAlive*1000UL) || (t - lastOutActivity > this->keepAlive*1000UL)) {
@@ -394,12 +402,19 @@ boolean PubSubClient::loop() {
                 uint8_t type = this->buffer[0]&0xF0;
                 if (type == MQTTPUBLISH) {
                     if (callback) {
+                        Serial.printf("pubsubclient DEBUG: new chunk len: %d\n", len);
+                        char* payloadCopy = new char[10925];
+                        Serial.printf("pubsubclient DEBUG: new chunk\n");
+                        char* chunk = new char[10924];
+                        return true;
                         uint16_t tl = (this->buffer[llen+1]<<8)+this->buffer[llen+2]; /* topic length in bytes */
                         memmove(this->buffer+llen+2,this->buffer+llen+3,tl); /* move topic inside buffer 1 byte to front */
+                        Serial.printf("MQTT DEBUG: this->buffer length: %d\n", llen+2+tl);
                         this->buffer[llen+2+tl] = 0; /* end the topic as a 'C' string with \x00 */
                         char *topic = (char*) this->buffer+llen+2;
                         // msgId only present for QOS>0
                         if ((this->buffer[0]&0x06) == MQTTQOS1) {
+                            Serial.printf("MQTT DEBUG: QOS1\n");
                             msgId = (this->buffer[llen+3+tl]<<8)+this->buffer[llen+3+tl+1];
                             payload = this->buffer+llen+3+tl+2;
                             callback(topic,payload,len-llen-3-tl-2);
@@ -742,6 +757,7 @@ boolean PubSubClient::setBufferSize(uint16_t size) {
         // Cannot set it back to 0
         return false;
     }
+    Serial.printf("setBufferSize bufferSize: %d\n", this->bufferSize);
     if (this->bufferSize == 0) {
         this->buffer = (uint8_t*)malloc(size);
     } else {
@@ -753,6 +769,12 @@ boolean PubSubClient::setBufferSize(uint16_t size) {
         }
     }
     this->bufferSize = size;
+    Serial.printf("setBufferSize DEBUG: new payloadCopy\n");
+    char* payloadCopy = new char[10925];
+    Serial.printf("setBufferSize DEBUG: new chunk\n");
+    char* chunk = new char[10924];
+    Serial.printf("setBufferSize chunk: %p\n", chunk);
+    Serial.printf("setBufferSize payloadCopy: %p\n", payloadCopy);
     return (this->buffer != NULL);
 }
 
