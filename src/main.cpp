@@ -220,8 +220,8 @@ private:
   bool is_lock;
   uint8_t letter_position;
   uint16_t current_letter_color;
-  uint16_t hline_color1;
-  uint16_t hline_color2;
+  uint16_t frame_color1;
+  uint16_t frame_color2;
   uint16_t vline_color_right;
   uint16_t vline_color_left;
   EasingFunc<Ease::BounceOut> letter_animation;
@@ -247,7 +247,7 @@ public:
     display_config.double_buff = true;
     led_display = new MatrixPanel_I2S_DMA(display_config);
     led_display->begin();
-    led_display->setBrightness8(BRIGHTNESS);
+    led_display->setBrightness(BRIGHTNESS);
     led_display->setRotation(rotation);
     led_display->setTextWrap(true);
     led_display->clearScreen();
@@ -277,6 +277,7 @@ public:
   }
 
   void drawBorderSides() {
+    Serial.printf("drawBorderSides border_style_left: %d, border_style_right: %d\n", border_style_left, border_style_right);
     uint16_t color_left = RED;
     uint16_t color_right = RED;
     // Draw vertical border lines if needed
@@ -298,16 +299,22 @@ public:
     }
   }
 
-  void drawBorderHLine() {
-    if (hline_color1 == 0) {
+  void drawBorderFrame() {
+    if (frame_color1 == 0) {
       return;
     }
-    if (hline_color2 == 0) {
+    if (frame_color2 == 0) {
       // Draw two lines at top and bottom with color1
-      led_display->drawFastHLine(0, 0, PANEL_RES_X, hline_color1);
-      led_display->drawFastHLine(0, 1, PANEL_RES_X, hline_color1);
-      led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, hline_color1);
-      led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, hline_color1);
+      led_display->drawFastHLine(0, 0, PANEL_RES_X, frame_color1);
+      led_display->drawFastHLine(0, 1, PANEL_RES_X, frame_color1);
+      led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, frame_color1);
+      led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, frame_color1);
+
+      led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, frame_color1);
+      led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, frame_color1);
+      led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, frame_color1);
+      led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, frame_color1);
+
       return;
     }
 
@@ -325,13 +332,31 @@ public:
       }
       for(uint8_t band = 0; band < 4; band++) {
         // Start with color2 for bottom rows
-        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? hline_color1 : hline_color2;
+        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? frame_color1 : frame_color2;
         led_display->drawFastHLine(band * bandWidth, yPos, bandWidth, color);
+      }
+    }
+
+    // Draw both side borders (two lines each)
+    for(uint8_t x = 0; x < 4; x++) {
+      uint16_t xPos;
+      bool isBottom = x >= 2;
+      if (x < 2) {
+        xPos = x;  // Top two lines
+      } else {
+        xPos = PANEL_RES_X - 4 + x;  // Bottom two lines
+      }
+      for(uint8_t band = 0; band < 4; band++) {
+        // Start with color2 for bottom rows
+        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? frame_color1 : frame_color2;
+        led_display->drawFastVLine(xPos, band * bandWidth, bandWidth, color);
       }
     }
   }
 
   void drawBorderVLines() {
+    Serial.printf("drawBorderVLines vline_color_left: %d, vline_color_right: %d\n", vline_color_left, vline_color_right);
+
     if (vline_color_left != 0) {
       led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, vline_color_left);
       led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, vline_color_left);
@@ -348,9 +373,11 @@ public:
     }
     
     if (style == '[') {
+      Serial.printf("drawBorder vline left color: %d\n", color);
       led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, color);
       led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, color);
     } else if (style == ']') {
+      Serial.printf("drawBorder vline right color: %d\n", color);
       led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, color);
       led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, color);
     } 
@@ -402,11 +429,11 @@ public:
     is_dirty = true;  
   }
 
-  void handleBorderHLineCommand(const String& message) {
-    debugPrintln("setting border hline color due to /border_hline");
+  void handleBorderFrameCommand(const String& message) {
+    debugPrintln("setting border frame color due to /border_frame");
     uint16_t color = strtol(message.c_str(), NULL, 16);
-    hline_color1 = color;
-    hline_color2 = 0;
+    frame_color1 = color;
+    frame_color2 = 0;
 
     is_dirty = true;
   }
@@ -424,15 +451,15 @@ public:
     is_dirty = true;
   }
 
-  void handleBorderHLine2Command(const String& message) {
-    debugPrintln("setting border hline color due to /border_hline2");
+  void handleBorderFrame2Command(const String& message) {
+    debugPrintln("setting border hline color due to /frame2");
     Serial.println(message);
     int commaIndex = message.indexOf(',');
     Serial.println(commaIndex);
-    hline_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
-    hline_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
-    Serial.println(hline_color1);
-    Serial.println(hline_color2);
+    frame_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
+    frame_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
+    Serial.println(frame_color1);
+    Serial.println(frame_color2);
 
     is_dirty = true;
   }
@@ -474,10 +501,7 @@ public:
   }
 
   void handleImageMode() {
-    led_display->setCursor(0, BIG_ROW);
-    led_display->setTextColor(LETTER_COLOR, BLACK);
-    led_display->setTextSize(font_size);
-    
+    debugPrintln("handleImageMode");
     // First get the required buffer size
     size_t outputLen = 0;
     int ret = mbedtls_base64_decode(nullptr, 0, &outputLen, 
@@ -525,6 +549,14 @@ public:
         displayLetter(100 + letter_position, previous_letter, RED);
       }
       displayLetter(letter_position, current_letter, current_letter_color);
+    } 
+
+    if (display_string.length() > 0) {
+      Serial.println("displaying string");
+      Serial.println(display_string);
+      led_display->setCursor(5, 28);
+      led_display->setTextColor(RED, BLACK);
+      led_display->print(display_string);
     }
 
     if (current_letter == ' ' && !is_image_mode) {
@@ -532,8 +564,8 @@ public:
     }
     drawBorder(border_style, border_color);
     drawBorderSides();
-    drawBorderHLine();
     drawBorderVLines();
+    drawBorderFrame();
     led_display->flipDMABuffer();    
     led_display->clearScreen();
     is_dirty = false;
@@ -554,7 +586,6 @@ public:
 
   void handleStringCommand(const String& message) {
     debugPrintln("setting string due to /string");
-    is_image_mode = true;
     display_string = message;
     current_font = nullptr;  // Use default font for string mode
     // rotation = is_front ? 0 : 3;    // Set rotation to 0 for string mode
@@ -590,13 +621,18 @@ public:
     is_dirty = true;
   }
 
+  void handleBrightnessCommand(const String& message) {
+    debugPrintln("setting brighness due to /brighness");
+    uint16_t brightness = message.toInt();
+    led_display->setBrightness(brightness);
+  }
+
   void handleImageCommand(const String& message) {
     Serial.println("handling image");
     Serial.printf("message length: %d\n", message.length());
     static unsigned long last_message_time = 0;
     is_image_mode = true;
     image_b64 = message;
-    // rotation = is_front ? 0 : 0;  // Restore original rotation for letter mode
     is_dirty = true;
   }
 
@@ -784,16 +820,18 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep", handleSleepCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [](const String& msg) { display_manager->handleBrightnessCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/image", [](const String& msg) { display_manager->handleImageCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_line", [](const String& msg) { display_manager->handleBorderLineCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_side", [](const String& msg) { display_manager->handleBorderSideCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", [](const String& msg) { display_manager->handleBorderColorCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline", [](const String& msg) { display_manager->handleBorderHLineCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline2", [](const String& msg) { display_manager->handleBorderHLine2Command(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_frame2", [](const String& msg) { display_manager->handleBorderFrame2Command(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
