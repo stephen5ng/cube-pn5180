@@ -22,12 +22,13 @@
 // MAC Address Table
 const char *CUBE_MAC_ADDRESSES[] = {
   // MAIN SCREEN, FRONT SCREEN
-  "CC:DB:A7:95:E7:70", "94:54:C5:EE:87:F0",
-  "EC:E3:34:B4:8F:B4", "D8:BC:38:FD:E0:98",
-  "EC:E3:34:79:8A:BC", "CC:DB:A7:99:0F:E0", 
-  "04:83:08:59:6E:74", "D8:BC:38:FD:D0:BC",
-  "3C:8A:1F:A6:31:04", "94:54:C5:F1:AF:00",
+  "CC:DB:A7:95:E7:70", "Z94:54:C5:EE:87:F0",
+  "EC:E3:34:B4:8F:B4", "ZD8:BC:38:FD:E0:98",
+  "EC:E3:34:79:8A:BC", "ZCC:DB:A7:99:0F:E0", 
+  "04:83:08:59:6E:74", "ZD8:BC:38:FD:D0:BC",
+  "3C:8A:1F:A6:31:04", "Z94:54:C5:F1:AF:00",
   "EC:E3:34:79:9D:2C", "8C:4F:00:2E:58:40"
+  // "CC:DB:A7:99:0F:E0", "Z8C:4F:00:2E:58:40"
 };
 #define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
@@ -48,9 +49,14 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define CARD_INDICATOR_COLOR 0x7c51
 
 // Display Dimensions
-#define PANEL_RES_X 64  // Number of pixels wide of each INDIVIDUAL panel module.
-#define PANEL_RES_Y 64  // Number of pixels tall of each INDIVIDUAL panel module.
+#define PANEL_RES 64
+#define PANEL_RES_X PANEL_RES  // Number of pixels wide of each INDIVIDUAL panel module.
+#define PANEL_RES_Y PANEL_RES  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
+
+#define BAND_COUNT 4
+#define BAND_WIDTH (PANEL_RES_X/BAND_COUNT)
+#define BORDER_LINE_COUNT 4
 
 // Pin Definitions
 #if MINI
@@ -220,10 +226,12 @@ private:
   bool is_lock;
   uint8_t letter_position;
   uint16_t current_letter_color;
-  uint16_t frame_color1;
-  uint16_t frame_color2;
   uint16_t vline_color_right;
   uint16_t vline_color_left;
+  uint16_t hline_top_color1;
+  uint16_t hline_top_color2;
+  uint16_t hline_bottom_color1;
+  uint16_t hline_bottom_color2;
   EasingFunc<Ease::BounceOut> letter_animation;
   const GFXfont* current_font;
   uint8_t text_size;
@@ -236,7 +244,11 @@ public:
                                 border_style(' '), is_border_word(false), border_color(WHITE),
                                 animation_start_time(0), highlight_end_time(0), letter_position(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), rotation(0), font_size(1), is_lock(false) {
+                                text_size(1), rotation(0), font_size(1), is_lock(false),
+                                border_style_left(0), border_style_right(0),
+                                vline_color_left(0), vline_color_right(0),
+                                hline_top_color1(0), hline_top_color2(0),
+                                hline_bottom_color1(0), hline_bottom_color2(0) {
     setupDisplay();
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
@@ -298,58 +310,33 @@ public:
       led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, color_right);
     }
   }
-
-  void drawBorderFrame() {
-    if (frame_color1 == 0) {
-      return;
-    }
-    if (frame_color2 == 0) {
-      // Draw two lines at top and bottom with color1
-      led_display->drawFastHLine(0, 0, PANEL_RES_X, frame_color1);
-      led_display->drawFastHLine(0, 1, PANEL_RES_X, frame_color1);
-      led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, frame_color1);
-      led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, frame_color1);
-
-      led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, frame_color1);
-      led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, frame_color1);
-      led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, frame_color1);
-      led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, frame_color1);
-
-      return;
-    }
-
-    // Draw alternating bands of color1 and color2
-    uint16_t bandWidth = PANEL_RES_X/4;
     
-    // Draw both top and bottom borders (two lines each)
-    for(uint8_t y = 0; y < 4; y++) {
-      uint16_t yPos;
-      bool isBottom = y >= 2;
-      if (y < 2) {
-        yPos = y;  // Top two lines
-      } else {
-        yPos = PANEL_RES_Y - 4 + y;  // Bottom two lines
-      }
-      for(uint8_t band = 0; band < 4; band++) {
-        // Start with color2 for bottom rows
-        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? frame_color1 : frame_color2;
-        led_display->drawFastHLine(band * bandWidth, yPos, bandWidth, color);
-      }
-    }
+  void drawBorderFrame() {
+    drawBorders(true, true, hline_top_color1, hline_top_color2);
+    drawBorders(true, false, hline_bottom_color1, hline_bottom_color2);
+    drawBorders(false, true, vline_color_left, vline_color_left);
+    // drawBorders(false, false, vline_color_right, vline_color_right);
+  }
 
-    // Draw both side borders (two lines each)
-    for(uint8_t x = 0; x < 4; x++) {
-      uint16_t xPos;
-      bool isBottom = x >= 2;
-      if (x < 2) {
-        xPos = x;  // Top two lines
+  void drawBorders(bool isHorizontal, bool isTopLeft, uint16_t color1, uint16_t color2) {
+    if (color2 == 0) {
+      color2 = color1;
+    }
+    for (uint8_t line = 0; line < BORDER_LINE_COUNT/2; line++) {
+      uint16_t pos;
+      if (isTopLeft) {
+        pos = line;  // Top/right two lines
       } else {
-        xPos = PANEL_RES_X - 4 + x;  // Bottom two lines
+        pos = PANEL_RES - BORDER_LINE_COUNT + line;  // Bottom/left two lines
       }
-      for(uint8_t band = 0; band < 4; band++) {
-        // Start with color2 for bottom rows
-        uint16_t color = ((band + (isBottom ? 1 : 0)) % 2) == 0 ? frame_color1 : frame_color2;
-        led_display->drawFastVLine(xPos, band * bandWidth, bandWidth, color);
+      for(uint8_t band = 0; band < BAND_COUNT; band++) {
+        // Start with color2 for other row
+        uint16_t color = ((band + (isTopLeft ? 1 : 0)) % 2) == 0 ? color1 : color2;
+        if (isHorizontal) {
+          led_display->drawFastHLine(band * BAND_WIDTH, pos, BAND_WIDTH, color);
+        } else {
+          led_display->drawFastVLine(pos, band * BAND_WIDTH, BAND_WIDTH, color);
+        }
       }
     }
   }
@@ -409,6 +396,15 @@ public:
     is_dirty = true;
   }
 
+  void handleBorderFrameCommand(const String& message) {
+    debugPrintln("setting border frame due to /border_frame");
+    handleBorderTopBannerCommand(message);
+    handleBorderBottomBannerCommand(message);
+    handleBorderVLineLeftCommand(message);
+    handleBorderVLineRightCommand(message);
+    is_dirty = true;
+  }
+
   void handleBorderColorCommand(const String& message) {
     debugPrintln("setting border color due to /border_color");
     switch (message.charAt(0)) {
@@ -429,14 +425,6 @@ public:
     is_dirty = true;  
   }
 
-  void handleBorderFrameCommand(const String& message) {
-    debugPrintln("setting border frame color due to /border_frame");
-    uint16_t color = strtol(message.c_str(), NULL, 16);
-    frame_color1 = color;
-    frame_color2 = 0;
-
-    is_dirty = true;
-  }
   void handleBorderVLineRightCommand(const String& message) {
     debugPrintln("setting border vline right color due to /border_vline_right");
     uint16_t color = strtol(message.c_str(), NULL, 16);
@@ -451,19 +439,6 @@ public:
     is_dirty = true;
   }
 
-  void handleBorderFrame2Command(const String& message) {
-    debugPrintln("setting border hline color due to /frame2");
-    Serial.println(message);
-    int commaIndex = message.indexOf(',');
-    Serial.println(commaIndex);
-    frame_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
-    frame_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
-    Serial.println(frame_color1);
-    Serial.println(frame_color2);
-
-    is_dirty = true;
-  }
-  
   void handleOldCommand(const String& message) {
     debugPrintln("setting old due to /old");
     border_color = YELLOW;
@@ -622,7 +597,7 @@ public:
   }
 
   void handleBrightnessCommand(const String& message) {
-    debugPrintln("setting brighness due to /brighness");
+    debugPrintln("setting brightness due to /brightness");
     uint16_t brightness = message.toInt();
     led_display->setBrightness(brightness);
   }
@@ -639,6 +614,36 @@ public:
   void handleBorderLineCommand(const String& message) {
     debugPrintln("setting border line due to /border_line");
     border_style = message.charAt(0);
+    is_dirty = true;  
+  }
+
+  void handleBorderTopBannerCommand(const String& message) {
+    debugPrintln("setting border top banner due to /border_top_banner");
+    Serial.println(message);
+    int commaIndex = message.indexOf(',');
+    if (commaIndex == -1) {
+      hline_top_color1 = strtol(message.c_str(), NULL, 16);
+      hline_top_color2 = 0;
+    } else {    
+      hline_top_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
+      hline_top_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
+    }
+    
+    is_dirty = true;  
+  }
+
+  void handleBorderBottomBannerCommand(const String& message) {
+    debugPrintln("setting border bottom banner due to /border_bottom_banner");
+    Serial.println(message);
+    int commaIndex = message.indexOf(',');
+    if (commaIndex == -1) {
+      hline_bottom_color1 = strtol(message.c_str(), NULL, 16);
+      hline_bottom_color2 = 0;
+    } else {    
+      hline_bottom_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
+      hline_bottom_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
+    }
+    
     is_dirty = true;  
   }
 
@@ -827,11 +832,12 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_line", [](const String& msg) { display_manager->handleBorderLineCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_side", [](const String& msg) { display_manager->handleBorderSideCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_color", [](const String& msg) { display_manager->handleBorderColorCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_frame2", [](const String& msg) { display_manager->handleBorderFrame2Command(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
