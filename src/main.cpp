@@ -22,13 +22,12 @@
 // MAC Address Table
 const char *CUBE_MAC_ADDRESSES[] = {
   // MAIN SCREEN, FRONT SCREEN
-  "CC:DB:A7:95:E7:70", "Z94:54:C5:EE:87:F0",
+  "3C:8A:1F:A6:31:04", "Z94:54:C5:EE:87:F0",
   "EC:E3:34:B4:8F:B4", "ZD8:BC:38:FD:E0:98",
   "EC:E3:34:79:8A:BC", "ZCC:DB:A7:99:0F:E0", 
   "04:83:08:59:6E:74", "ZD8:BC:38:FD:D0:BC",
-  "3C:8A:1F:A6:31:04", "Z94:54:C5:F1:AF:00",
-  "EC:E3:34:79:9D:2C", "8C:4F:00:2E:58:40"
-  // "CC:DB:A7:99:0F:E0", "Z8C:4F:00:2E:58:40"
+  "14:33:5C:30:25:98", "Z8C:4F:00:2E:58:40"
+  "EC:E3:34:79:9D:2C", "z8C:4F:00:2E:58:40"
 };
 #define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
@@ -315,7 +314,7 @@ public:
     drawBorders(true, true, hline_top_color1, hline_top_color2);
     drawBorders(true, false, hline_bottom_color1, hline_bottom_color2);
     drawBorders(false, true, vline_color_left, vline_color_left);
-    // drawBorders(false, false, vline_color_right, vline_color_right);
+    drawBorders(false, false, vline_color_right, vline_color_right);
   }
 
   void drawBorders(bool isHorizontal, bool isTopLeft, uint16_t color1, uint16_t color2) {
@@ -325,9 +324,9 @@ public:
     for (uint8_t line = 0; line < BORDER_LINE_COUNT/2; line++) {
       uint16_t pos;
       if (isTopLeft) {
-        pos = line;  // Top/right two lines
+        pos = line;  // Top/left two lines
       } else {
-        pos = PANEL_RES - BORDER_LINE_COUNT + line;  // Bottom/left two lines
+        pos = PANEL_RES - BORDER_LINE_COUNT/2 + line;  // Bottom/right two lines
       }
       for(uint8_t band = 0; band < BAND_COUNT; band++) {
         // Start with color2 for other row
