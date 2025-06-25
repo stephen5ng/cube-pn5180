@@ -213,7 +213,7 @@ private:
   MatrixPanel_I2S_DMA* led_display;
   bool is_front;
   bool is_image_mode;
-  String image_b64;
+  uint16_t* image;
   String display_string;
   char border_style;
   uint8_t border_style_left;
@@ -247,7 +247,8 @@ public:
                                 border_style_left(0), border_style_right(0),
                                 vline_color_left(0), vline_color_right(0),
                                 hline_top_color1(0), hline_top_color2(0),
-                                hline_bottom_color1(0), hline_bottom_color2(0) {
+                                hline_bottom_color1(0), hline_bottom_color2(0),
+                                image(nullptr) {
     setupDisplay();
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
@@ -474,16 +475,19 @@ public:
     }
   }
 
-  void handleImageMode() {
-    debugPrintln("handleImageMode");
+  void decodeBase64Image(const String& base64_data, uint16_t** decoded_data, size_t* decoded_length) {
+    debugPrintln("decodeBase64Image");
+    
     // First get the required buffer size
     size_t outputLen = 0;
     int ret = mbedtls_base64_decode(nullptr, 0, &outputLen, 
-        (const unsigned char*)image_b64.c_str(), image_b64.length());
+        (const unsigned char*)base64_data.c_str(), base64_data.length());
     
     if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
       debugPrintln("Failed to determine base64 decode size");
-      debugPrintln(image_b64.c_str());
+      debugPrintln(base64_data.c_str());
+      *decoded_data = nullptr;
+      *decoded_length = 0;
       return;
     }
 
@@ -491,20 +495,37 @@ public:
     uint8_t* decoded = (uint8_t*)malloc(outputLen);
     if (!decoded) {
       debugPrintln("Failed to allocate memory for base64 decode");
+      *decoded_data = nullptr;
+      *decoded_length = 0;
       return;
     }
 
     ret = mbedtls_base64_decode(decoded, outputLen, &outputLen,
-        (const unsigned char*)image_b64.c_str(), image_b64.length());
+        (const unsigned char*)base64_data.c_str(), base64_data.length());
     
     if (ret != 0) {
       debugPrintln("Failed to decode base64 data");
       free(decoded);
+      *decoded_data = nullptr;
+      *decoded_length = 0;
       return;
     }
 
-    led_display->drawRGBBitmap(0, 0, (uint16_t*)decoded, 64, 64);
-    free(decoded);
+    // Cast the decoded data to uint16_t* since it's RGB565 format
+    *decoded_data = (uint16_t*)decoded;
+    *decoded_length = outputLen / 2; // Convert from bytes to uint16_t count
+  }
+
+  void handleImageMode() {
+    debugPrintln("handleImageMode");
+    
+    if (image == nullptr) {
+      debugPrintln("null image, clearing screen");
+      led_display->clearScreen();
+      return;
+    }
+
+    led_display->drawRGBBitmap(0, 0, image, 64, 64);
   }
 
   void updateDisplay(unsigned long current_time) {
@@ -606,7 +627,37 @@ public:
     Serial.printf("message length: %d\n", message.length());
     static unsigned long last_message_time = 0;
     is_image_mode = true;
-    image_b64 = message;
+
+    if (image != nullptr) {
+      free(image);
+    }
+
+    uint16_t* decoded = nullptr;
+    size_t decoded_length = 0;
+    
+    decodeBase64Image(message, &decoded, &decoded_length);
+
+    image = decoded;
+    is_dirty = true;
+  }
+
+  void handleImageBinaryCommand(const String& message) {
+    Serial.println("handling binary image");
+    Serial.printf("message length: %d\n", message.length());
+    static unsigned long last_message_time = 0;
+    is_image_mode = true;
+    if (image != nullptr) {
+      free(image);
+    }
+
+    size_t len = message.length();
+    Serial.printf("len: %d\n", len);
+    image = (uint16_t*)malloc(len);
+    if (image == nullptr) {
+      Serial.println("Failed to allocate memory for image");
+      return;
+    }
+    memcpy(image, message.c_str(), len);
     is_dirty = true;
   }
 
@@ -826,6 +877,7 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [](const String& msg) { display_manager->handleBrightnessCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/image", [](const String& msg) { display_manager->handleImageCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [](const String& msg) { display_manager->handleImageBinaryCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
@@ -915,6 +967,7 @@ void setup() {
   Serial.print("Chip Revision: ");
   Serial.println(ESP.getChipRevision());
 
+  mqtt_client.enableDebuggingMessages(true);
   mqtt_client.setMaxPacketSize(11999);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
