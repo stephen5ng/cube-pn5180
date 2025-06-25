@@ -1,0 +1,3 @@
+[submodule "lib/EspMQTTClient"]
+	path = lib/EspMQTTClient
+	url = https://github.com/stephen5ng/EspMQTTClient.git
