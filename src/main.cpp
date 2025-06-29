@@ -2,7 +2,6 @@
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <Easing.h>
-// #include <Fonts/FreeSans18pt7b.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <EspMQTTClient.h>
 #include <PN5180ISO15693.h>
@@ -26,8 +25,8 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "EC:E3:34:B4:8F:B4", "ZD8:BC:38:FD:E0:98",
   "EC:E3:34:79:8A:BC", "ZCC:DB:A7:99:0F:E0", 
   "04:83:08:59:6E:74", "ZD8:BC:38:FD:D0:BC",
-  "14:33:5C:30:25:98", "Z8C:4F:00:2E:58:40"
-  "EC:E3:34:79:9D:2C", "z8C:4F:00:2E:58:40"
+  "14:33:5C:30:25:98", "Z8C:4F:00:2E:58:40",
+  "EC:E3:34:79:9D:2C", "z8C:4F:00:2E:58:40",
 };
 #define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
 
@@ -148,8 +147,6 @@ uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
   0x50, 0x01, 0x04, 0xe0};
 
 // Display State
-char previous_letter = ' ';
-char current_letter = '?';
 uint16_t border_color = WHITE;
 bool is_border_word = false;
 String previous_string;
@@ -213,7 +210,10 @@ private:
   MatrixPanel_I2S_DMA* led_display;
   bool is_front;
   bool is_image_mode;
+  uint16_t* image1;
+  uint16_t* image2;
   uint16_t* image;
+  uint16_t* previous_image;
   String display_string;
   char border_style;
   uint8_t border_style_left;
@@ -223,7 +223,7 @@ private:
   unsigned long animation_start_time;
   long highlight_end_time;
   bool is_lock;
-  uint8_t letter_position;
+  uint8_t percent_complete;
   uint16_t current_letter_color;
   uint16_t vline_color_right;
   uint16_t vline_color_left;
@@ -237,21 +237,28 @@ private:
   uint8_t rotation;
   uint8_t font_size;
   bool is_dirty;
+  char previous_letter;
+  char current_letter;
 
 public:
   DisplayManager(bool is_front) : is_front(is_front), is_image_mode(false), is_dirty(true), 
                                 border_style(' '), is_border_word(false), border_color(WHITE),
-                                animation_start_time(0), highlight_end_time(0), letter_position(100),
+                                animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), rotation(0), font_size(1), is_lock(false),
                                 border_style_left(0), border_style_right(0),
                                 vline_color_left(0), vline_color_right(0),
                                 hline_top_color1(0), hline_top_color2(0),
                                 hline_bottom_color1(0), hline_bottom_color2(0),
-                                image(nullptr) {
+                                image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr), 
+                                previous_letter(' '), current_letter('?') {
     setupDisplay();
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
+
+    // Allocate image buffers. Failure is fatal.
+    image1 = new uint16_t[8192];
+    image2 = new uint16_t[8192];
   }
 
   void setupDisplay() {
@@ -279,7 +286,7 @@ public:
     led_display->clearScreen();
   }
 
-  void displayLetter(uint16_t vertical_position, char letter, uint16_t color) {
+  void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
     // Serial.println("displayLetter");
     int16_t row = (PANEL_RES_Y * vertical_position) / 100;
     led_display->setTextColor(color, BLACK);
@@ -457,75 +464,32 @@ public:
       is_dirty = true;
     }
 
-    if (previous_letter != current_letter) {
-      static uint8_t previous_letter_position = -1;
+    if (previous_letter != current_letter || previous_image != image) {
+      static uint8_t previous_percent_complete = -1;
       if (current_time - animation_start_time >= letter_animation.duration()) {
+        // complete animation
+        previous_image = image;
         previous_letter = current_letter;
-        letter_position = ANIMATION_SCALE;
+        percent_complete = ANIMATION_SCALE;
         is_dirty = true;
       } 
       else {
-        letter_position = letter_animation.get(current_time - animation_start_time);
-
-        if (letter_position != previous_letter_position) {
-            previous_letter_position = letter_position;
+        // animation in progress
+        percent_complete = letter_animation.get(current_time - animation_start_time);
+        if (percent_complete != previous_percent_complete) {
+            previous_percent_complete = percent_complete;
             is_dirty = true;
         }
       }
     }
   }
 
-  void decodeBase64Image(const String& base64_data, uint16_t** decoded_data, size_t* decoded_length) {
-    debugPrintln("decodeBase64Image");
-    
-    // First get the required buffer size
-    size_t outputLen = 0;
-    int ret = mbedtls_base64_decode(nullptr, 0, &outputLen, 
-        (const unsigned char*)base64_data.c_str(), base64_data.length());
-    
-    if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-      debugPrintln("Failed to determine base64 decode size");
-      debugPrintln(base64_data.c_str());
-      *decoded_data = nullptr;
-      *decoded_length = 0;
-      return;
-    }
-
-    // Allocate buffer and decode
-    uint8_t* decoded = (uint8_t*)malloc(outputLen);
-    if (!decoded) {
-      debugPrintln("Failed to allocate memory for base64 decode");
-      *decoded_data = nullptr;
-      *decoded_length = 0;
-      return;
-    }
-
-    ret = mbedtls_base64_decode(decoded, outputLen, &outputLen,
-        (const unsigned char*)base64_data.c_str(), base64_data.length());
-    
-    if (ret != 0) {
-      debugPrintln("Failed to decode base64 data");
-      free(decoded);
-      *decoded_data = nullptr;
-      *decoded_length = 0;
-      return;
-    }
-
-    // Cast the decoded data to uint16_t* since it's RGB565 format
-    *decoded_data = (uint16_t*)decoded;
-    *decoded_length = outputLen / 2; // Convert from bytes to uint16_t count
-  }
-
-  void handleImageMode() {
-    debugPrintln("handleImageMode");
-    
-    if (image == nullptr) {
-      debugPrintln("null image, clearing screen");
-      led_display->clearScreen();
-      return;
-    }
-
-    led_display->drawRGBBitmap(0, 0, image, 64, 64);
+  void drawImage(int8_t image_position, uint16_t* image) {
+    // debugPrintln("drawImage");
+    // Serial.printf("image_position: %d\n", image_position);
+    // Serial.printf("image: %p\n", image);
+    int16_t row = (PANEL_RES_Y * image_position) / 100;
+    led_display->drawRGBBitmap(0, row, image, 64, 64);
   }
 
   void updateDisplay(unsigned long current_time) {
@@ -538,12 +502,16 @@ public:
     led_display->setRotation(rotation);
 
     if (is_image_mode) {
-      handleImageMode();
+      Serial.printf("image: %p, previous_image: %p\n", image, previous_image);
+      if (image != previous_image) {
+        drawImage(-percent_complete, previous_image);
+      }
+      drawImage(100 - percent_complete, image);
     } else {    
       if (current_letter != previous_letter) {
-        displayLetter(100 + letter_position, previous_letter, RED);
+        drawLetter(100 + percent_complete, previous_letter, RED);
       }
-      displayLetter(letter_position, current_letter, current_letter_color);
+      drawLetter(percent_complete, current_letter, current_letter_color);
     } 
 
     if (display_string.length() > 0) {
@@ -557,7 +525,6 @@ public:
     if (current_letter == ' ' && !is_image_mode) {
       border_style = ' ';
     }
-    drawBorder(border_style, border_color);
     drawBorderSides();
     drawBorderVLines();
     drawBorderFrame();
@@ -622,42 +589,26 @@ public:
     led_display->setBrightness(brightness);
   }
 
-  void handleImageCommand(const String& message) {
-    Serial.println("handling image");
-    Serial.printf("message length: %d\n", message.length());
-    static unsigned long last_message_time = 0;
-    is_image_mode = true;
-
-    if (image != nullptr) {
-      free(image);
-    }
-
-    uint16_t* decoded = nullptr;
-    size_t decoded_length = 0;
-    
-    decodeBase64Image(message, &decoded, &decoded_length);
-
-    image = decoded;
-    is_dirty = true;
-  }
-
   void handleImageBinaryCommand(const String& message) {
     Serial.println("handling binary image");
     Serial.printf("message length: %d\n", message.length());
-    static unsigned long last_message_time = 0;
-    is_image_mode = true;
-    if (image != nullptr) {
-      free(image);
-    }
-
-    size_t len = message.length();
-    Serial.printf("len: %d\n", len);
-    image = (uint16_t*)malloc(len);
-    if (image == nullptr) {
-      Serial.println("Failed to allocate memory for image");
+    if (message.length() > 8192) {
+      Serial.println("Image too large");
       return;
     }
-    memcpy(image, message.c_str(), len);
+    static unsigned long last_message_time = 0;
+    is_image_mode = true;
+
+    previous_image = image;
+    image = image == image1 ? image2 : image1;
+
+    // special case for first image
+    if (previous_image == nullptr) {
+      previous_image = image;
+    }
+    animation_start_time = millis();
+
+    memcpy(image, message.c_str(), message.length());
     is_dirty = true;
   }
 
@@ -739,6 +690,7 @@ int findMacAddressPosition(const char *mac_address) {
       return i;
     }
   }
+  Serial.println("mac address not found");
   return -1;
 }
 
@@ -807,8 +759,11 @@ void setupWiFiConnection() {
   bool try_portable = true;
   Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
-  
+  Serial.print("ip octet: ");
+  Serial.println(getCubeIpOctet());
   IPAddress local_IP(192, 168, 8, getCubeIpOctet());
+  Serial.print("local IP: ");
+  Serial.println(local_IP);
   IPAddress gateway(192, 168, 8, 1);
   IPAddress subnet(255, 255, 255, 0);
 
@@ -876,13 +831,14 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [](const String& msg) { display_manager->handleBrightnessCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/image", [](const String& msg) { display_manager->handleImageCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [](const String& msg) { display_manager->handleImageBinaryCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_line", [](const String& msg) { display_manager->handleBorderLineCommand(msg); });
@@ -925,9 +881,9 @@ void setupUDP() {
 void handleUDP() {
   int packetSize = udp.parsePacket();
   if (packetSize) {
-    Serial.printf("packetSize: %d\n", packetSize);
+    // Serial.printf("packetSize: %d\n", packetSize);
     int len = udp.read(udpBuffer, sizeof(udpBuffer)-1);
-    Serial.printf("len: %d\n", len);
+    // Serial.printf("len: %d\n", len);
     if (len > 0) {
       udpBuffer[len] = 0; // Null terminate
       
@@ -938,7 +894,7 @@ void handleUDP() {
         udp.write((const uint8_t*)"pong", 4);
         udp.endPacket();
         
-        Serial.printf("Received ping from %s:%d\n", udp.remoteIP().toString().c_str(), udp.remotePort());
+        // Serial.printf("Received ping from %s:%d\n", udp.remoteIP().toString().c_str(), udp.remotePort());
       }
       // Check if message is "rssi"
       else if (strcmp(udpBuffer, "rssi") == 0) {
@@ -949,7 +905,7 @@ void handleUDP() {
         udp.write((const uint8_t*)rssiStr, strlen(rssiStr));
         udp.endPacket();
         
-        Serial.printf("Sent RSSI to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), rssiStr);
+        // Serial.printf("Sent RSSI to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), rssiStr);
       }
     }
   }
@@ -984,7 +940,10 @@ void setup() {
   // esp_task_wdt_add(NULL);      // Add current thread to WDT watch
   
   // Initialize WiFi and get cube identifier
+  debugPrintln("setting up wifi...");
   setupWiFiConnection();
+  debugPrintln("wifi done");
+  
   String cube_id = cube_identifier;
   bool is_front = (findMacAddressPosition(WiFi.macAddress().c_str()) % 2) == 1;
   
@@ -995,7 +954,6 @@ void setup() {
   uint8_t wakeup = getWakeupReason();
 
   display_manager->displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
-  debugPrintln("setting up wifi...");
   Serial.println(cube_id);
   static String client_name = cube_id + (is_front ? "_F" : "");
   Serial.println(client_name);
@@ -1006,15 +964,17 @@ void setup() {
     WiFi.macAddress().c_str(),
     cube_id.c_str());
   display_manager->displayDebugMessage(ipDisplay);
-  
-  mqtt_client.publish(mqtt_topic_version, VERSION);
 
   display_manager->displayDebugMessage("nfc...");
   debugPrintln(WiFi.macAddress().c_str());
 
+  debugPrintln("setting up nfc reader...");
   setupNfcReader();
+  debugPrintln("nfc reader done");
+
   display_manager->clearScreen();
 
+  debugPrintln("setting up udp...");
   setupUDP(); // Add UDP setup
 
   debugPrintln(F("Setup Complete"));
