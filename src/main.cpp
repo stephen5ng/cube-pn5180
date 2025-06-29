@@ -484,11 +484,11 @@ public:
     }
   }
 
-  void drawImage(int8_t image_position, uint16_t* image) {
+  void drawImage(int8_t percent_complete, uint16_t* image) {
     // debugPrintln("drawImage");
     // Serial.printf("image_position: %d\n", image_position);
     // Serial.printf("image: %p\n", image);
-    int16_t row = (PANEL_RES_Y * image_position) / 100;
+    int16_t row = (PANEL_RES_Y * percent_complete) / 100;
     led_display->drawRGBBitmap(0, row, image, 64, 64);
   }
 
