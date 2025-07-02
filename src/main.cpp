@@ -152,9 +152,6 @@ uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
   0xbc, 0x10, 0xf8, 0xb8,
   0x50, 0x01, 0x04, 0xe0};
 
-// Display State
-String previous_string;
-
 // Network Objects
 EspMQTTClient mqtt_client(
   MQTT_SERVER_PI,
