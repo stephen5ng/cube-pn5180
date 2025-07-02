@@ -52,6 +52,9 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define PANEL_RES_Y PANEL_RES  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
 
+#define PIXEL_COUNT (PANEL_RES_X * PANEL_RES_Y)
+#define IMAGE_SIZE (PIXEL_COUNT * sizeof(uint16_t))
+
 #define BAND_COUNT 4
 #define BAND_WIDTH (PANEL_RES_X/BAND_COUNT)
 #define BORDER_LINE_COUNT 4
@@ -106,12 +109,12 @@ bool is_front_display = false;
 
 // HUB75 Display Configuration
 HUB75_I2S_CFG::i2s_pins display_pins = {
-  25,  //R1_PIN,
-  26,  //G1_PIN,
-  33,  //B1_PIN,
-  13,  //R2_PIN,
-  27,  //G2_PIN,
-  14,  //B2_PIN,
+  0,  //R1_PIN,
+  0,  //G1_PIN,
+  0,  //B1_PIN,
+  0,  //R2_PIN,
+  0,  //G2_PIN,
+  0,  //B2_PIN,
   19,  //A_PIN,
   21,  //B_PIN,
   4,   //C_PIN,
@@ -121,6 +124,9 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
   15,  //OE_PIN,
   16,  //CLK_PIN
 };
+
+int8_t rgb_large[] = {25, 26, 33, 13, 27, 14};
+int8_t rgb_small[] = {33, 26, 25, 14, 27, 13};
 
 HUB75_I2S_CFG display_config(
   PANEL_RES_X,
@@ -215,7 +221,6 @@ private:
   uint16_t* image;
   uint16_t* previous_image;
   String display_string;
-  char border_style;
   uint8_t border_style_left;
   uint8_t border_style_right;
   bool is_border_word;
@@ -227,10 +232,9 @@ private:
   uint16_t current_letter_color;
   uint16_t vline_color_right;
   uint16_t vline_color_left;
-  uint16_t hline_top_color1;
-  uint16_t hline_top_color2;
-  uint16_t hline_bottom_color1;
-  uint16_t hline_bottom_color2;
+  uint8_t vline_height;
+  uint16_t hline_color_top;
+  uint16_t hline_color_bottom;
   EasingFunc<Ease::BounceOut> letter_animation;
   const GFXfont* current_font;
   uint8_t text_size;
@@ -242,14 +246,15 @@ private:
 
 public:
   DisplayManager(bool is_front) : is_front(is_front), is_image_mode(false), is_dirty(true), 
-                                border_style(' '), is_border_word(false), border_color(WHITE),
+                                is_border_word(false), border_color(WHITE),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), rotation(0), font_size(1), is_lock(false),
                                 border_style_left(0), border_style_right(0),
                                 vline_color_left(0), vline_color_right(0),
-                                hline_top_color1(0), hline_top_color2(0),
-                                hline_bottom_color1(0), hline_bottom_color2(0),
+                                vline_height(PANEL_RES),
+                                hline_color_top(0),
+                                hline_color_bottom(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr), 
                                 previous_letter(' '), current_letter('?') {
     setupDisplay();
@@ -257,13 +262,22 @@ public:
     letter_animation.scale(ANIMATION_SCALE);
 
     // Allocate image buffers. Failure is fatal.
-    image1 = new uint16_t[8192];
-    image2 = new uint16_t[8192];
+    image = image1 = new uint16_t[PIXEL_COUNT];
+    previous_image = image2 = new uint16_t[PIXEL_COUNT];
+    memset(image1, 0, PIXEL_COUNT * sizeof(uint16_t));
+    memset(image2, 0, PIXEL_COUNT * sizeof(uint16_t));
   }
 
   void setupDisplay() {
     display_config.clkphase = false;
     display_config.double_buff = true;
+    int8_t* rgb = rgb_large;
+    display_config.gpio.r1 = rgb[0];
+    display_config.gpio.g1 = rgb[1];
+    display_config.gpio.b1 = rgb[2];
+    display_config.gpio.r2 = rgb[3];
+    display_config.gpio.g2 = rgb[4];
+    display_config.gpio.b2 = rgb[5];
     led_display = new MatrixPanel_I2S_DMA(display_config);
     led_display->begin();
     led_display->setBrightness(BRIGHTNESS);
@@ -319,15 +333,15 @@ public:
   }
     
   void drawBorderFrame() {
-    drawBorders(true, true, hline_top_color1, hline_top_color2);
-    drawBorders(true, false, hline_bottom_color1, hline_bottom_color2);
-    drawBorders(false, true, vline_color_left, vline_color_left);
-    drawBorders(false, false, vline_color_right, vline_color_right);
+    drawBorders(true, true, hline_color_top);
+    drawBorders(true, false, hline_color_bottom);
+    drawBorders(false, true, vline_color_left);
+    drawBorders(false, false, vline_color_right);
   }
 
-  void drawBorders(bool isHorizontal, bool isTopLeft, uint16_t color1, uint16_t color2) {
-    if (color2 == 0) {
-      color2 = color1;
+  void drawBorders(bool isHorizontal, bool isTopLeft, uint16_t color) {
+    if (color == 0) {
+      return;
     }
     for (uint8_t line = 0; line < BORDER_LINE_COUNT/2; line++) {
       uint16_t pos;
@@ -336,14 +350,11 @@ public:
       } else {
         pos = PANEL_RES - BORDER_LINE_COUNT/2 + line;  // Bottom/right two lines
       }
-      for(uint8_t band = 0; band < BAND_COUNT; band++) {
-        // Start with color2 for other row
-        uint16_t color = ((band + (isTopLeft ? 1 : 0)) % 2) == 0 ? color1 : color2;
-        if (isHorizontal) {
-          led_display->drawFastHLine(band * BAND_WIDTH, pos, BAND_WIDTH, color);
-        } else {
-          led_display->drawFastVLine(pos, band * BAND_WIDTH, BAND_WIDTH, color);
-        }
+      if (isHorizontal) {
+        led_display->drawFastHLine(0, pos, PANEL_RES_X, color);
+      } else {
+        led_display->drawFastVLine(pos, 
+          PANEL_RES_Y - vline_height, vline_height, color);
       }
     }
   }
@@ -359,32 +370,6 @@ public:
       led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, vline_color_right);
       led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, vline_color_right);
     }
-  }
-
-  void drawBorder(char style, uint16_t color) {
-    if (style == ' ') {
-      return;
-    }
-    
-    if (style == '[') {
-      Serial.printf("drawBorder vline left color: %d\n", color);
-      led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, color);
-      led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, color);
-    } else if (style == ']') {
-      Serial.printf("drawBorder vline right color: %d\n", color);
-      led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, color);
-      led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, color);
-    } 
-
-    if (style != '[' && style != ']' && style != '-') {
-      return;
-    }
-
-    // Draw horizontal border lines
-    led_display->drawFastHLine(0, 0, PANEL_RES_X, color);
-    led_display->drawFastHLine(0, 1, PANEL_RES_X, color);
-    led_display->drawFastHLine(0, PANEL_RES_Y-1, PANEL_RES_X, color);
-    led_display->drawFastHLine(0, PANEL_RES_Y-2, PANEL_RES_X, color);
   }
 
   void handleFlashCommand(const String& message) {
@@ -434,15 +419,19 @@ public:
 
   void handleBorderVLineRightCommand(const String& message) {
     debugPrintln("setting border vline right color due to /border_vline_right");
-    uint16_t color = strtol(message.c_str(), NULL, 16);
-    vline_color_right = color;
+    vline_color_right = strtol(message.c_str(), NULL, 16);
     is_dirty = true;
   }
 
   void handleBorderVLineLeftCommand(const String& message) {
     debugPrintln("setting border vline left color due to /border_vline_left");
-    uint16_t color = strtol(message.c_str(), NULL, 16);
-    vline_color_left = color;
+    vline_color_left = strtol(message.c_str(), NULL, 16);
+    is_dirty = true;
+  }
+
+  void handleBorderLineHeightCommand(const String& message) {
+    debugPrintln("setting border vline height due to /border_vline_height");
+    vline_height = message.length() == 0 ? PANEL_RES_Y : message.toInt();
     is_dirty = true;
   }
 
@@ -502,7 +491,7 @@ public:
     led_display->setRotation(rotation);
 
     if (is_image_mode) {
-      Serial.printf("image: %p, previous_image: %p\n", image, previous_image);
+      // Serial.printf("image: %p, previous_image: %p\n", image, previous_image);
       if (image != previous_image) {
         drawImage(-percent_complete, previous_image);
       }
@@ -525,8 +514,8 @@ public:
     if (current_letter == ' ' && !is_image_mode) {
       border_style = ' ';
     }
-    drawBorderSides();
-    drawBorderVLines();
+    // drawBorderSides();
+    // drawBorderVLines();
     drawBorderFrame();
     led_display->flipDMABuffer();    
     led_display->clearScreen();
@@ -592,20 +581,17 @@ public:
   void handleImageBinaryCommand(const String& message) {
     Serial.println("handling binary image");
     Serial.printf("message length: %d\n", message.length());
-    if (message.length() > 8192) {
+    if (message.length() > IMAGE_SIZE) {
       Serial.println("Image too large");
       return;
     }
+    
     static unsigned long last_message_time = 0;
     is_image_mode = true;
 
     previous_image = image;
-    image = image == image1 ? image2 : image1;
+    image = (image == image1) ? image2 : image1;
 
-    // special case for first image
-    if (previous_image == nullptr) {
-      previous_image = image;
-    }
     animation_start_time = millis();
 
     memcpy(image, message.c_str(), message.length());
@@ -621,30 +607,14 @@ public:
   void handleBorderTopBannerCommand(const String& message) {
     debugPrintln("setting border top banner due to /border_top_banner");
     Serial.println(message);
-    int commaIndex = message.indexOf(',');
-    if (commaIndex == -1) {
-      hline_top_color1 = strtol(message.c_str(), NULL, 16);
-      hline_top_color2 = 0;
-    } else {    
-      hline_top_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
-      hline_top_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
-    }
-    
+    hline_color_top = strtol(message.c_str(), NULL, 16);
     is_dirty = true;  
   }
 
   void handleBorderBottomBannerCommand(const String& message) {
     debugPrintln("setting border bottom banner due to /border_bottom_banner");
     Serial.println(message);
-    int commaIndex = message.indexOf(',');
-    if (commaIndex == -1) {
-      hline_bottom_color1 = strtol(message.c_str(), NULL, 16);
-      hline_bottom_color2 = 0;
-    } else {    
-      hline_bottom_color1 = strtol(message.substring(0, commaIndex).c_str(), NULL, 16);
-      hline_bottom_color2 = strtol(message.substring(commaIndex + 1).c_str(), NULL, 16);
-    }
-    
+    hline_color_bottom = strtol(message.c_str(), NULL, 16);    
     is_dirty = true;  
   }
 
@@ -847,6 +817,7 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_height", [](const String& msg) { display_manager->handleBorderLineHeightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
