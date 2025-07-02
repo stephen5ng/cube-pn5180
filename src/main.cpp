@@ -128,6 +128,14 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
 int8_t rgb_large[] = {25, 26, 33, 13, 27, 14};
 int8_t rgb_small[] = {33, 26, 25, 14, 27, 13};
 
+int8_t* rgb_pins[] = {
+  rgb_large,
+  rgb_large,
+  rgb_large,
+  rgb_large,
+  rgb_small,
+  rgb_large};
+
 HUB75_I2S_CFG display_config(
   PANEL_RES_X,
   PANEL_RES_Y,
@@ -240,7 +248,7 @@ private:
   char current_letter;
 
 public:
-  DisplayManager(bool is_front) : is_front(is_front), is_image_mode(false), is_dirty(true), 
+  DisplayManager(bool is_front, String cube_id) : is_front(is_front), is_image_mode(false), is_dirty(true), 
                                 is_border_word(false),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
@@ -252,7 +260,7 @@ public:
                                 hline_color_bottom(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr), 
                                 previous_letter(' '), current_letter('?') {
-    setupDisplay();
+    setupDisplay(cube_id);
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
 
@@ -263,10 +271,10 @@ public:
     memset(image2, 0, PIXEL_COUNT * sizeof(uint16_t));
   }
 
-  void setupDisplay() {
+  void setupDisplay(String cube_id) {
     display_config.clkphase = false;
     display_config.double_buff = true;
-    int8_t* rgb = rgb_large;
+    int8_t* rgb = rgb_pins[cube_id.toInt()-1];
     display_config.gpio.r1 = rgb[0];
     display_config.gpio.g1 = rgb[1];
     display_config.gpio.b1 = rgb[2];
@@ -632,7 +640,7 @@ uint8_t getCubeIpOctet() {
     mac_position = 21;
   }
   int cube_index = mac_position - (mac_position % 2);
-  cube_identifier = removeColonsFromMac(CUBE_MAC_ADDRESSES[cube_index]);
+  cube_identifier = 1 + mac_position / 2;
   is_front_display = (mac_position % 2) == 1;
   Serial.print("mac_address: ");
   Serial.println(mac_address);
@@ -835,7 +843,7 @@ void setup() {
   bool is_front = (findMacAddressPosition(WiFi.macAddress().c_str()) % 2) == 1;
   
   // Create display manager
-  display_manager = new DisplayManager(is_front);
+  display_manager = new DisplayManager(is_front, cube_id);
   display_manager->displayDebugMessage(VERSION);
   delay(DISPLAY_STARTUP_DELAY_MS);
   uint8_t wakeup = getWakeupReason();
