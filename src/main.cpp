@@ -241,7 +241,7 @@ private:
 
 public:
   DisplayManager(bool is_front) : is_front(is_front), is_image_mode(false), is_dirty(true), 
-                                is_border_word(false), border_color(WHITE),
+                                is_border_word(false),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), rotation(0), font_size(1), is_lock(false),
@@ -331,19 +331,6 @@ public:
     }
   }
 
-  void drawBorderVLines() {
-    Serial.printf("drawBorderVLines vline_color_left: %d, vline_color_right: %d\n", vline_color_left, vline_color_right);
-
-    if (vline_color_left != 0) {
-      led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, vline_color_left);
-      led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, vline_color_left);
-    }
-    if (vline_color_right != 0) {
-      led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, vline_color_right);
-      led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, vline_color_right);
-    }
-  }
-
   void handleFlashCommand(const String& message) {
     debugPrintln("flashing due to /flash");
     highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
@@ -383,12 +370,6 @@ public:
     debugPrintln("setting border vline height due to /border_vline_height");
     vline_height = message.length() == 0 ? PANEL_RES_Y : message.toInt();
     is_dirty = true;
-  }
-
-  void handleOldCommand(const String& message) {
-    debugPrintln("setting old due to /old");
-    border_color = YELLOW;
-    is_dirty = true;  
   }
 
   void animate(unsigned long current_time) {
@@ -754,7 +735,6 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_height", [](const String& msg) { display_manager->handleBorderLineHeightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/old", [](const String& msg) { display_manager->handleOldCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
 }
