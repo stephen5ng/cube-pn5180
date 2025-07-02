@@ -153,8 +153,6 @@ uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
   0x50, 0x01, 0x04, 0xe0};
 
 // Display State
-uint16_t border_color = WHITE;
-bool is_border_word = false;
 String previous_string;
 
 // Network Objects
@@ -308,29 +306,6 @@ public:
     led_display->setCursor(BIG_COL, row-4);
     led_display->print(letter);
   }
-
-  void drawBorderSides() {
-    Serial.printf("drawBorderSides border_style_left: %d, border_style_right: %d\n", border_style_left, border_style_right);
-    uint16_t color_left = RED;
-    uint16_t color_right = RED;
-    // Draw vertical border lines if needed
-    if (border_style_left == 2) {
-      color_left = GREEN;
-    }
-    if (border_style_right == 2)
-    {
-      color_right = GREEN;
-    }
-
-    if (border_style_left > 0) {
-      led_display->drawFastVLine(0, 2, PANEL_RES_Y-4, color_left);
-      led_display->drawFastVLine(1, 2, PANEL_RES_Y-4, color_left);
-    } 
-    if (border_style_right > 0) {
-      led_display->drawFastVLine(PANEL_RES_X-1, 2, PANEL_RES_Y-4, color_right);
-      led_display->drawFastVLine(PANEL_RES_X-2, 2, PANEL_RES_Y-4, color_right);
-    }
-  }
     
   void drawBorderFrame() {
     drawBorders(true, true, hline_color_top);
@@ -375,8 +350,6 @@ public:
   void handleFlashCommand(const String& message) {
     debugPrintln("flashing due to /flash");
     highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
-    is_border_word = true;
-    border_color = GREEN;
     is_dirty = true;
   }
 
@@ -395,26 +368,6 @@ public:
     handleBorderVLineLeftCommand(message);
     handleBorderVLineRightCommand(message);
     is_dirty = true;
-  }
-
-  void handleBorderColorCommand(const String& message) {
-    debugPrintln("setting border color due to /border_color");
-    switch (message.charAt(0)) {
-      case 'R':
-        border_color = RED;  
-        break;
-      case 'Y':
-        border_color = YELLOW;  
-        break;
-      case 'W':
-        border_color = WHITE;
-        break;
-      case 'G':
-        border_color = GREEN;
-        break;
-    }
-    is_border_word = false;
-    is_dirty = true;  
   }
 
   void handleBorderVLineRightCommand(const String& message) {
@@ -511,11 +464,6 @@ public:
       led_display->print(display_string);
     }
 
-    if (current_letter == ' ' && !is_image_mode) {
-      border_style = ' ';
-    }
-    // drawBorderSides();
-    // drawBorderVLines();
     drawBorderFrame();
     led_display->flipDMABuffer();    
     led_display->clearScreen();
@@ -596,12 +544,6 @@ public:
 
     memcpy(image, message.c_str(), message.length());
     is_dirty = true;
-  }
-
-  void handleBorderLineCommand(const String& message) {
-    debugPrintln("setting border line due to /border_line");
-    border_style = message.charAt(0);
-    is_dirty = true;  
   }
 
   void handleBorderTopBannerCommand(const String& message) {
@@ -811,9 +753,6 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_line", [](const String& msg) { display_manager->handleBorderLineCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_side", [](const String& msg) { display_manager->handleBorderSideCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_color", [](const String& msg) { display_manager->handleBorderColorCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
