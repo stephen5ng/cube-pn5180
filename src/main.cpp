@@ -129,12 +129,12 @@ int8_t rgb_large[] = {25, 26, 33, 13, 27, 14};
 int8_t rgb_small[] = {33, 26, 25, 14, 27, 13};
 
 int8_t* rgb_pins[] = {
-  rgb_large,
-  rgb_large,
-  rgb_large,
-  rgb_large,
   rgb_small,
-  rgb_large};
+  rgb_small,
+  rgb_small,
+  rgb_small,
+  rgb_small,
+  rgb_small};
 
 HUB75_I2S_CFG display_config(
   PANEL_RES_X,
@@ -252,7 +252,7 @@ public:
                                 is_border_word(false),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), rotation(0), font_size(1), is_lock(false),
+                                text_size(1), rotation(2), font_size(1), is_lock(false),
                                 border_style_left(0), border_style_right(0),
                                 vline_color_left(0), vline_color_right(0),
                                 vline_height(PANEL_RES),
@@ -303,6 +303,38 @@ public:
     led_display->clearScreen();
   }
 
+  void animate(unsigned long current_time) {
+    static uint16_t last_letter_color = -1;
+
+    current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+    if (is_lock) {
+      current_letter_color = YELLOW;
+    }
+    if (last_letter_color != current_letter_color) {
+      last_letter_color = current_letter_color;
+      is_dirty = true;
+    }
+
+    if (previous_letter != current_letter || previous_image != image) {
+      static uint8_t previous_percent_complete = -1;
+      if (current_time - animation_start_time >= letter_animation.duration()) {
+        // complete animation
+        previous_image = image;
+        previous_letter = current_letter;
+        percent_complete = ANIMATION_SCALE;
+        is_dirty = true;
+      } 
+      else {
+        // animation in progress
+        percent_complete = letter_animation.get(current_time - animation_start_time);
+        if (percent_complete != previous_percent_complete) {
+            previous_percent_complete = percent_complete;
+            is_dirty = true;
+        }
+      }
+    }
+  }
+
   void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
     // Serial.println("displayLetter");
     int16_t row = (PANEL_RES_Y * vertical_position) / 100;
@@ -339,20 +371,6 @@ public:
     }
   }
 
-  void handleFlashCommand(const String& message) {
-    debugPrintln("flashing due to /flash");
-    highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
-    is_dirty = true;
-  }
-
-  void handleLockCommand(const String& message) {
-    debugPrintln("locking due to /lock");
-    is_lock = message.charAt(0) == '1';
-    Serial.println(is_lock);
-    Serial.println(message);
-    is_dirty = true;
-  }
-
   void handleBorderFrameCommand(const String& message) {
     debugPrintln("setting border frame due to /border_frame");
     handleBorderTopBannerCommand(message);
@@ -380,36 +398,37 @@ public:
     is_dirty = true;
   }
 
-  void animate(unsigned long current_time) {
-    static uint16_t last_letter_color = -1;
+  void handleFlashCommand(const String& message) {
+    if (message.length() <= 0) {
+      return;
+    }
+    debugPrintln("flashing due to /flash");
+    highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
+    is_dirty = true;
+  }
 
-    current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
-    if (is_lock) {
-      current_letter_color = YELLOW;
-    }
-    if (last_letter_color != current_letter_color) {
-      last_letter_color = current_letter_color;
-      is_dirty = true;
+  void handleFontSizeCommand(const String& message) {
+    debugPrintln("setting font size due to /font_size");
+    // if (!is_image_mode) {
+    //   debugPrintln("ignoring font size change in image mode");
+    //   return;
+    // }
+
+    if (message.length() <= 0) {
+      return;
     }
 
-    if (previous_letter != current_letter || previous_image != image) {
-      static uint8_t previous_percent_complete = -1;
-      if (current_time - animation_start_time >= letter_animation.duration()) {
-        // complete animation
-        previous_image = image;
-        previous_letter = current_letter;
-        percent_complete = ANIMATION_SCALE;
-        is_dirty = true;
-      } 
-      else {
-        // animation in progress
-        percent_complete = letter_animation.get(current_time - animation_start_time);
-        if (percent_complete != previous_percent_complete) {
-            previous_percent_complete = percent_complete;
-            is_dirty = true;
-        }
-      }
-    }
+    int size = max(0L, message.toInt());
+    font_size = size;
+    is_dirty = true;
+  }
+
+  void handleLockCommand(const String& message) {
+    debugPrintln("locking due to /lock");
+    is_lock = message.length() > 0 && message.charAt(0) == '1';
+    Serial.println(is_lock);
+    Serial.println(message);
+    is_dirty = true;
   }
 
   void drawImage(int8_t percent_complete, uint16_t* image) {
@@ -456,55 +475,6 @@ public:
     is_dirty = false;
   }
 
-  void handleFontSizeCommand(const String& message) {
-    debugPrintln("setting font size due to /font_size");
-    if (!is_image_mode) {
-      debugPrintln("ignoring font size change in image mode");
-      return;
-    }
-    int size = message.toInt();
-    if (size > 0) {
-      font_size = size;
-      is_dirty = true;
-    }
-  }
-
-  void handleStringCommand(const String& message) {
-    debugPrintln("setting string due to /string");
-    display_string = message;
-    current_font = nullptr;  // Use default font for string mode
-    // rotation = is_front ? 0 : 3;    // Set rotation to 0 for string mode
-    is_dirty = true;
-  }
-
-  void handleLetterCommand(const String& message) {
-    static unsigned long last_message_time = 0;
-    unsigned long current_time = millis();
-    unsigned long time_since_last = current_time - last_message_time;
-    
-    if (time_since_last > 1000) {
-        Serial.println("----------------------------------------");
-        Serial.printf("[%lu] WARNING: %lu ms since last message\n", current_time, time_since_last);
-        Serial.println("----------------------------------------");
-    }
-    
-    last_message_time = current_time;
-    
-    Serial.printf("[%lu] MQTT message received - Topic: letter, Payload: %s\n", current_time, message.c_str());
-    
-    debugPrintln("setting letter due to /letter");
-    if (previous_letter != current_letter) {
-      previous_letter = current_letter;
-    }
-      
-    is_image_mode = false;
-    current_letter = message.charAt(0);
-    animation_start_time = millis();
-    current_font = &Roboto_Mono_Bold_78;  // Restore custom font for letter mode
-    text_size = 1;  // Always use size 1 for letter mode
-    // rotation = is_front ? 2 : 0;  // Restore original rotation for letter mode
-    is_dirty = true;
-  }
 
   void handleBrightnessCommand(const String& message) {
     debugPrintln("setting brightness due to /brightness");
@@ -576,7 +546,43 @@ public:
     is_dirty = true;  
   }
 
+  void handleLetterCommand(const String& message) {
+    static unsigned long last_message_time = 0;
+    unsigned long current_time = millis();
+    unsigned long time_since_last = current_time - last_message_time;
+    
+    if (time_since_last > 1000) {
+        Serial.println("----------------------------------------");
+        Serial.printf("[%lu] WARNING: %lu ms since last message\n", current_time, time_since_last);
+        Serial.println("----------------------------------------");
+    }
+    
+    last_message_time = current_time;
+    
+    Serial.printf("[%lu] MQTT message received - Topic: letter, Payload: %s\n", current_time, message.c_str());
+    
+    debugPrintln("setting letter due to /letter");
+    if (previous_letter != current_letter) {
+      previous_letter = current_letter;
+    }
+      
+    is_image_mode = false;
+    current_letter = message.length() > 0 ? message.charAt(0) : '?';
+    animation_start_time = millis();
+    current_font = &Roboto_Mono_Bold_78;  // Restore custom font for letter mode
+    text_size = 1;  // Always use size 1 for letter mode
+    // rotation = is_front ? 2 : 0;  // Restore original rotation for letter mode
+    is_dirty = true;
+  }
+
+  void handleStringCommand(const String& message) {
+    debugPrintln("setting string due to /string");
+    display_string = message;
+    current_font = nullptr;  // Use default font for string mode
+    is_dirty = true;
+  }
 };
+
 
 // ============= Global Variables =============
 DisplayManager* display_manager;
@@ -685,35 +691,43 @@ void setupWiFiConnection() {
   Serial.println(WiFi.localIP());
 }
 
-// ============= MQTT Functions =============
+void handleNfcCommand(const String& message) {
+  debugPrintln("nfc due to /nfc");
+  strncpy(last_neighbor_id, message.c_str(), sizeof(last_neighbor_id) - 1);
+  last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+}
+
+void handlePingCommand(const String& message) {
+  if (message.length() == 0) {
+    return;
+  }
+  debugPrintln("pinging due to /ping");
+  mqtt_client.publish(mqtt_topic_echo, message);
+}
+
+void handleRebootCommand(const String& message) {
+  if (message.length() == 0) {
+    return;
+  }
+  debugPrintln("rebooting due to /reboot");
+  ESP.restart();
+}
+
+void handleResetCommand(const String& message) {
+  if (message.length() == 0) {
+    return;
+  }
+  debugPrintln("resetting due to /reset");
+  nfc_reader.reset();
+  nfc_reader.setupRF();
+}
+
 void handleSleepCommand(const String& message) {
   if (message == "1") {
     debugPrintln("sleeping due to /sleep");
     esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
     esp_deep_sleep_start();
   }
-}
-
-void handleRebootCommand(const String& message) {
-  debugPrintln("rebooting due to /reboot");
-  ESP.restart();
-}
-
-void handleResetCommand(const String& message) {
-  debugPrintln("resetting due to /reset");
-  nfc_reader.reset();
-  nfc_reader.setupRF();
-}
-
-void handlePingCommand(const String& message) {
-  debugPrintln("pinging due to /ping");
-  mqtt_client.publish(mqtt_topic_echo, message);
-}
-
-void handleNfcCommand(const String& message) {
-  debugPrintln("nfc due to /nfc");
-  strncpy(last_neighbor_id, message.c_str(), sizeof(last_neighbor_id) - 1);
-  last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
 }
 
 void onConnectionEstablished() {
@@ -725,25 +739,27 @@ void onConnectionEstablished() {
   mqtt_topic_version = createMqttTopic("version");
   
   // Subscribe to all command topics
-  mqtt_client.subscribe(mqtt_topic_cube + "/sleep", handleSleepCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
-  mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [](const String& msg) { display_manager->handleBrightnessCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [](const String& msg) { display_manager->handleImageBinaryCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", handleRebootCommand );
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
+
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_height", [](const String& msg) { display_manager->handleBorderLineHeightCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [](const String& msg) { display_manager->handleImageBinaryCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/sleep", handleSleepCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
 }
 
