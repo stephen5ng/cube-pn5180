@@ -1,4 +1,5 @@
 #include "cube_messages.h"
+#include "cube_utilities.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <Easing.h>
@@ -18,17 +19,7 @@
 #define MINI false
 
 // ============= Configuration =============
-// MAC Address Table
-const char *CUBE_MAC_ADDRESSES[] = {
-  // MAIN SCREEN, FRONT SCREEN
-  "3C:8A:1F:A6:31:04", "Z94:54:C5:EE:87:F0",
-  "EC:E3:34:B4:8F:B4", "ZD8:BC:38:FD:E0:98",
-  "EC:E3:34:79:8A:BC", "ZCC:DB:A7:99:0F:E0", 
-  "04:83:08:59:6E:74", "ZD8:BC:38:FD:D0:BC",
-  "14:33:5C:30:25:98", "Z8C:4F:00:2E:58:40",
-  "EC:E3:34:79:9D:2C", "z8C:4F:00:2E:58:40",
-};
-#define NUM_CUBE_MAC_ADDRESSES (sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]))
+// MAC Address Table moved to cube_utilities.h/.cpp
 
 // Display Configuration
 #define BLACK    0x0000
@@ -98,11 +89,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
 #define MQTT_SERVER_PI "192.168.8.247"
 #define MQTT_PORT 1883
 
-// MQTT Topic Prefixes
-const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
-const char* MQTT_TOPIC_PREFIX_GAME = "game/";
-const char* MQTT_TOPIC_PREFIX_NFC = "nfc/";
-const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
+// MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
 // ============= Global Variables =============
 bool is_front_display = false;
@@ -588,42 +575,7 @@ public:
 DisplayManager* display_manager;
 
 // ============= Utility Functions =============
-int findMacAddressPosition(const char *mac_address) {
-  for (int i = 0; i < NUM_CUBE_MAC_ADDRESSES; i++) {
-    if (strcmp(mac_address, CUBE_MAC_ADDRESSES[i]) == 0) {
-      return i;
-    }
-  }
-  Serial.println("mac address not found");
-  return -1;
-}
-
-String removeColonsFromMac(const String& mac_address) {
-  String result;
-  result.reserve(mac_address.length());  // Pre-allocate to avoid reallocations
-  for (int i = 0; i < mac_address.length(); i++) {
-    if (mac_address.charAt(i) != ':') {
-      result += mac_address.charAt(i); 
-    }
-  }
-  return result;
-}
-
-void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
-  for (int i = 0; i < id_length; i++) {
-    snprintf(hex_buffer + (i * 2), 3, "%02X", nfc_id[i]);
-  }
-  hex_buffer[id_length * 2] = '\0';  // Ensure null termination
-}
-
-String createMqttTopic(const char* suffix) {
-  static String topic;
-  topic = MQTT_TOPIC_PREFIX_CUBE;
-  topic += cube_identifier;
-  topic += '/';
-  topic += suffix;
-  return topic;
-}
+// Utility functions moved to cube_utilities.h/.cpp
 
 // ============= Hardware Setup Functions =============
 void setupNfcReader() {
@@ -735,8 +687,8 @@ void onConnectionEstablished() {
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
-  mqtt_topic_echo = createMqttTopic(MQTT_TOPIC_PREFIX_ECHO);
-  mqtt_topic_version = createMqttTopic("version");
+  mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
+  mqtt_topic_version = createMqttTopic(cube_identifier, "version");
   
   // Subscribe to all command topics
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [](const String& msg) { display_manager->handleBrightnessCommand(msg); });
