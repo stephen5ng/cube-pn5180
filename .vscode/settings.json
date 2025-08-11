@@ -1,0 +1,4 @@
+{
+    "idf.pythonInstallPath": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+    "platformio-ide.defaultEnvironment": "esp32dev"
+}
