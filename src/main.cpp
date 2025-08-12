@@ -65,6 +65,7 @@
 #define PN5180_NSS 32
 #define PN5180_RST 17
 
+
 // Display Settings
 #define BIG_ROW 0
 #define BIG_COL 10
@@ -84,6 +85,11 @@
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
+#define BATTERY_MAINTENANCE_INTERVAL_S  3600ULL  /* Wake up every hour for battery maintenance */
+
+// Sleep state management
+RTC_DATA_ATTR bool is_sleep_mode = false;
+RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
@@ -261,7 +267,17 @@ public:
   void setupDisplay(String cube_id) {
     display_config.clkphase = false;
     display_config.double_buff = true;
-    int8_t* rgb = rgb_pins[cube_id.toInt()-1];
+    
+    // Safe bounds checking for RGB pin array access
+    int cube_index = cube_id.toInt() - 1;
+    int rgb_pins_count = sizeof(rgb_pins) / sizeof(rgb_pins[0]);
+    if (cube_index < 0 || cube_index >= rgb_pins_count) {
+      Serial.printf("WARNING: cube_id %d out of bounds (0-%d), using default (0)\n", 
+                    cube_id.toInt(), rgb_pins_count);
+      cube_index = 0; // Default to first entry
+    }
+    
+    int8_t* rgb = rgb_pins[cube_index];
     display_config.gpio.r1 = rgb[0];
     display_config.gpio.g1 = rgb[1];
     display_config.gpio.b1 = rgb[2];
@@ -548,7 +564,6 @@ public:
     
     Serial.printf("[%lu] MQTT message received - Topic: letter, Payload: %s\n", current_time, message.c_str());
     
-    debugPrintln("setting letter due to /letter");
     if (previous_letter != current_letter) {
       previous_letter = current_letter;
     }
@@ -674,11 +689,44 @@ void handleResetCommand(const String& message) {
   nfc_reader.setupRF();
 }
 
+void enterSleepMode() {
+  debugPrintln("Entering deep sleep mode...");
+  display_manager->displayDebugMessage("SLEEP");
+  delay(2000);
+  
+  esp_sleep_enable_timer_wakeup((uint64_t)BATTERY_MAINTENANCE_INTERVAL_S * uS_TO_S_FACTOR);
+  
+  is_sleep_mode = true;
+  sleep_start_time = millis();
+  
+  Serial.println("Will wake up automatically for battery maintenance in 1 hour...");
+  Serial.flush();
+  
+  esp_deep_sleep_start();
+}
+
+void handleWakeUp() {
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+    debugPrintln("Woken for battery maintenance");
+    display_manager->displayDebugMessage("MAINT");
+    
+    mqtt_client.loop();
+    delay(5000);
+    
+    enterSleepMode();
+  }
+  else {
+    is_sleep_mode = false;
+    debugPrintln("Normal boot - staying awake");
+  }
+}
+
 void handleSleepCommand(const String& message) {
   if (message == "1") {
     debugPrintln("sleeping due to /sleep");
-    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-    esp_deep_sleep_start();
+    enterSleepMode();
   }
 }
 
@@ -733,7 +781,18 @@ uint8_t getWakeupReason() {
 
 // ============= NFC Functions =============
 ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
-  return nfc_reader.getInventory(card_id);
+  // Clear the card_id buffer first
+  memset(card_id, 0, NFCID_LENGTH);
+  
+  // Try to read the card with error handling
+  ISO15693ErrorCode result = nfc_reader.getInventory(card_id);
+  
+  // Log detailed error information for debugging
+  if (result != ISO15693_EC_OK && result != EC_NO_CARD) {
+    Serial.printf("NFC read error: %d\n", result);
+  }
+  
+  return result;
 }
 
 void setupUDP() {
@@ -786,6 +845,9 @@ void setup() {
   Serial.print("Chip Revision: ");
   Serial.println(ESP.getChipRevision());
 
+  // Handle wake up from deep sleep
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  
   mqtt_client.enableDebuggingMessages(true);
   mqtt_client.setMaxPacketSize(11999);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
@@ -814,9 +876,16 @@ void setup() {
   display_manager = new DisplayManager(is_front, cube_id);
   display_manager->displayDebugMessage(VERSION);
   delay(DISPLAY_STARTUP_DELAY_MS);
-  uint8_t wakeup = getWakeupReason();
 
-  display_manager->displayDebugMessage((String("wake up:") + String(wakeup)).c_str());
+  display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
+  
+  handleWakeUp();
+  
+  // If we're in battery maintenance mode, skip the rest of setup
+  if (is_sleep_mode && wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+    return;  // Will go back to sleep in handleWakeUp()
+  }
+  
   Serial.println(cube_id);
   static String client_name = cube_id + (is_front ? "_F" : "");
   Serial.println(client_name);
@@ -877,18 +946,32 @@ void loop() {
       last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
     }
   } else if (read_result == EC_NO_CARD) {
-    // Only publish if we had a card before and now we don't
-    if (last_neighbor_id[0] != '\0') {
-      debugPrintln(F("Card removed"));
+    // Publish "-" to indicate no neighbor.
+    if (strcmp(last_neighbor_id, "-") != 0) {
+      debugPrintln(F("No card detected"));
       unsigned long publish_start = millis();
-      bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "", true);
+      bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
       unsigned long publish_end = millis();
-      Serial.printf("[%lu] MQTT publish took %lu ms - empty payload, success: %d\n", publish_end, publish_end - publish_start, success);
+      Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
       if (success) {
-        last_neighbor_id[0] = '\0';  // Clear the neighbor ID
+        strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
+        last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
       }
     }
   } else {
-    debugPrintln(F("not ok"));
+    Serial.printf("NFC read failed with error code: %d\n", read_result);
+    
+    // Reset NFC reader on persistent errors to prevent buffer issues
+    static unsigned long last_nfc_reset = 0;
+    static int consecutive_errors = 0;
+    
+    consecutive_errors++;
+    if (consecutive_errors > 5 && (current_time - last_nfc_reset > 5000)) {
+      Serial.println("Resetting NFC reader due to consecutive errors...");
+      nfc_reader.reset();
+      nfc_reader.setupRF();
+      last_nfc_reset = current_time;
+      consecutive_errors = 0;
+    }
   }
 }

@@ -26,7 +26,7 @@ void tearDown(void) {}
 
 void test_findMacAddressPosition_known_addresses() {
     // Test first cube main display
-    TEST_ASSERT_EQUAL(0, findMacAddressPosition("3C:8A:1F:A6:31:04"));
+    TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:95:E7:70"));
     
     // Test first cube front display
     TEST_ASSERT_EQUAL(1, findMacAddressPosition("Z94:54:C5:EE:87:F0"));
@@ -108,7 +108,7 @@ void test_mac_to_cube_configuration_integration() {
     // Test complete workflow: MAC -> position -> cube config
     
     // Test Cube 1 main display
-    int pos = findMacAddressPosition("3C:8A:1F:A6:31:04");
+    int pos = findMacAddressPosition("CC:DB:A7:95:E7:70");
     TEST_ASSERT_EQUAL(0, pos);
     TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(pos));
     TEST_ASSERT_FALSE(isFrontDisplay(pos));
