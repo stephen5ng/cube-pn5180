@@ -98,7 +98,6 @@ RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 // MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
 // ============= Global Variables =============
-bool is_front_display = false;
 
 // HUB75 Display Configuration
 HUB75_I2S_CFG::i2s_pins display_pins = {
@@ -127,7 +126,14 @@ int8_t* rgb_pins[] = {
   rgb_small,
   rgb_small,
   rgb_small,
-  rgb_small};
+  rgb_small,
+  rgb_large,
+  rgb_large,
+  rgb_large,
+  rgb_large,
+  rgb_large,
+  rgb_large,
+};
 
 HUB75_I2S_CFG display_config(
   PANEL_RES_X,
@@ -210,7 +216,6 @@ void debugPrintln(const __FlashStringHelper* message) {
 class DisplayManager {
 private:
   MatrixPanel_I2S_DMA* led_display;
-  bool is_front;
   bool is_image_mode;
   uint16_t* image1;
   uint16_t* image2;
@@ -241,7 +246,7 @@ private:
   char current_letter;
 
 public:
-  DisplayManager(bool is_front, String cube_id) : is_front(is_front), is_image_mode(false), is_dirty(true), 
+  DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true), 
                                 is_border_word(false),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
@@ -573,7 +578,6 @@ public:
     animation_start_time = millis();
     current_font = &Roboto_Mono_Bold_78;  // Restore custom font for letter mode
     text_size = 1;  // Always use size 1 for letter mode
-    // rotation = is_front ? 2 : 0;  // Restore original rotation for letter mode
     is_dirty = true;
   }
 
@@ -594,9 +598,6 @@ DisplayManager* display_manager;
 
 // ============= Hardware Setup Functions =============
 void setupNfcReader() {
-  if (is_front_display) {
-    return;
-  }
   SPI.begin(SCK, MISO, MOSI, SS);
   Serial.println(F("Initializing nfc..."));
   nfc_reader.begin();
@@ -612,17 +613,13 @@ uint8_t getCubeIpOctet() {
   if (mac_position == -1) {
     mac_position = 21;
   }
-  int cube_index = mac_position - (mac_position % 2);
-  cube_identifier = 1 + mac_position / 2;
-  is_front_display = (mac_position % 2) == 1;
+  cube_identifier = 1 + mac_position;
   Serial.print("mac_address: ");
   Serial.println(mac_address);
   Serial.print("mac_position: ");
   Serial.println(mac_position);
   Serial.print("cube_id: ");
   Serial.println(cube_identifier);
-  Serial.print("front display: ");
-  Serial.println(is_front_display);
   return 20 + mac_position;
 }
 
@@ -870,10 +867,8 @@ void setup() {
   debugPrintln("wifi done");
   
   String cube_id = cube_identifier;
-  bool is_front = (findMacAddressPosition(WiFi.macAddress().c_str()) % 2) == 1;
-  
   // Create display manager
-  display_manager = new DisplayManager(is_front, cube_id);
+  display_manager = new DisplayManager(cube_id);
   display_manager->displayDebugMessage(VERSION);
   delay(DISPLAY_STARTUP_DELAY_MS);
 
@@ -887,7 +882,7 @@ void setup() {
   }
   
   Serial.println(cube_id);
-  static String client_name = cube_id + (is_front ? "_F" : "");
+  static String client_name = cube_id;
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
   char ipDisplay[128];
@@ -919,9 +914,6 @@ void loop() {
   display_manager->updateDisplay(millis());
   handleUDP();
 
-  if (is_front_display) {
-    return;
-  }
   nfc_reader.reset();
   nfc_reader.setupRF();
 

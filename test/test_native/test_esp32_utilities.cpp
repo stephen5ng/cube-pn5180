@@ -13,12 +13,9 @@ uint8_t calculateCubeIpOctet(int mac_position) {
 }
 
 int calculateCubeIdentifier(int mac_position) {
-  return 1 + mac_position / 2;  // From getCubeIpOctet logic
+  return 1 + mac_position;  // Updated: each MAC = one cube
 }
 
-bool isFrontDisplay(int mac_position) {
-  return (mac_position % 2) == 1;  // From getCubeIpOctet logic
-}
 
 // Test functions
 void setUp(void) {}
@@ -28,14 +25,12 @@ void test_findMacAddressPosition_known_addresses() {
     // Test first cube main display
     TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:95:E7:70"));
     
-    // Test first cube front display
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("Z94:54:C5:EE:87:F0"));
     
     // Test second cube main display  
-    TEST_ASSERT_EQUAL(2, findMacAddressPosition("EC:E3:34:B4:8F:B4"));
+    TEST_ASSERT_EQUAL(1, findMacAddressPosition("EC:E3:34:B4:8F:B4"));
     
     // Test last cube main display
-    TEST_ASSERT_EQUAL(10, findMacAddressPosition("EC:E3:34:79:9D:2C"));
+    TEST_ASSERT_EQUAL(5, findMacAddressPosition("EC:E3:34:79:9D:2C"));
 }
 
 void test_findMacAddressPosition_unknown_address() {
@@ -78,31 +73,22 @@ void test_calculateCubeIpOctet() {
     // Test known positions
     TEST_ASSERT_EQUAL(20, calculateCubeIpOctet(0));   // First MAC
     TEST_ASSERT_EQUAL(21, calculateCubeIpOctet(1));   // Second MAC
-    TEST_ASSERT_EQUAL(30, calculateCubeIpOctet(10));  // Eleventh MAC
+    TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(5));   // Sixth MAC
     
     // Test fallback case
     TEST_ASSERT_EQUAL(41, calculateCubeIpOctet(-1));  // Unknown MAC -> position 21 -> IP 41
 }
 
 void test_calculateCubeIdentifier() {
-    // Test cube ID calculation (pairs of MACs = one cube)
-    TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(0));  // Cube 1 main
-    TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(1));  // Cube 1 front
-    TEST_ASSERT_EQUAL(2, calculateCubeIdentifier(2));  // Cube 2 main
-    TEST_ASSERT_EQUAL(2, calculateCubeIdentifier(3));  // Cube 2 front
-    TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(10)); // Cube 6 main
-    TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(11)); // Cube 6 front
+    // Test cube ID calculation (each MAC = one cube)
+    TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(0));  // Cube 1
+    TEST_ASSERT_EQUAL(2, calculateCubeIdentifier(1));  // Cube 2
+    TEST_ASSERT_EQUAL(3, calculateCubeIdentifier(2));  // Cube 3
+    TEST_ASSERT_EQUAL(4, calculateCubeIdentifier(3));  // Cube 4
+    TEST_ASSERT_EQUAL(5, calculateCubeIdentifier(4));  // Cube 5
+    TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(5));  // Cube 6
 }
 
-void test_isFrontDisplay() {
-    // Even positions = main display, odd positions = front display
-    TEST_ASSERT_FALSE(isFrontDisplay(0));   // Main
-    TEST_ASSERT_TRUE(isFrontDisplay(1));    // Front
-    TEST_ASSERT_FALSE(isFrontDisplay(2));   // Main
-    TEST_ASSERT_TRUE(isFrontDisplay(3));    // Front
-    TEST_ASSERT_FALSE(isFrontDisplay(10));  // Main
-    TEST_ASSERT_TRUE(isFrontDisplay(11));   // Front
-}
 
 void test_mac_to_cube_configuration_integration() {
     // Test complete workflow: MAC -> position -> cube config
@@ -111,22 +97,13 @@ void test_mac_to_cube_configuration_integration() {
     int pos = findMacAddressPosition("CC:DB:A7:95:E7:70");
     TEST_ASSERT_EQUAL(0, pos);
     TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(pos));
-    TEST_ASSERT_FALSE(isFrontDisplay(pos));
     TEST_ASSERT_EQUAL(20, calculateCubeIpOctet(pos));
     
-    // Test Cube 1 front display
-    pos = findMacAddressPosition("Z94:54:C5:EE:87:F0");
-    TEST_ASSERT_EQUAL(1, pos);
-    TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(pos));  // Same cube
-    TEST_ASSERT_TRUE(isFrontDisplay(pos));               // But front display
-    TEST_ASSERT_EQUAL(21, calculateCubeIpOctet(pos));
-    
-    // Test Cube 6 main display (last in table)
+    // Test Cube 6 (last in table)
     pos = findMacAddressPosition("EC:E3:34:79:9D:2C");
-    TEST_ASSERT_EQUAL(10, pos);
+    TEST_ASSERT_EQUAL(5, pos);
     TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(pos));
-    TEST_ASSERT_FALSE(isFrontDisplay(pos));
-    TEST_ASSERT_EQUAL(30, calculateCubeIpOctet(pos));
+    TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(pos));
 }
 
 int main(void) {
@@ -144,7 +121,6 @@ int main(void) {
     // Cube configuration tests
     RUN_TEST(test_calculateCubeIpOctet);
     RUN_TEST(test_calculateCubeIdentifier);
-    RUN_TEST(test_isFrontDisplay);
     
     // Integration tests
     RUN_TEST(test_mac_to_cube_configuration_integration);
