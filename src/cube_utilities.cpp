@@ -10,6 +10,10 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "EC:E3:34:79:9D:2C",  // Cube 6
   "94:54:C5:EE:89:4C",  // 7
   "C4:DD:57:8E:46:C8",  // 8
+  "D8:BC:38:FD:D0:BC",  // 9
+  "94:54:C5:F1:AF:00",  // 10
+  "CC:DB:A7:9B:5D:9C",  // 11
+  "94:54:C5:EE:87:F0",  // 12
 };
 const int NUM_CUBE_MAC_ADDRESSES = sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]);
 

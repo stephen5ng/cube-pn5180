@@ -914,9 +914,6 @@ void loop() {
   display_manager->updateDisplay(millis());
   handleUDP();
 
-  nfc_reader.reset();
-  nfc_reader.setupRF();
-
   unsigned long current_time = millis();
 
   uint8_t card_id[NFCID_LENGTH];
