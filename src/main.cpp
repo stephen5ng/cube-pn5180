@@ -611,7 +611,7 @@ uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
   int mac_position = findMacAddressPosition(mac_address.c_str());
   if (mac_position == -1) {
-    mac_position = 21;
+    mac_position = 20;
   }
   cube_identifier = 1 + mac_position;
   Serial.print("mac_address: ");
@@ -620,7 +620,7 @@ uint8_t getCubeIpOctet() {
   Serial.println(mac_position);
   Serial.print("cube_id: ");
   Serial.println(cube_identifier);
-  return 20 + mac_position;
+  return mac_position + ((mac_position < 6) ? 21 : 25);
 }
 
 void setupWiFiConnection() {
