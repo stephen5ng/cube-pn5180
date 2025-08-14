@@ -797,6 +797,7 @@ void setupUDP() {
   Serial.printf("UDP server listening on port %d\n", UDP_PORT);
 }
 
+
 void handleUDP() {
   int packetSize = udp.parsePacket();
   if (packetSize) {
@@ -910,11 +911,17 @@ void setup() {
 void loop() {
   mqtt_client.loop();
   esp_task_wdt_reset();  // Feed the watchdog timer
-  display_manager->animate(millis());
-  display_manager->updateDisplay(millis());
-  handleUDP();
-
+  
+  // Throttle display updates to 30 FPS for improved MQTT responsiveness
+  static unsigned long last_display_update = 0;
   unsigned long current_time = millis();
+  if (current_time - last_display_update >= 33) { // ~30 FPS
+    display_manager->animate(current_time);
+    display_manager->updateDisplay(current_time);
+    last_display_update = current_time;
+  }
+  
+  handleUDP();
 
   uint8_t card_id[NFCID_LENGTH];
   ISO15693ErrorCode read_result = readNfcCard(card_id);
@@ -955,11 +962,11 @@ void loop() {
     static int consecutive_errors = 0;
     
     consecutive_errors++;
-    if (consecutive_errors > 5 && (current_time - last_nfc_reset > 5000)) {
+    if (consecutive_errors > 5 && (millis() - last_nfc_reset > 5000)) {
       Serial.println("Resetting NFC reader due to consecutive errors...");
       nfc_reader.reset();
       nfc_reader.setupRF();
-      last_nfc_reset = current_time;
+      last_nfc_reset = millis();
       consecutive_errors = 0;
     }
   }
