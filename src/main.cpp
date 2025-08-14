@@ -554,6 +554,54 @@ public:
     is_dirty = true;  
   }
 
+  void handleConsolidatedBorderCommand(const String& message) {
+    // Protocol: "NSW:0xFF0000" or "N:0x00FF00" or ":0xFF0000" for all sides
+    // Unmentioned sides are automatically cleared
+    
+    debugPrint("Consolidated border: ");
+    debugPrintln(message.c_str());
+    
+    // First clear all borders
+    hline_color_top = 0;
+    hline_color_bottom = 0; 
+    vline_color_left = 0;
+    vline_color_right = 0;
+    
+    // Parse the message: directions:color
+    int colonIndex = message.indexOf(':');
+    if (colonIndex == -1) return; // Invalid format
+    
+    String directions = message.substring(0, colonIndex);
+    String colorStr = message.substring(colonIndex + 1);
+    
+    uint32_t color = 0;
+    if (colorStr.length() > 0) {
+      color = strtoul(colorStr.c_str(), NULL, 16);
+    }
+    
+    // Apply color to specified directions
+    for (int i = 0; i < directions.length(); i++) {
+      char dir = directions.charAt(i);
+      switch (dir) {
+        case 'N': // North = top
+          hline_color_top = color;
+          break;
+        case 'S': // South = bottom  
+          hline_color_bottom = color;
+          break;
+        case 'E': // East = right
+          vline_color_right = color;
+          break;
+        case 'W': // West = left
+          vline_color_left = color;
+          break;
+      }
+    }
+    
+    // Force display update
+    is_dirty = true;
+  }
+
   void handleLetterCommand(const String& message) {
     static unsigned long last_message_time = 0;
     unsigned long current_time = millis();
@@ -743,6 +791,9 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep", handleSleepCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
 
+  mqtt_client.subscribe(mqtt_topic_cube + "/border", [](const String& msg) { display_manager->handleConsolidatedBorderCommand(msg); });
+  
+  // Legacy border topics for backward compatibility  
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
@@ -796,7 +847,6 @@ void setupUDP() {
   udp.begin(UDP_PORT);
   Serial.printf("UDP server listening on port %d\n", UDP_PORT);
 }
-
 
 void handleUDP() {
   int packetSize = udp.parsePacket();
