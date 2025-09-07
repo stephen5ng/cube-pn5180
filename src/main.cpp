@@ -13,6 +13,7 @@
 #include <Wire.h>
 #include <secrets.h>
 #include "font.h"
+#include "cube_tags.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 
@@ -120,21 +121,6 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
 int8_t rgb_large[] = {25, 26, 33, 13, 27, 14};
 int8_t rgb_small[] = {33, 26, 25, 14, 27, 13};
 
-int8_t* rgb_pins[] = {
-  rgb_small,
-  rgb_small,
-  rgb_small,
-  rgb_small,
-  rgb_small,
-  rgb_small,
-  rgb_large,
-  rgb_large,
-  rgb_large,
-  rgb_large,
-  rgb_large,
-  rgb_large,
-};
-
 HUB75_I2S_CFG display_config(
   PANEL_RES_X,
   PANEL_RES_Y,
@@ -181,6 +167,7 @@ String mqtt_topic_cube_nfc;
 String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_version;
+String mqtt_topic_cube_right;  // publishes numeric cube index (1..6) to /cube/<id>/right
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -250,7 +237,7 @@ public:
                                 is_border_word(false),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), rotation(2), font_size(1), is_lock(false),
+                                text_size(1), font_size(1), is_lock(false),
                                 border_style_left(0), border_style_right(0),
                                 vline_color_left(0), vline_color_right(0),
                                 vline_height(PANEL_RES),
@@ -258,6 +245,8 @@ public:
                                 hline_color_bottom(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr), 
                                 previous_letter(' '), current_letter('?') {
+    int cube_id_int = cube_id.toInt();    
+    rotation = (cube_id_int <= 6) ? 2 : 0;
     setupDisplay(cube_id);
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
@@ -274,15 +263,8 @@ public:
     display_config.double_buff = true;
     
     // Safe bounds checking for RGB pin array access
-    int cube_index = cube_id.toInt() - 1;
-    int rgb_pins_count = sizeof(rgb_pins) / sizeof(rgb_pins[0]);
-    if (cube_index < 0 || cube_index >= rgb_pins_count) {
-      Serial.printf("WARNING: cube_id %d out of bounds (0-%d), using default (0)\n", 
-                    cube_id.toInt(), rgb_pins_count);
-      cube_index = 0; // Default to first entry
-    }
-    
-    int8_t* rgb = rgb_pins[cube_index];
+    int cube_id_int = cube_id.toInt();    
+    int8_t* rgb = cube_id_int <= 6 ? rgb_small : rgb_large;
     display_config.gpio.r1 = rgb[0];
     display_config.gpio.g1 = rgb[1];
     display_config.gpio.b1 = rgb[2];
@@ -657,18 +639,19 @@ void setupNfcReader() {
 // ============= Network Functions =============
 uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
-  int mac_position = findMacAddressPosition(mac_address.c_str());
+  uint8_t mac_position = findMacAddressPosition(mac_address.c_str());
   if (mac_position == -1) {
     mac_position = 20;
   }
-  cube_identifier = 1 + mac_position;
+  uint8_t cube_id = ((mac_position <= 5) ? 1 : 5) + mac_position;
+  cube_identifier = cube_id;
   Serial.print("mac_address: ");
   Serial.println(mac_address);
   Serial.print("mac_position: ");
   Serial.println(mac_position);
   Serial.print("cube_id: ");
   Serial.println(cube_identifier);
-  return mac_position + ((mac_position < 6) ? 21 : 25);
+  return cube_id + 20;
 }
 
 void setupWiFiConnection() {
@@ -781,6 +764,7 @@ void onConnectionEstablished() {
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
+  mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
   mqtt_topic_version = createMqttTopic(cube_identifier, "version");
   
   // Subscribe to all command topics
@@ -978,6 +962,7 @@ void loop() {
   if (read_result == ISO15693_EC_OK) {
     char neighbor_id[NFCID_LENGTH * 2 + 1];
     convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
+    int cube_num = lookupCubeNumberByTag(neighbor_id);
     if (strcmp(neighbor_id, last_neighbor_id) == 0) {
       return;  // No change in state, don't publish
     }
@@ -985,6 +970,11 @@ void loop() {
     debugPrintln(F("New card"));
     unsigned long publish_start = millis();
     bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
+    if (cube_num > 0) {
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%d", cube_num);
+      mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+    }
     unsigned long publish_end = millis();
     Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
     if (success) {
@@ -997,6 +987,8 @@ void loop() {
       debugPrintln(F("No card detected"));
       unsigned long publish_start = millis();
       bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+      // Also publish to numeric neighbor topic with "-" to denote no neighbor
+      mqtt_client.publish(mqtt_topic_cube_right, "-", true);
       unsigned long publish_end = millis();
       Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
       if (success) {

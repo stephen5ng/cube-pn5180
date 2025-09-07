@@ -2,12 +2,15 @@
 
 // MAC Address Table - Main screens only
 const char *CUBE_MAC_ADDRESSES[] = {
-  "CC:DB:A7:95:E7:70",  // Cube 1
-  "EC:E3:34:B4:8F:B4",  // Cube 2
-  "EC:E3:34:79:8A:BC",  // Cube 3
-  "04:83:08:59:6E:74",  // Cube 4
-  "14:33:5C:30:25:98",  // Cube 5
-  "EC:E3:34:79:9D:2C",  // Cube 6
+  "CC:DB:A7:95:E7:70",  // 1
+  "EC:E3:34:B4:8F:B4",  // 2
+  // "EC:E3:34:79:8A:BC",  // 3
+  "EC:C9:FF:51:4C:80",  // 3 square
+  "04:83:08:59:6E:74",  // 4
+  // "14:33:5C:30:25:98",  // 5
+  "5C:01:3B:4A:CB:D4", // 5 long
+  // "EC:E3:34:79:9D:2C",  // 6
+  "C0:5D:89:A8:ED:2C",  // 6 square
   "94:54:C5:EE:89:4C",  // 7
   "C4:DD:57:8E:46:C8",  // 8
   "D8:BC:38:FD:D0:BC",  // 9
