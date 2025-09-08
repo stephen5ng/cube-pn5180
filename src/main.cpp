@@ -623,6 +623,9 @@ public:
 // ============= Global Variables =============
 DisplayManager* display_manager;
 
+// Loop timing variables
+unsigned long loop_start_time = 0;
+
 // ============= Utility Functions =============
 // Utility functions moved to cube_utilities.h/.cpp
 
@@ -861,6 +864,21 @@ void handleUDP() {
         
         // Serial.printf("Sent RSSI to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), rssiStr);
       }
+      // Check if message is "timing" - return cube_id:loop_time_ms
+      else if (strcmp(udpBuffer, "timing") == 0) {
+        // Calculate current loop time (this is called from within the loop)
+        unsigned long loop_end_time = millis();
+        unsigned long current_loop_time = loop_end_time - loop_start_time;
+        
+        char timingStr[32];
+        snprintf(timingStr, sizeof(timingStr), "%s:%lu", cube_identifier.c_str(), current_loop_time);
+        
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)timingStr, strlen(timingStr));
+        udp.endPacket();
+        
+        Serial.printf("Sent timing to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), timingStr);
+      }
     }
   }
 }
@@ -943,6 +961,8 @@ void setup() {
 }
 
 void loop() {
+  loop_start_time = millis();
+  
   mqtt_client.loop();
   esp_task_wdt_reset();  // Feed the watchdog timer
   
