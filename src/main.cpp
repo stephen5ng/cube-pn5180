@@ -678,6 +678,7 @@ void setupWiFiConnection() {
     const char* password = try_portable ? WIFI_PASSWORD_PORTABLE : WIFI_PASSWORD;
     Serial.print("Connecting to ");
     Serial.println(ssid);
+    WiFi.setSleep(WIFI_PS_NONE);
     WiFi.begin(ssid, password);
     delay(2000);
     // try_portable = ! try_portable;
