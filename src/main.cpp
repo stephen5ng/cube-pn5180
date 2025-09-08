@@ -18,46 +18,46 @@
 #include "esp_task_wdt.h"
 
 // ============= Configuration =============
-// MINI configuration per cube (runtime configurable)
-// MINI cubes use different pin mappings: MISO=34, PN5180_BUSY=35
-// Standard cubes use: MISO=39, PN5180_BUSY=36
-static bool cube_mini_config[7] = {
+// Hardware configuration per cube (30-pin vs not-30-pin ESP32 modules)
+// Not-30-pin cubes (36-pin/38-pin variants) use: MISO=34, PN5180_BUSY=35
+// 30-pin cubes use: MISO=39, PN5180_BUSY=36
+static bool cube_thirty_pin_config[7] = {
   false,  // cube 0 (unused)
-  false,  // cube 1 - standard
-  true,   // cube 2 - MINI
-  true,   // cube 3 - MINI
-  false,  // cube 4 - standard
-  true,   // cube 5 - MINI
-  true    // cube 6 - MINI
+  true,   // cube 1 - 30-pin
+  false,  // cube 2 - not-30-pin (36/38-pin)
+  false,  // cube 3 - not-30-pin (36/38-pin)
+  true,   // cube 4 - 30-pin
+  false,  // cube 5 - not-30-pin (36/38-pin)
+  false   // cube 6 - not-30-pin (36/38-pin)
 };
-// Pin definitions (runtime configurable based on MINI)
-static int miso_pin = 0;        // Will be set by configureMiniPins()
-static int pn5180_busy_pin = 0; // Will be set by configureMiniPins()
+// Pin definitions (runtime configurable based on ESP32 module type)
+static int miso_pin = 0;        // Will be set by configurePins()
+static int pn5180_busy_pin = 0; // Will be set by configurePins()
 
 // Forward declarations
 extern PN5180ISO15693* nfc_reader;
 void initializeNfcReader();
 
-// Function to configure pins based on cube MINI status
-void configureMiniPins(int cube_id) {
-  bool is_mini = true;
+// Function to configure pins based on cube hardware type
+void configurePins(int cube_id) {
+  bool is_thirty = false;  // Default to not-30-pin for unknown cubes
   if (cube_id >= 1 && cube_id <= 6) {
-    is_mini = cube_mini_config[cube_id];
+    is_thirty = cube_thirty_pin_config[cube_id];
   }
-  if (is_mini) {
-    miso_pin = 34;
-    pn5180_busy_pin = 35;
-    Serial.printf("Cube %d: MINI configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
-  } else {
+  
+  if (is_thirty) {
     miso_pin = 39;
     pn5180_busy_pin = 36;
-    Serial.printf("Cube %d: Standard configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+    Serial.printf("Cube %d: 30-pin configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+  } else {
+    miso_pin = 34;
+    pn5180_busy_pin = 35;
+    Serial.printf("Cube %d: not-30-pin configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
   }
   
   // Initialize NFC reader with correct pins
   initializeNfcReader();
   Serial.printf("Pin configuration complete for cube %d\n", cube_id);
-  
 }
 
 // Display Configuration
@@ -660,7 +660,7 @@ unsigned long loop_start_time = 0;
 void initializeNfcReader() {
   // Validate pins are configured
   if (pn5180_busy_pin == 0) {
-    Serial.println("ERROR: Pins not configured! Call configureMiniPins() first.");
+    Serial.println("ERROR: Pins not configured! Call configurePins() first.");
     return;
   }
   
@@ -676,13 +676,13 @@ void initializeNfcReader() {
 
 void setupNfcReader() {
   if (nfc_reader == nullptr) {
-    Serial.println(F("Error: NFC reader not initialized! Call configureMiniPins first."));
+    Serial.println(F("Error: NFC reader not initialized! Call configurePins first."));
     return;
   }
   
   // Validate pins are configured
   if (miso_pin == 0) {
-    Serial.println(F("ERROR: MISO pin not configured! Call configureMiniPins first."));
+    Serial.println(F("ERROR: MISO pin not configured! Call configurePins first."));
     return;
   }
   
@@ -705,8 +705,8 @@ uint8_t getCubeIpOctet() {
   uint8_t cube_id = ((mac_position <= 5) ? 1 : 5) + mac_position;
   cube_identifier = cube_id;
   
-  // Configure MINI pins based on cube ID
-  configureMiniPins(cube_id);
+  // Configure pins based on cube ID
+  configurePins(cube_id);
   
   Serial.print("mac_address: ");
   Serial.println(mac_address);
