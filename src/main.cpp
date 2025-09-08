@@ -17,10 +17,48 @@
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 
-#define MINI false
-
 // ============= Configuration =============
-// MAC Address Table moved to cube_utilities.h/.cpp
+// MINI configuration per cube (runtime configurable)
+// MINI cubes use different pin mappings: MISO=34, PN5180_BUSY=35
+// Standard cubes use: MISO=39, PN5180_BUSY=36
+static bool cube_mini_config[7] = {
+  false,  // cube 0 (unused)
+  false,  // cube 1 - standard
+  true,   // cube 2 - MINI
+  true,   // cube 3 - MINI
+  false,  // cube 4 - standard
+  true,   // cube 5 - MINI
+  true    // cube 6 - MINI
+};
+// Pin definitions (runtime configurable based on MINI)
+static int miso_pin = 0;        // Will be set by configureMiniPins()
+static int pn5180_busy_pin = 0; // Will be set by configureMiniPins()
+
+// Forward declarations
+extern PN5180ISO15693* nfc_reader;
+void initializeNfcReader();
+
+// Function to configure pins based on cube MINI status
+void configureMiniPins(int cube_id) {
+  bool is_mini = true;
+  if (cube_id >= 1 && cube_id <= 6) {
+    is_mini = cube_mini_config[cube_id];
+  }
+  if (is_mini) {
+    miso_pin = 34;
+    pn5180_busy_pin = 35;
+    Serial.printf("Cube %d: MINI configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+  } else {
+    miso_pin = 39;
+    pn5180_busy_pin = 36;
+    Serial.printf("Cube %d: Standard configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+  }
+  
+  // Initialize NFC reader with correct pins
+  initializeNfcReader();
+  Serial.printf("Pin configuration complete for cube %d\n", cube_id);
+  
+}
 
 // Display Configuration
 #define BLACK    0x0000
@@ -52,17 +90,6 @@
 #define BORDER_LINE_COUNT 4
 
 // Pin Definitions
-#if MINI
-  #define MISO 34
-#else
-  #define MISO 39
-#endif
-
-#if MINI
-  #define PN5180_BUSY 35
-#else
-  #define PN5180_BUSY 36
-#endif
 #define PN5180_NSS 32
 #define PN5180_RST 17
 
@@ -130,7 +157,7 @@ HUB75_I2S_CFG display_config(
 
 // Hardware Objects
 // MatrixPanel_I2S_DMA *led_display;
-PN5180ISO15693 nfc_reader = PN5180ISO15693(PN5180_NSS, PN5180_BUSY, PN5180_RST);
+PN5180ISO15693* nfc_reader = nullptr;  // Will be initialized after cube ID is determined
 
 // Message Objects
 MessageLetter letter_message;
@@ -630,13 +657,42 @@ unsigned long loop_start_time = 0;
 // Utility functions moved to cube_utilities.h/.cpp
 
 // ============= Hardware Setup Functions =============
+void initializeNfcReader() {
+  // Validate pins are configured
+  if (pn5180_busy_pin == 0) {
+    Serial.println("ERROR: Pins not configured! Call configureMiniPins() first.");
+    return;
+  }
+  
+  // Clean up previous instance if any
+  if (nfc_reader != nullptr) {
+    delete nfc_reader;
+  }
+  
+  // Create new NFC reader with current pin configuration
+  nfc_reader = new PN5180ISO15693(PN5180_NSS, pn5180_busy_pin, PN5180_RST);
+  Serial.printf("NFC reader initialized with pn5180_busy_pin=%d\n", pn5180_busy_pin);
+}
+
 void setupNfcReader() {
-  SPI.begin(SCK, MISO, MOSI, SS);
+  if (nfc_reader == nullptr) {
+    Serial.println(F("Error: NFC reader not initialized! Call configureMiniPins first."));
+    return;
+  }
+  
+  // Validate pins are configured
+  if (miso_pin == 0) {
+    Serial.println(F("ERROR: MISO pin not configured! Call configureMiniPins first."));
+    return;
+  }
+  
+  SPI.begin(SCK, miso_pin, MOSI, SS);
+  Serial.printf("SPI initialized with miso_pin=%d\n", miso_pin);
   Serial.println(F("Initializing nfc..."));
-  nfc_reader.begin();
-  nfc_reader.reset();
+  nfc_reader->begin();
+  nfc_reader->reset();
   Serial.println(F("Enabling RF field..."));
-  nfc_reader.setupRF();
+  nfc_reader->setupRF();
 }
 
 // ============= Network Functions =============
@@ -648,6 +704,10 @@ uint8_t getCubeIpOctet() {
   }
   uint8_t cube_id = ((mac_position <= 5) ? 1 : 5) + mac_position;
   cube_identifier = cube_id;
+  
+  // Configure MINI pins based on cube ID
+  configureMiniPins(cube_id);
+  
   Serial.print("mac_address: ");
   Serial.println(mac_address);
   Serial.print("mac_position: ");
@@ -717,8 +777,10 @@ void handleResetCommand(const String& message) {
     return;
   }
   debugPrintln("resetting due to /reset");
-  nfc_reader.reset();
-  nfc_reader.setupRF();
+  if (nfc_reader != nullptr) {
+    nfc_reader->reset();
+    nfc_reader->setupRF();
+  }
 }
 
 void enterSleepMode() {
@@ -820,8 +882,14 @@ ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
   // Clear the card_id buffer first
   memset(card_id, 0, NFCID_LENGTH);
   
+  // Check if NFC reader is initialized
+  if (nfc_reader == nullptr) {
+    Serial.println("Error: NFC reader not initialized");
+    return EC_NO_CARD;
+  }
+  
   // Try to read the card with error handling
-  ISO15693ErrorCode result = nfc_reader.getInventory(card_id);
+  ISO15693ErrorCode result = nfc_reader->getInventory(card_id);
   
   // Log detailed error information for debugging
   if (result != ISO15693_EC_OK && result != EC_NO_CARD) {
@@ -1027,8 +1095,10 @@ void loop() {
     consecutive_errors++;
     if (consecutive_errors > 5 && (millis() - last_nfc_reset > 5000)) {
       Serial.println("Resetting NFC reader due to consecutive errors...");
-      nfc_reader.reset();
-      nfc_reader.setupRF();
+      if (nfc_reader != nullptr) {
+        nfc_reader->reset();
+        nfc_reader->setupRF();
+      }
       last_nfc_reset = millis();
       consecutive_errors = 0;
     }
