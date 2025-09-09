@@ -16,6 +16,7 @@
 #include "cube_tags.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
+#include "driver/rtc_io.h"
 
 // ============= Configuration =============
 // Hardware configuration per cube (30-pin vs not-30-pin ESP32 modules)
@@ -23,12 +24,12 @@
 // 30-pin cubes use: MISO=39, PN5180_BUSY=36
 static bool cube_thirty_pin_config[7] = {
   false,  // cube 0 (unused)
-  true,   // cube 1 - 30-pin
-  false,  // cube 2 - not-30-pin (36/38-pin)
-  false,  // cube 3 - not-30-pin (36/38-pin)
-  true,   // cube 4 - 30-pin
-  false,  // cube 5 - not-30-pin (36/38-pin)
-  false   // cube 6 - not-30-pin (36/38-pin)
+  true,   // cube 1
+  false,  // cube 2
+  false,  // cube 3
+  false,  // cube 4
+  false,  // cube 5
+  false   // cube 6
 };
 // Pin definitions (runtime configurable based on ESP32 module type)
 static int miso_pin = 0;        // Will be set by configurePins()
@@ -114,6 +115,7 @@ void configurePins(int cube_id) {
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
 #define BATTERY_MAINTENANCE_INTERVAL_S  3600ULL  /* Wake up every hour for battery maintenance */
+#define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
 
 // Sleep state management
 RTC_DATA_ATTR bool is_sleep_mode = false;
@@ -313,7 +315,9 @@ public:
   }
 
   void displayDebugMessage(const char* message) {
-    led_display->setCursor(0, 0);
+    led_display->setCursor(10, 20);
+    led_display->setTextSize(1);
+    led_display->setFont(NULL);
     led_display->setTextColor(RED, BLACK);
     led_display->print(message);
     led_display->flipDMABuffer();    
@@ -785,15 +789,23 @@ void handleResetCommand(const String& message) {
 
 void enterSleepMode() {
   debugPrintln("Entering deep sleep mode...");
-  display_manager->displayDebugMessage("SLEEP");
+  display_manager->displayDebugMessage("sleep...");
   delay(2000);
   
+  // Configure external wake-up on Pin 0 (wake when pin goes HIGH - switch off)
+  esp_sleep_enable_ext0_wakeup(SLEEP_PIN, 1);
+  
+  // Configure pull-up to ensure stable high state during sleep
+  rtc_gpio_pulldown_dis(SLEEP_PIN);
+  rtc_gpio_pullup_en(SLEEP_PIN);
+  
+  // Also enable timer wake-up for battery maintenance
   esp_sleep_enable_timer_wakeup((uint64_t)BATTERY_MAINTENANCE_INTERVAL_S * uS_TO_S_FACTOR);
   
   is_sleep_mode = true;
   sleep_start_time = millis();
   
-  Serial.println("Will wake up automatically for battery maintenance in 1 hour...");
+  Serial.println("Will wake up on Pin 0 release or in 1 hour for battery maintenance...");
   Serial.flush();
   
   esp_deep_sleep_start();
@@ -804,12 +816,18 @@ void handleWakeUp() {
   
   if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
     debugPrintln("Woken for battery maintenance");
-    display_manager->displayDebugMessage("MAINT");
+    display_manager->displayDebugMessage("BATT");
     
     mqtt_client.loop();
-    delay(5000);
+    delay(2000);
     
     enterSleepMode();
+  }
+  else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+    debugPrintln("Woken by external signal (Pin 0 released)");
+    display_manager->displayDebugMessage("WAKE");
+    is_sleep_mode = false;
+    Serial.println("Pin 0 wake-up detected - staying awake");
   }
   else {
     is_sleep_mode = false;
@@ -983,6 +1001,9 @@ void setup() {
   // esp_task_wdt_init(10, true); 
   // esp_task_wdt_add(NULL);      // Add current thread to WDT watch
   
+  // Configure Pin 0 for momentary switch (with internal pull-up)
+  pinMode(0, INPUT_PULLUP);
+  
   // Initialize WiFi and get cube identifier
   debugPrintln("setting up wifi...");
   setupWiFiConnection();
@@ -1034,6 +1055,14 @@ void loop() {
   
   mqtt_client.loop();
   esp_task_wdt_reset();  // Feed the watchdog timer
+  
+  // Check Pin 0 push-on/push-off switch for sleep trigger
+  if (digitalRead(0) == LOW) {
+    // Switch is in "on" position (grounded) - enter deep sleep
+    Serial.println("Pin 0 switch on - entering deep sleep");
+    delay(100); // Brief delay to ensure serial output
+    enterSleepMode();
+  }
   
   // Throttle display updates to 30 FPS for improved MQTT responsiveness
   static unsigned long last_display_update = 0;

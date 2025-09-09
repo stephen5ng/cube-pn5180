@@ -5,7 +5,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "CC:DB:A7:95:E7:70",  // 1
   "D4:8A:FC:9F:B0:C0", // 2 long ext antenna
   "EC:C9:FF:51:4C:80",  // 3 square
-  "04:83:08:59:6E:74",  // 4
+  "C0:5D:89:A8:ED:2C",  // 4 square ext antenna
   "5C:01:3B:4A:CB:D4", // 5 long int antenna
   "D4:8A:FC:9F:BF:50", // 6 long ext antenna
   "94:54:C5:EE:89:4C",  // 7

@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(platformio test:*)",
+      "Bash(source:*)",
+      "Bash(pip install:*)",
+      "Bash(pio test:*)",
+      "Bash(chmod:*)",
+      "Bash(./test.sh:*)",
+      "Bash(pio run:*)",
+      "Bash(pio device monitor:*)",
+      "Bash(screen:*)",
+      "Bash(platformio run:*)",
+      "Bash(python -m platformio run)",
+      "Bash(python3:*)",
+      "Bash(pip3 list:*)",
+      "WebFetch(domain:randomnerdtutorials.com)",
+      "Bash(python -m platformio run -e esp32dev)",
+      "Bash(echo $PATH)",
+      "Bash(~/.platformio/penv/bin/platformio test -e native)",
+      "Bash(~/.platformio/penv/bin/platformio test -e native -vv)",
+      "Bash(~/.platformio/penv/bin/platformio run -e esp32dev)"
+    ],
+    "deny": []
+  }
+}

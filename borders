@@ -1,0 +1,115 @@
+diff --git a/lib/EspMQTTClient b/lib/EspMQTTClient
+--- a/lib/EspMQTTClient
++++ b/lib/EspMQTTClient
+@@ -1 +1 @@
+-Subproject commit aac1ffb1b3b379150e7646de18746dd8dc9f8ebe
++Subproject commit aac1ffb1b3b379150e7646de18746dd8dc9f8ebe-dirty
+diff --git a/src/main.cpp b/src/main.cpp
+index a2da252..506b916 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -187,6 +187,8 @@ String mqtt_topic_version;
+ WiFiUDP udp;
+ char udpBuffer[255];
+ 
++// Deduplication code removed - testing instrumentation instead
++
+ // ============= Debug Functions =============
+ void debugPrint(const char* message) {
+   if (PRINT_DEBUG) {
+@@ -554,6 +556,54 @@ public:
+     is_dirty = true;  
+   }
+ 
++  void handleConsolidatedBorderCommand(const String& message) {
++    // Protocol: "NSW:0xFF0000" or "N:0x00FF00" or ":0xFF0000" for all sides
++    // Unmentioned sides are automatically cleared
++    
++    debugPrint("Consolidated border: ");
++    debugPrintln(message.c_str());
++    
++    // First clear all borders
++    hline_color_top = 0;
++    hline_color_bottom = 0; 
++    vline_color_left = 0;
++    vline_color_right = 0;
++    
++    // Parse the message: directions:color
++    int colonIndex = message.indexOf(':');
++    if (colonIndex == -1) return; // Invalid format
++    
++    String directions = message.substring(0, colonIndex);
++    String colorStr = message.substring(colonIndex + 1);
++    
++    uint32_t color = 0;
++    if (colorStr.length() > 0) {
++      color = strtoul(colorStr.c_str(), NULL, 16);
++    }
++    
++    // Apply color to specified directions
++    for (int i = 0; i < directions.length(); i++) {
++      char dir = directions.charAt(i);
++      switch (dir) {
++        case 'N': // North = top
++          hline_color_top = color;
++          break;
++        case 'S': // South = bottom  
++          hline_color_bottom = color;
++          break;
++        case 'E': // East = right
++          vline_color_right = color;
++          break;
++        case 'W': // West = left
++          vline_color_left = color;
++          break;
++      }
++    }
++    
++    // Force display update
++    is_dirty = true;
++  }
++
+   void handleLetterCommand(const String& message) {
+     static unsigned long last_message_time = 0;
+     unsigned long current_time = millis();
+@@ -743,6 +793,10 @@ void onConnectionEstablished() {
+   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep", handleSleepCommand);
+   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
+ 
++  // New consolidated border topic
++  mqtt_client.subscribe(mqtt_topic_cube + "/border", [](const String& msg) { display_manager->handleConsolidatedBorderCommand(msg); });
++  
++  // Legacy border topics for backward compatibility  
+   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
+   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
+   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
+@@ -797,6 +851,11 @@ void setupUDP() {
+   Serial.printf("UDP server listening on port %d\n", UDP_PORT);
+ }
+ 
++// Deduplication functions removed - testing instrumentation instead
++
++// Direct message processing function
++// processMessage function removed - was unused leftover from deduplication attempt
++
+ 
+ void handleUDP() {
+   int packetSize = udp.parsePacket();
+@@ -912,14 +971,10 @@ void loop() {
+   mqtt_client.loop();
+   esp_task_wdt_reset();  // Feed the watchdog timer
+   
+-  // Throttle display updates to 30 FPS for improved MQTT responsiveness
+-  static unsigned long last_display_update = 0;
++  // Restore unthrottled display update
+   unsigned long current_time = millis();
+-  if (current_time - last_display_update >= 33) { // ~30 FPS
+-    display_manager->animate(current_time);
+-    display_manager->updateDisplay(current_time);
+-    last_display_update = current_time;
+-  }
++  display_manager->animate(current_time);
++  display_manager->updateDisplay(current_time);
+   
+   handleUDP();
+ 
