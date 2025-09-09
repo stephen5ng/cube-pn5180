@@ -24,7 +24,7 @@
 // 30-pin cubes use: MISO=39, PN5180_BUSY=36
 static bool cube_thirty_pin_config[7] = {
   false,  // cube 0 (unused)
-  true,   // cube 1
+  false,  // cube 1
   false,  // cube 2
   false,  // cube 3
   false,  // cube 4
@@ -114,12 +114,13 @@ void configurePins(int cube_id) {
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
-#define BATTERY_MAINTENANCE_INTERVAL_S  3600ULL  /* Wake up every hour for battery maintenance */
+#define BATTERY_MAINTENANCE_INTERVAL_S  360000ULL  /* Wake up for battery maintenance */
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
 
 // Sleep state management
 RTC_DATA_ATTR bool is_sleep_mode = false;
 RTC_DATA_ATTR unsigned long sleep_start_time = 0;
+RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
@@ -792,8 +793,17 @@ void enterSleepMode() {
   display_manager->displayDebugMessage("sleep...");
   delay(2000);
   
-  // Configure external wake-up on Pin 0 (wake when pin goes HIGH - switch off)
-  esp_sleep_enable_ext0_wakeup(SLEEP_PIN, 1);
+  // Read current pin state and store it in RTC memory
+  pin0_state_at_sleep = digitalRead(SLEEP_PIN);
+  int wake_level = pin0_state_at_sleep ? 0 : 1; // Wake on opposite level
+  
+  Serial.print("Going to sleep with Pin 0 at ");
+  Serial.print(pin0_state_at_sleep ? "HIGH" : "LOW");
+  Serial.print(", will wake on ");
+  Serial.println(wake_level ? "HIGH" : "LOW");
+  
+  // Configure external wake-up on Pin 0 for opposite level
+  esp_sleep_enable_ext0_wakeup(SLEEP_PIN, wake_level);
   
   // Configure pull-up to ensure stable high state during sleep
   rtc_gpio_pulldown_dis(SLEEP_PIN);
@@ -1056,13 +1066,9 @@ void loop() {
   mqtt_client.loop();
   esp_task_wdt_reset();  // Feed the watchdog timer
   
-  // Check Pin 0 push-on/push-off switch for sleep trigger
-  if (digitalRead(0) == LOW) {
-    // Switch is in "on" position (grounded) - enter deep sleep
-    Serial.println("Pin 0 switch on - entering deep sleep");
-    delay(100); // Brief delay to ensure serial output
-    enterSleepMode();
-  }
+  // Pin 0 switch is only used for waking from sleep, not triggering sleep
+  // Sleep is triggered by MQTT commands, timeouts, or other programmatic events
+  // The switch state is monitored for external wake-up configuration
   
   // Throttle display updates to 30 FPS for improved MQTT responsiveness
   static unsigned long last_display_update = 0;
