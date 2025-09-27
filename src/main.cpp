@@ -1011,6 +1011,21 @@ void handleUDP() {
                       udp.remoteIP().toString().c_str(), udp.remotePort(), timingStr,
                       timing_samples_filled ? TIMING_SAMPLE_SIZE : timing_sample_index);
       }
+      // Check if message is "temp" - return cube_id:temperature_celsius
+      else if (strcmp(udpBuffer, "temp") == 0) {
+        // Read internal temperature sensor
+        float temperature_c = temperatureRead();
+
+        char tempStr[32];
+        snprintf(tempStr, sizeof(tempStr), "%s:%.1f", cube_identifier.c_str(), temperature_c);
+
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)tempStr, strlen(tempStr));
+        udp.endPacket();
+
+        Serial.printf("Sent temperature to %s:%d: %s\n",
+                      udp.remoteIP().toString().c_str(), udp.remotePort(), tempStr);
+      }
     }
   }
 }
