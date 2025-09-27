@@ -4,16 +4,16 @@
 const char *CUBE_MAC_ADDRESSES[] = {
   "5C:01:3B:66:08:20",  // 1 long
   "D4:8A:FC:9F:B0:C0",  // 2 long ext antenna
-  "EC:C9:FF:51:4C:80",  // 3 square
+  "8C:4F:00:37:7C:DC",  // 3 30-pin
   "C0:5D:89:A8:ED:2C",  // 4 square ext antenna
   "5C:01:3B:4A:CB:D4",  // 5 long int antenna
   "D4:8A:FC:9F:BF:50",  // 6 long ext antenna
-  "94:54:C5:EE:89:4C",  // 7
-  "C4:DD:57:8E:46:C8",  // 8
-  "D8:BC:38:FD:D0:BC",  // 9
-  "94:54:C5:F1:AF:00",  // 10
-  "CC:DB:A7:9B:5D:9C",  // 11
-  "94:54:C5:EE:87:F0",  // 12
+  "CC:DB:A7:9B:5D:9C",  // 7 -  11 30-pin 
+  "EC:E3:34:79:9D:2C",  // 8 -  12 30-pin
+  "D8:BC:38:FD:D0:BC",  // 9  - 13 30-pin
+  "94:54:C5:EE:89:4C",  // 10 - 14 30-pin
+  "8C:4F:00:36:7A:88",  // 11 - 15 30-pin
+  "D8:BC:38:F9:39:30",  // 12 - 16 30-pin
 };
 const int NUM_CUBE_MAC_ADDRESSES = sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]);
 

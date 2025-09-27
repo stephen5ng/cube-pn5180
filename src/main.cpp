@@ -22,14 +22,20 @@
 // Hardware configuration per cube (30-pin vs not-30-pin ESP32 modules)
 // Not-30-pin cubes (36-pin/38-pin variants) use: MISO=34, PN5180_BUSY=35
 // 30-pin cubes use: MISO=39, PN5180_BUSY=36
-static bool cube_thirty_pin_config[7] = {
+static bool cube_thirty_pin_config[] = {
   false,  // cube 0 (unused)
   false,  // cube 1
   false,  // cube 2
-  false,  // cube 3
+  true,   // cube 3
   false,  // cube 4
   false,  // cube 5
-  false   // cube 6
+  false,  // cube 6  // TODO(sng): add empty entries to remove client math
+  true,   // cube 11
+  true,   // cube 12
+  true,   // cube 13
+  true,   // cube 14
+  true,   // cube 15
+  true    // cube 16
 };
 // Pin definitions (runtime configurable based on ESP32 module type)
 static int miso_pin = 0;        // Will be set by configurePins()
@@ -44,6 +50,9 @@ void configurePins(int cube_id) {
   bool is_thirty = false;  // Default to not-30-pin for unknown cubes
   if (cube_id >= 1 && cube_id <= 6) {
     is_thirty = cube_thirty_pin_config[cube_id];
+  }
+  else if (cube_id >= 11 && cube_id <= 16) {
+    is_thirty = cube_thirty_pin_config[cube_id-4];
   }
   
   if (is_thirty) {
@@ -792,11 +801,13 @@ void enterSleepMode() {
   debugPrintln("Entering deep sleep mode...");
   display_manager->displayDebugMessage("sleep...");
   delay(2000);
-  
+
+  // GPIO5 will automatically go low when entering deep sleep
+
   // Read current pin state and store it in RTC memory
   pin0_state_at_sleep = digitalRead(SLEEP_PIN);
   int wake_level = pin0_state_at_sleep ? 0 : 1; // Wake on opposite level
-  
+
   Serial.print("Going to sleep with Pin 0 at ");
   Serial.print(pin0_state_at_sleep ? "HIGH" : "LOW");
   Serial.print(", will wake on ");
@@ -1013,6 +1024,10 @@ void setup() {
   
   // Configure Pin 0 for momentary switch (with internal pull-up)
   pinMode(0, INPUT_PULLUP);
+
+  // Configure GPIO5 as output and set high when awake
+  pinMode(5, OUTPUT);
+  digitalWrite(5, HIGH);
   
   // Initialize WiFi and get cube identifier
   debugPrintln("setting up wifi...");
@@ -1065,7 +1080,7 @@ void loop() {
   
   mqtt_client.loop();
   esp_task_wdt_reset();  // Feed the watchdog timer
-  
+  // Serial.println(digitalRead(SLEEP_PIN));
   // Pin 0 switch is only used for waking from sleep, not triggering sleep
   // Sleep is triggered by MQTT commands, timeouts, or other programmatic events
   // The switch state is monitored for external wake-up configuration
