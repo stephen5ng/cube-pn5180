@@ -667,6 +667,13 @@ DisplayManager* display_manager;
 // Loop timing variables
 unsigned long loop_start_time = 0;
 
+// Average loop timing over multiple iterations
+#define TIMING_SAMPLE_SIZE 100
+unsigned long timing_samples[TIMING_SAMPLE_SIZE];
+int timing_sample_index = 0;
+bool timing_samples_filled = false;
+unsigned long timing_accumulator = 0;
+
 // ============= Utility Functions =============
 // Utility functions moved to cube_utilities.h/.cpp
 
@@ -972,20 +979,37 @@ void handleUDP() {
         
         // Serial.printf("Sent RSSI to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), rssiStr);
       }
-      // Check if message is "timing" - return cube_id:loop_time_ms
+      // Check if message is "timing" - return cube_id:avg_loop_time_us
       else if (strcmp(udpBuffer, "timing") == 0) {
-        // Calculate current loop time (this is called from within the loop)
-        unsigned long loop_end_time = millis();
-        unsigned long current_loop_time = loop_end_time - loop_start_time;
-        
+        // Calculate average loop time over recent samples
+        unsigned long avg_loop_time_us = 0;
+
+        if (timing_samples_filled) {
+          // Use all samples for average
+          avg_loop_time_us = timing_accumulator / TIMING_SAMPLE_SIZE;
+        } else if (timing_sample_index > 0) {
+          // Use available samples
+          unsigned long sum = 0;
+          for (int i = 0; i < timing_sample_index; i++) {
+            sum += timing_samples[i];
+          }
+          avg_loop_time_us = sum / timing_sample_index;
+        } else {
+          // No samples yet, return current loop time
+          unsigned long loop_end_time = micros();
+          avg_loop_time_us = loop_end_time - loop_start_time;
+        }
+
         char timingStr[32];
-        snprintf(timingStr, sizeof(timingStr), "%s:%lu", cube_identifier.c_str(), current_loop_time);
-        
+        snprintf(timingStr, sizeof(timingStr), "%s:%lu", cube_identifier.c_str(), avg_loop_time_us);
+
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)timingStr, strlen(timingStr));
         udp.endPacket();
-        
-        Serial.printf("Sent timing to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), timingStr);
+
+        Serial.printf("Sent timing to %s:%d: %s (avg over %d samples)\n",
+                      udp.remoteIP().toString().c_str(), udp.remotePort(), timingStr,
+                      timing_samples_filled ? TIMING_SAMPLE_SIZE : timing_sample_index);
       }
     }
   }
@@ -1076,7 +1100,7 @@ void setup() {
 }
 
 void loop() {
-  loop_start_time = millis();
+  loop_start_time = micros();
   
   mqtt_client.loop();
   esp_task_wdt_reset();  // Feed the watchdog timer
@@ -1152,5 +1176,25 @@ void loop() {
       last_nfc_reset = millis();
       consecutive_errors = 0;
     }
+  }
+
+  // Collect timing sample at end of loop
+  unsigned long loop_end_time = micros();
+  unsigned long current_loop_time = loop_end_time - loop_start_time;
+
+  // Update rolling average using circular buffer
+  if (timing_samples_filled) {
+    // Remove old sample from accumulator
+    timing_accumulator -= timing_samples[timing_sample_index];
+  }
+
+  // Add new sample
+  timing_samples[timing_sample_index] = current_loop_time;
+  timing_accumulator += current_loop_time;
+
+  // Advance index
+  timing_sample_index = (timing_sample_index + 1) % TIMING_SAMPLE_SIZE;
+  if (timing_sample_index == 0 && !timing_samples_filled) {
+    timing_samples_filled = true;
   }
 }
