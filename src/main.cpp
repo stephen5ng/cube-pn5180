@@ -371,11 +371,11 @@ public:
   }
 
   void drawOrientationIndicator() {
-    // Draw a short horizontal line one pixel below the letter to indicate orientation
-    // This acts as a "baseline" marker showing which way is up
-    // Important for rotationally symmetric letters like N, S, O, X, H, Z
-    uint16_t gray = 0x8410;  // Mid gray
-    led_display->drawFastHLine(29, 60, 6, gray);
+    // Draw 2x2 red dots in bottom-left and bottom-right corners
+    // Indicates which way is up for rotationally symmetric letters (N, S, O, X, H, Z)
+    uint16_t red = 0xF800;
+    led_display->fillRect(2, 60, 2, 2, red);
+    led_display->fillRect(60, 60, 2, 2, red);
   }
 
   void drawBorders(bool isHorizontal, bool isTopLeft, uint16_t color) {
