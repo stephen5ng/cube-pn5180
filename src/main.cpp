@@ -1047,9 +1047,15 @@ void handleUDP() {
                                   (timing_sample_index > 0 ? timing_accumulator / timing_sample_index : 0);
         unsigned long avg_letter_interval = letter_interval_count > 0 ? letter_interval_accum / letter_interval_count : 0;
 
+        const char* fw_board =
+#ifdef BOARD_V6
+          "v6";
+#else
+          "v1";
+#endif
         snprintf(diagStr, sizeof(diagStr),
-          "%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d",
-          cube_identifier.c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
+          "%s|fw=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d",
+          cube_identifier.c_str(), fw_board, avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, avg_letter_interval, max_letter_interval, letter_interval_count,
           WiFi.RSSI(), section_timing_count);
 

@@ -17,8 +17,9 @@ try:
     s.close()
 
     # Parse response
+    fw = parts.get('fw', '?')
     print("="*60)
-    print(f"Cube {cube_id} performance:")
+    print(f"Cube {cube_id} (fw={fw}):")
     print("="*60)
 
     parts = {}
