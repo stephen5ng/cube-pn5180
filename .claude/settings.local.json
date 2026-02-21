@@ -21,7 +21,9 @@
       "Bash(echo $PATH)",
       "Bash(~/.platformio/penv/bin/platformio test -e native)",
       "Bash(~/.platformio/penv/bin/platformio test -e native -vv)",
-      "Bash(~/.platformio/penv/bin/platformio run -e esp32dev)"
+      "Bash(~/.platformio/penv/bin/platformio run -e esp32dev)",
+      "Bash(xargs:*)",
+      "Bash(wc:*)"
     ],
     "deny": []
   }
