@@ -24,12 +24,12 @@
 // 30-pin cubes use: MISO=39, PN5180_BUSY=36
 static bool cube_thirty_pin_config[] = {
   false,  // cube 0 (unused)
-  false,  // cube 1
+  true,  // cube 1
   false,  // cube 2
   true,   // cube 3
   false,  // cube 4
   false,  // cube 5
-  false,  // cube 6  // TODO(sng): add empty entries to remove client math
+  true,  // cube 6  // TODO(sng): add empty entries to remove client math
   true,   // cube 11
   true,   // cube 12
   true,   // cube 13
@@ -238,6 +238,13 @@ void debugPrintln(const __FlashStringHelper* message) {
   }
 }
 
+// MQTT letter latency tracking (forward-declared for use in DisplayManager)
+unsigned long last_letter_recv_time = 0;
+unsigned long letter_interval_accum = 0;
+int letter_interval_count = 0;
+unsigned long max_letter_interval = 0;
+unsigned long nfc_read_max_us = 0;
+
 // ============= DisplayManager Class =============
 class DisplayManager {
 private:
@@ -382,6 +389,14 @@ public:
     drawBorders(false, false, vline_color_right);
   }
 
+  void drawOrientationIndicator() {
+    // Draw a short horizontal line one pixel below the letter to indicate orientation
+    // This acts as a "baseline" marker showing which way is up
+    // Important for rotationally symmetric letters like N, S, O, X, H, Z
+    uint16_t gray = 0x8410;  // Mid gray
+    led_display->drawFastHLine(29, 60, 6, gray);
+  }
+
   void drawBorders(bool isHorizontal, bool isTopLeft, uint16_t color) {
     if (color == 0) {
       return;
@@ -485,11 +500,16 @@ public:
         drawImage(-percent_complete, previous_image);
       }
       drawImage(100 - percent_complete, image);
-    } else {    
+    } else {
       if (current_letter != previous_letter) {
         drawLetter(100 + percent_complete, previous_letter, RED);
       }
       drawLetter(percent_complete, current_letter, current_letter_color);
+
+      // Draw orientation indicator only when letter animation is complete
+      if (percent_complete >= 100) {
+        drawOrientationIndicator();
+      }
     } 
 
     if (display_string.length() > 0) {
@@ -501,7 +521,7 @@ public:
     }
 
     drawBorderFrame();
-    led_display->flipDMABuffer();    
+    led_display->flipDMABuffer();
     led_display->clearScreen();
     is_dirty = false;
   }
@@ -629,16 +649,26 @@ public:
     static unsigned long last_message_time = 0;
     unsigned long current_time = millis();
     unsigned long time_since_last = current_time - last_message_time;
-    
+
     if (time_since_last > 1000) {
         Serial.println("----------------------------------------");
         Serial.printf("[%lu] WARNING: %lu ms since last message\n", current_time, time_since_last);
         Serial.println("----------------------------------------");
     }
-    
+
+    // Track letter interval statistics
+    if (last_message_time > 0 && time_since_last < 5000) {
+      letter_interval_accum += time_since_last;
+      letter_interval_count++;
+      if (time_since_last > max_letter_interval) {
+        max_letter_interval = time_since_last;
+      }
+    }
+    last_letter_recv_time = current_time;
+
     last_message_time = current_time;
-    
-    Serial.printf("[%lu] MQTT message received - Topic: letter, Payload: %s\n", current_time, message.c_str());
+
+    Serial.printf("[%lu] MQTT letter '%s' delta=%lu ms\n", current_time, message.c_str(), time_since_last);
     
     if (previous_letter != current_letter) {
       previous_letter = current_letter;
@@ -664,6 +694,7 @@ public:
 // ============= Global Variables =============
 DisplayManager* display_manager;
 
+
 // Loop timing variables
 unsigned long loop_start_time = 0;
 
@@ -673,6 +704,19 @@ unsigned long timing_samples[TIMING_SAMPLE_SIZE];
 int timing_sample_index = 0;
 bool timing_samples_filled = false;
 unsigned long timing_accumulator = 0;
+
+// Per-section timing diagnostics
+struct SectionTiming {
+  unsigned long mqtt_us;
+  unsigned long display_us;
+  unsigned long udp_us;
+  unsigned long nfc_us;
+  unsigned long total_us;
+};
+SectionTiming section_timing_accum = {0, 0, 0, 0, 0};
+int section_timing_count = 0;
+
+// Per-section timing diagnostics (forward declarations removed, definitions below)
 
 // ============= Utility Functions =============
 // Utility functions moved to cube_utilities.h/.cpp
@@ -1011,6 +1055,35 @@ void handleUDP() {
                       udp.remoteIP().toString().c_str(), udp.remotePort(), timingStr,
                       timing_samples_filled ? TIMING_SAMPLE_SIZE : timing_sample_index);
       }
+      // Check if message is "diag" - return detailed per-section timing breakdown
+      else if (strcmp(udpBuffer, "diag") == 0) {
+        char diagStr[256];
+        unsigned long avg_mqtt = section_timing_count > 0 ? section_timing_accum.mqtt_us / section_timing_count : 0;
+        unsigned long avg_display = section_timing_count > 0 ? section_timing_accum.display_us / section_timing_count : 0;
+        unsigned long avg_udp = section_timing_count > 0 ? section_timing_accum.udp_us / section_timing_count : 0;
+        unsigned long avg_nfc = section_timing_count > 0 ? section_timing_accum.nfc_us / section_timing_count : 0;
+        unsigned long avg_total = timing_samples_filled ? timing_accumulator / TIMING_SAMPLE_SIZE :
+                                  (timing_sample_index > 0 ? timing_accumulator / timing_sample_index : 0);
+        unsigned long avg_letter_interval = letter_interval_count > 0 ? letter_interval_accum / letter_interval_count : 0;
+
+        snprintf(diagStr, sizeof(diagStr),
+          "%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d",
+          cube_identifier.c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
+          nfc_read_max_us, avg_letter_interval, max_letter_interval, letter_interval_count,
+          WiFi.RSSI(), section_timing_count);
+
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)diagStr, strlen(diagStr));
+        udp.endPacket();
+
+        // Reset accumulators after reading
+        section_timing_accum = {0, 0, 0, 0, 0};
+        section_timing_count = 0;
+        letter_interval_accum = 0;
+        letter_interval_count = 0;
+        max_letter_interval = 0;
+        nfc_read_max_us = 0;
+      }
       // Check if message is "temp" - return cube_id:temperature_celsius
       else if (strcmp(udpBuffer, "temp") == 0) {
         // Read internal temperature sensor
@@ -1066,7 +1139,9 @@ void setup() {
 
   // Configure GPIO5 as output and set high when awake
   pinMode(5, OUTPUT);
-  digitalWrite(5, HIGH);
+  pinMode(36, OUTPUT);
+  digitalWrite(36, HIGH);
+  digitalWrite(5, LOW);
   
   // Initialize WiFi and get cube identifier
   debugPrintln("setting up wifi...");
@@ -1115,83 +1190,119 @@ void setup() {
 }
 
 void loop() {
+  static int power_cycle = 0;
+  static int last_power = LOW;
+  power_cycle++;
+  if (power_cycle > 100) {
+      power_cycle = 0;
+      if (last_power == LOW) {
+        last_power = HIGH;
+      } else {
+        last_power = LOW;
+      }
+      digitalWrite(5, last_power);
+      Serial.printf("power is: %d\n", last_power);
+  }
   loop_start_time = micros();
-  
+
+  unsigned long section_start = micros();
   mqtt_client.loop();
+  unsigned long mqtt_end = micros();
+  unsigned long mqtt_us = mqtt_end - section_start;
+
   esp_task_wdt_reset();  // Feed the watchdog timer
-  // Serial.println(digitalRead(SLEEP_PIN));
-  // Pin 0 switch is only used for waking from sleep, not triggering sleep
-  // Sleep is triggered by MQTT commands, timeouts, or other programmatic events
-  // The switch state is monitored for external wake-up configuration
-  
+
   // Throttle display updates to 30 FPS for improved MQTT responsiveness
   static unsigned long last_display_update = 0;
   unsigned long current_time = millis();
+  unsigned long display_us = 0;
   if (current_time - last_display_update >= 33) { // ~30 FPS
+    unsigned long display_start = micros();
     display_manager->animate(current_time);
     display_manager->updateDisplay(current_time);
     last_display_update = current_time;
+    display_us = micros() - display_start;
   }
-  
+
+  unsigned long udp_start = micros();
   handleUDP();
+  unsigned long udp_us = micros() - udp_start;
 
-  uint8_t card_id[NFCID_LENGTH];
-  ISO15693ErrorCode read_result = readNfcCard(card_id);
-  if (read_result == ISO15693_EC_OK) {
-    char neighbor_id[NFCID_LENGTH * 2 + 1];
-    convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
-    int cube_num = lookupCubeNumberByTag(neighbor_id);
-    if (strcmp(neighbor_id, last_neighbor_id) == 0) {
-      return;  // No change in state, don't publish
-    }
+  // Throttle NFC reads to ~20 Hz to prevent slow NFC hardware from blocking
+  // the main loop and starving MQTT processing / display animation
+  static unsigned long last_nfc_read = 0;
+  unsigned long nfc_us = 0;
+  if (current_time - last_nfc_read >= 50) {
+    last_nfc_read = current_time;
+    unsigned long nfc_start = micros();
 
-    debugPrintln(F("New card"));
-    unsigned long publish_start = millis();
-    bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
-    if (cube_num > 0) {
-      char buf[8];
-      snprintf(buf, sizeof(buf), "%d", cube_num);
-      mqtt_client.publish(mqtt_topic_cube_right, buf, true);
-    }
-    unsigned long publish_end = millis();
-    Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
-    if (success) {
-      strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
-      last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-    }
-  } else if (read_result == EC_NO_CARD) {
-    // Publish "-" to indicate no neighbor.
-    if (strcmp(last_neighbor_id, "-") != 0) {
-      debugPrintln(F("No card detected"));
-      unsigned long publish_start = millis();
-      bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
-      // Also publish to numeric neighbor topic with "-" to denote no neighbor
-      mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-      unsigned long publish_end = millis();
-      Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
-      if (success) {
-        strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
-        last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+    uint8_t card_id[NFCID_LENGTH];
+    ISO15693ErrorCode read_result = readNfcCard(card_id);
+    if (read_result == ISO15693_EC_OK) {
+      char neighbor_id[NFCID_LENGTH * 2 + 1];
+      convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
+      int cube_num = lookupCubeNumberByTag(neighbor_id);
+      if (strcmp(neighbor_id, last_neighbor_id) != 0) {
+        debugPrintln(F("New card"));
+        unsigned long publish_start = millis();
+        bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
+        if (cube_num > 0) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), "%d", cube_num);
+          mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+        }
+        unsigned long publish_end = millis();
+        Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
+        if (success) {
+          strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
+          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+        }
+      }
+    } else if (read_result == EC_NO_CARD) {
+      // Publish "-" to indicate no neighbor.
+      if (strcmp(last_neighbor_id, "-") != 0) {
+        debugPrintln(F("No card detected"));
+        unsigned long publish_start = millis();
+        bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+        // Also publish to numeric neighbor topic with "-" to denote no neighbor
+        mqtt_client.publish(mqtt_topic_cube_right, "-", true);
+        unsigned long publish_end = millis();
+        Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
+        if (success) {
+          strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
+          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+        }
+      }
+    } else {
+      Serial.printf("NFC read failed with error code: %d\n", read_result);
+
+      // Reset NFC reader on persistent errors to prevent buffer issues
+      static unsigned long last_nfc_reset = 0;
+      static int consecutive_errors = 0;
+
+      consecutive_errors++;
+      if (consecutive_errors > 5 && (millis() - last_nfc_reset > 5000)) {
+        Serial.println("Resetting NFC reader due to consecutive errors...");
+        if (nfc_reader != nullptr) {
+          nfc_reader->reset();
+          nfc_reader->setupRF();
+        }
+        last_nfc_reset = millis();
+        consecutive_errors = 0;
       }
     }
-  } else {
-    Serial.printf("NFC read failed with error code: %d\n", read_result);
-    
-    // Reset NFC reader on persistent errors to prevent buffer issues
-    static unsigned long last_nfc_reset = 0;
-    static int consecutive_errors = 0;
-    
-    consecutive_errors++;
-    if (consecutive_errors > 5 && (millis() - last_nfc_reset > 5000)) {
-      Serial.println("Resetting NFC reader due to consecutive errors...");
-      if (nfc_reader != nullptr) {
-        nfc_reader->reset();
-        nfc_reader->setupRF();
-      }
-      last_nfc_reset = millis();
-      consecutive_errors = 0;
+    nfc_us = micros() - nfc_start;
+    if (nfc_us > nfc_read_max_us) {
+      nfc_read_max_us = nfc_us;
     }
   }
+
+  // Accumulate per-section timing
+  section_timing_accum.mqtt_us += mqtt_us;
+  section_timing_accum.display_us += display_us;
+  section_timing_accum.udp_us += udp_us;
+  section_timing_accum.nfc_us += nfc_us;
+  section_timing_count++;
 
   // Collect timing sample at end of loop
   unsigned long loop_end_time = micros();
