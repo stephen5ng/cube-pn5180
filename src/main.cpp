@@ -19,25 +19,10 @@
 #include "driver/rtc_io.h"
 
 // ============= Configuration =============
-// Hardware configuration per cube (30-pin vs not-30-pin ESP32 modules)
-// Not-30-pin cubes (36-pin/38-pin variants) use: MISO=34, PN5180_BUSY=35
-// 30-pin cubes use: MISO=39, PN5180_BUSY=36
-static bool cube_thirty_pin_config[] = {
-  false,  // cube 0 (unused)
-  true,  // cube 1
-  false,  // cube 2
-  true,   // cube 3
-  false,  // cube 4
-  false,  // cube 5
-  true,  // cube 6  // TODO(sng): add empty entries to remove client math
-  true,   // cube 11
-  true,   // cube 12
-  true,   // cube 13
-  true,   // cube 14
-  true,   // cube 15
-  true    // cube 16
-};
-// Pin definitions (runtime configurable based on ESP32 module type)
+// Hardware pin configuration is determined at compile time by board type:
+//   BOARD_V6 (v6 board): MISO=34, PN5180_BUSY=35, A_PIN=19, GPIO5=TPS22975 power switch
+//   Default (v1 board):  MISO=39, PN5180_BUSY=36, A_PIN=5
+// Pin definitions (set by configurePins based on board type)
 static int miso_pin = 0;        // Will be set by configurePins()
 static int pn5180_busy_pin = 0; // Will be set by configurePins()
 
@@ -45,26 +30,18 @@ static int pn5180_busy_pin = 0; // Will be set by configurePins()
 extern PN5180ISO15693* nfc_reader;
 void initializeNfcReader();
 
-// Function to configure pins based on cube hardware type
+// Function to configure pins based on board type (compile-time)
 void configurePins(int cube_id) {
-  bool is_thirty = false;  // Default to not-30-pin for unknown cubes
-  if (cube_id >= 1 && cube_id <= 6) {
-    is_thirty = cube_thirty_pin_config[cube_id];
-  }
-  else if (cube_id >= 11 && cube_id <= 16) {
-    is_thirty = cube_thirty_pin_config[cube_id-4];
-  }
-  
-  if (is_thirty) {
-    miso_pin = 39;
-    pn5180_busy_pin = 36;
-    Serial.printf("Cube %d: 30-pin configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
-  } else {
-    miso_pin = 34;
-    pn5180_busy_pin = 35;
-    Serial.printf("Cube %d: not-30-pin configuration - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
-  }
-  
+#ifdef BOARD_V6
+  miso_pin = 34;
+  pn5180_busy_pin = 35;
+  Serial.printf("Cube %d: 38-pin board - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+#else
+  miso_pin = 39;
+  pn5180_busy_pin = 36;
+  Serial.printf("Cube %d: socket board - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+#endif
+
   // Initialize NFC reader with correct pins
   initializeNfcReader();
   Serial.printf("Pin configuration complete for cube %d\n", cube_id);
@@ -147,7 +124,11 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
   0,  //R2_PIN,
   0,  //G2_PIN,
   0,  //B2_PIN,
-  19,  //A_PIN,
+#ifdef BOARD_V6
+  19,  //A_PIN (38-pin board: GPIO5 used for TPS22975 power switch)
+#else
+  5,   //A_PIN (socket board)
+#endif
   21,  //B_PIN,
   4,   //C_PIN,
   22,  //D_PIN,
@@ -1137,11 +1118,11 @@ void setup() {
   // Configure Pin 0 for momentary switch (with internal pull-up)
   pinMode(0, INPUT_PULLUP);
 
-  // Configure GPIO5 as output and set high when awake
+#ifdef BOARD_V6
+  // Drive GPIO5 high to enable TPS22975 HUB75 power switch
   pinMode(5, OUTPUT);
-  pinMode(36, OUTPUT);
-  digitalWrite(36, HIGH);
-  digitalWrite(5, LOW);
+  digitalWrite(5, HIGH);
+#endif
   
   // Initialize WiFi and get cube identifier
   debugPrintln("setting up wifi...");
