@@ -2,15 +2,15 @@
 
 // MAC Address Table - Main screens only
 const char *CUBE_MAC_ADDRESSES[] = {
-  "5C:01:3B:66:08:20",  // 1 long
+  "CC:DB:A7:9F:C2:84",  // 1 30-pin
   "D4:8A:FC:9F:B0:C0",  // 2 long ext antenna
   "8C:4F:00:37:7C:DC",  // 3 30-pin
-  "C0:5D:89:A8:ED:2C",  // 4 square ext antenna
-  "5C:01:3B:4A:CB:D4",  // 5 long int antenna
-  "D4:8A:FC:9F:BF:50",  // 6 long ext antenna
+  "5C:01:3B:64:E2:84",  // 4 30-pin
+  "5C:01:3B:65:F2:74",  // 5 long int antenna
+  "14:33:5C:30:25:98",  // 6 30-pin
   "CC:DB:A7:9B:5D:9C",  // 7 -  11 30-pin 
   "EC:E3:34:79:9D:2C",  // 8 -  12 30-pin
-  "D8:BC:38:FD:D0:BC",  // 9  - 13 30-pin
+  "04:83:08:59:6E:74",  // 9  - 13 30-pin
   "94:54:C5:EE:89:4C",  // 10 - 14 30-pin
   "8C:4F:00:36:7A:88",  // 11 - 15 30-pin
   "D8:BC:38:F9:39:30",  // 12 - 16 30-pin
