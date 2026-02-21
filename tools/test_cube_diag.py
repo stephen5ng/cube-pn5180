@@ -17,11 +17,6 @@ try:
     s.close()
 
     # Parse response
-    fw = parts.get('fw', '?')
-    print("="*60)
-    print(f"Cube {cube_id} (fw={fw}):")
-    print("="*60)
-
     parts = {}
     for item in resp.split('|'):
         if '=' in item:
@@ -29,6 +24,11 @@ try:
             parts[k] = v
         elif item:
             parts['id'] = item
+
+    fw = parts.get('fw', '?')
+    print("="*60)
+    print(f"Cube {cube_id} (fw={fw}):")
+    print("="*60)
 
     # Display in human-readable format
     loop_us = int(parts.get('loop', 0))
