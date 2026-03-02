@@ -293,7 +293,7 @@ public:
                                 hline_color_top(0),
                                 hline_color_bottom(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr), 
-                                previous_letter(' '), current_letter('?') {
+                                previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
     rotation = (cube_id_int <= 6) ? 2 : 0;
     setupDisplay(cube_id);
