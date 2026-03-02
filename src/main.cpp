@@ -678,11 +678,13 @@ public:
     }
       
     is_image_mode = false;
-    current_letter = message.length() > 0 ? message.charAt(0) : '?';
-    animation_start_time = millis();
-    current_font = &Roboto_Mono_Bold_78;  // Restore custom font for letter mode
-    text_size = 1;  // Always use size 1 for letter mode
-    is_dirty = true;
+    if (message.length() > 0) {
+      current_letter = message.charAt(0);
+      animation_start_time = millis();
+      current_font = &Roboto_Mono_Bold_78;  // Restore custom font for letter mode
+      text_size = 1;  // Always use size 1 for letter mode
+      is_dirty = true;
+    }
   }
 
   void handleStringCommand(const String& message) {
