@@ -1365,19 +1365,6 @@ void setup() {
 }
 
 void loop() {
-  static int power_cycle = 0;
-  static int last_power = LOW;
-  power_cycle++;
-  if (power_cycle > 100) {
-      power_cycle = 0;
-      if (last_power == LOW) {
-        last_power = HIGH;
-      } else {
-        last_power = LOW;
-      }
-      digitalWrite(5, last_power);
-      Serial.printf("power is: %d\n", last_power);
-  }
   loop_start_time = micros();
 
   unsigned long section_start = micros();
