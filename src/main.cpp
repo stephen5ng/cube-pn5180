@@ -97,12 +97,7 @@ void configurePins(int cube_id) {
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
-#define VERSION "v0.8a"
 #define PRINT_DEBUG true
-
-// Build timestamp in compact format: MMDD.HHMM (auto-generated at compile time)
-// Example: "0302.1415" = March 2nd, 14:15
-#define BUILD_TIMESTAMP_COMPACT __DATE__ " " __TIME__  // Full date/time (displayed as compact format in MQTT)
 
 // Timing Constants
 #define NFC_DEBOUNCE_TIME_MS 200
