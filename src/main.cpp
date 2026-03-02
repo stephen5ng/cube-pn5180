@@ -191,8 +191,10 @@ String mqtt_topic_cube_right;  // publishes numeric cube index (1..6) to /cube/<
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
+#define DEBUG_UDP_PORT 54322  // Port for debug output
 WiFiUDP udp;
 char udpBuffer[255];
+IPAddress debugIP = IPAddress(192, 168, 8, 196);  // Default debug destination
 
 // ============= Debug Functions =============
 void debugPrint(const char* message) {
@@ -204,6 +206,15 @@ void debugPrint(const char* message) {
 void debugPrintln(const char* message) {
   if (PRINT_DEBUG) {
     Serial.println(message);
+  }
+}
+
+// Send debug message via UDP
+void debugSend(const char* message) {
+  // Only send if UDP server is already running
+  if (udp.beginPacket(debugIP, DEBUG_UDP_PORT)) {
+    udp.write((const uint8_t*)message, strlen(message));
+    udp.endPacket();
   }
 }
 
