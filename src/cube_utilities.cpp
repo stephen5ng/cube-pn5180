@@ -6,7 +6,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "D4:8A:FC:9F:B0:C0",  // 2 long ext antenna
   "8C:4F:00:37:7C:DC",  // 3 30-pin
   "5C:01:3B:64:E2:84",  // 4 30-pin
-  "5C:01:3B:65:F2:74",  // 5 long int antenna
+  "EC:E3:34:B4:8F:B4",  // 5 30-pin (New chip)
   "14:33:5C:30:25:98",  // 6 30-pin
   "CC:DB:A7:9B:5D:9C",  // 7 -  11 30-pin 
   "EC:E3:34:79:9D:2C",  // 8 -  12 30-pin
