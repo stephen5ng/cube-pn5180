@@ -22,15 +22,14 @@ void setUp(void) {}
 void tearDown(void) {}
 
 void test_findMacAddressPosition_known_addresses() {
-    // Test first cube main display
-    TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:95:E7:70"));
-    
-    
-    // Test second cube main display  
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("EC:E3:34:B4:8F:B4"));
-    
-    // Test last cube main display
-    TEST_ASSERT_EQUAL(5, findMacAddressPosition("EC:E3:34:79:9D:2C"));
+    // Test first cube (position 0)
+    TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:9F:C2:84"));
+
+    // Test second cube (position 1)
+    TEST_ASSERT_EQUAL(1, findMacAddressPosition("D4:8A:FC:9F:B0:C0"));
+
+    // Test sixth cube (position 5)
+    TEST_ASSERT_EQUAL(5, findMacAddressPosition("14:33:5C:30:25:98"));
 }
 
 void test_findMacAddressPosition_unknown_address() {
@@ -92,15 +91,15 @@ void test_calculateCubeIdentifier() {
 
 void test_mac_to_cube_configuration_integration() {
     // Test complete workflow: MAC -> position -> cube config
-    
-    // Test Cube 1 main display
-    int pos = findMacAddressPosition("CC:DB:A7:95:E7:70");
+
+    // Test Cube 1 (position 0)
+    int pos = findMacAddressPosition("CC:DB:A7:9F:C2:84");
     TEST_ASSERT_EQUAL(0, pos);
     TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(pos));
     TEST_ASSERT_EQUAL(20, calculateCubeIpOctet(pos));
-    
-    // Test Cube 6 (last in table)
-    pos = findMacAddressPosition("EC:E3:34:79:9D:2C");
+
+    // Test Cube 6 (position 5)
+    pos = findMacAddressPosition("14:33:5C:30:25:98");
     TEST_ASSERT_EQUAL(5, pos);
     TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(pos));
     TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(pos));
