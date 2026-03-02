@@ -6,7 +6,7 @@
 secrets.h
 
 # Power/sleep management documentation (temporary working files)
-*_POWER_MANAGEMENT*.md
+*POWER_MANAGEMENT*.md
 MQTT_BROKER_ANALYSIS*.md
 POWER_STATUS.md
 POWER_STRESS_TEST_PLAN.md
