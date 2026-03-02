@@ -1,8 +1,10 @@
 #include <unity.h>
 #include "../../src/cube_utilities.h"
+#include "../../src/cube_tags.h"
 
 // For testing, include the implementation directly
 #include "../../src/cube_utilities.cpp"
+#include "../../src/cube_tags.cpp"
 
 // Derived functions for testing cube configuration logic
 uint8_t calculateCubeIpOctet(int mac_position) {
@@ -160,6 +162,100 @@ void test_mac_to_cube_configuration_integration() {
     TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(pos));
 }
 
+// ========== Cube Tags Tests ==========
+
+void test_lookupCubeNumberByTag_all_known_tags() {
+    // Test all 12 known tags
+    TEST_ASSERT_EQUAL(1, lookupCubeNumberByTag("A9121466080104E0"));
+    TEST_ASSERT_EQUAL(2, lookupCubeNumberByTag("B1FD1366080104E0"));
+    TEST_ASSERT_EQUAL(3, lookupCubeNumberByTag("30071466080104E0"));
+    TEST_ASSERT_EQUAL(4, lookupCubeNumberByTag("BD291466080104E0"));
+    TEST_ASSERT_EQUAL(5, lookupCubeNumberByTag("71E81366080104E0"));
+    TEST_ASSERT_EQUAL(6, lookupCubeNumberByTag("361E1466080104E0"));
+    TEST_ASSERT_EQUAL(11, lookupCubeNumberByTag("C1A81366080104E0"));
+    TEST_ASSERT_EQUAL(12, lookupCubeNumberByTag("829E1366080104E0"));
+    TEST_ASSERT_EQUAL(13, lookupCubeNumberByTag("BFBD1366080104E0"));
+    TEST_ASSERT_EQUAL(14, lookupCubeNumberByTag("6DB11366080104E0"));
+    TEST_ASSERT_EQUAL(15, lookupCubeNumberByTag("32961366080104E0"));
+    TEST_ASSERT_EQUAL(16, lookupCubeNumberByTag("FAADF7B8500104E0"));
+}
+
+void test_lookupCubeNumberByTag_unknown_tag() {
+    // Test completely unknown tag
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("FFFFFFFFFFFFFFFF"));
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("0000000000000000"));
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("1234567890123456"));
+}
+
+void test_lookupCubeNumberByTag_null_pointer() {
+    // Test NULL pointer handling
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag(nullptr));
+}
+
+void test_lookupCubeNumberByTag_empty_string() {
+    // Test empty string
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag(""));
+}
+
+void test_lookupCubeNumberByTag_case_sensitivity() {
+    // Test that lookup is case-sensitive (all known tags are uppercase)
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("a9121466080104e0"));  // lowercase
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A9121466080104e0"));  // mixed case
+    TEST_ASSERT_EQUAL(1, lookupCubeNumberByTag("A9121466080104E0"));  // uppercase (valid)
+}
+
+void test_lookupCubeNumberByTag_partial_match() {
+    // Test that partial matches don't work
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A9121466080104"));    // too short
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A9121466080104E0AA")); // too long
+}
+
+void test_lookupCubeNumberByTag_invalid_hex() {
+    // Test with invalid hex characters
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("GGGGGGGGGGGGGGGG"));  // invalid hex chars
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A9121466080104E "));   // space in middle
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A912:1466080104E0"));  // with separator
+}
+
+void test_lookupCubeNumberByTag_similar_tags() {
+    // Test tags that are similar but not exact matches
+    // This tests that the entire tag must match exactly
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A9121466080104E1"));  // last char different
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("09121466080104E0"));  // first char different
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A9121466080104E00")); // extra char at end
+}
+
+void test_num_known_tags() {
+    // Test that the known tags table has the expected size
+    TEST_ASSERT_EQUAL(12, NUM_KNOWN_TAGS);
+}
+
+void test_lookupCubeNumberByTag_tag_to_cube_mapping() {
+    // Test the complete tag-to-cube mapping workflow
+    // This validates that each tag maps to the correct cube number
+
+    // Primary cubes (1-6)
+    int cube_num = lookupCubeNumberByTag("A9121466080104E0");
+    TEST_ASSERT_EQUAL(1, cube_num);
+
+    cube_num = lookupCubeNumberByTag("361E1466080104E0");
+    TEST_ASSERT_EQUAL(6, cube_num);
+
+    // Extended cubes (11-16)
+    cube_num = lookupCubeNumberByTag("C1A81366080104E0");
+    TEST_ASSERT_EQUAL(11, cube_num);
+
+    cube_num = lookupCubeNumberByTag("FAADF7B8500104E0");
+    TEST_ASSERT_EQUAL(16, cube_num);
+}
+
+void test_lookupCubeNumberByTag_whitespace_variations() {
+    // Test with various whitespace issues
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag(" A9121466080104E0"));  // leading space
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("A9121466080104E0 "));  // trailing space
+    TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("\tA9121466080104E0")); // leading tab
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -184,6 +280,19 @@ int main(void) {
 
     // Integration tests
     RUN_TEST(test_mac_to_cube_configuration_integration);
+
+    // Cube tags lookup tests
+    RUN_TEST(test_lookupCubeNumberByTag_all_known_tags);
+    RUN_TEST(test_lookupCubeNumberByTag_tag_to_cube_mapping);
+    RUN_TEST(test_lookupCubeNumberByTag_unknown_tag);
+    RUN_TEST(test_lookupCubeNumberByTag_null_pointer);
+    RUN_TEST(test_lookupCubeNumberByTag_empty_string);
+    RUN_TEST(test_lookupCubeNumberByTag_case_sensitivity);
+    RUN_TEST(test_lookupCubeNumberByTag_partial_match);
+    RUN_TEST(test_lookupCubeNumberByTag_invalid_hex);
+    RUN_TEST(test_lookupCubeNumberByTag_similar_tags);
+    RUN_TEST(test_lookupCubeNumberByTag_whitespace_variations);
+    RUN_TEST(test_num_known_tags);
 
     return UNITY_END();
 }
