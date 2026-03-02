@@ -966,9 +966,15 @@ void handleWakeUp() {
 }
 
 void handleSleepCommand(const String& message) {
+  char dbg[64];
+  snprintf(dbg, sizeof(dbg), "sleep cmd: '%s' len=%d", message.c_str(), message.length());
+  debugSend(dbg);
   if (message == "1") {
+    debugSend("entering sleep mode");
     debugPrintln("sleeping due to /sleep");
     enterSleepMode();
+  } else {
+    debugSend("sleep cmd: not '1', ignoring");
   }
 }
 
@@ -987,6 +993,8 @@ void handleSleepIntervalCommand(const String& message) {
 }
 
 void onConnectionEstablished() {
+  debugSend("MQTT connected");
+
   // Pre-allocate common topics
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
@@ -1255,9 +1263,11 @@ void setup() {
   
   // If we're in battery maintenance mode, skip the rest of setup
   if (is_sleep_mode && wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+    debugSend("setup: returning to sleep");
     return;  // Will go back to sleep in handleWakeUp()
   }
-  
+
+  debugSend("setup: continuing normally");
   Serial.println(cube_id);
   static String client_name = cube_id;
   Serial.println(client_name);
