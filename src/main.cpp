@@ -100,6 +100,10 @@ void configurePins(int cube_id) {
 #define VERSION "v0.8a"
 #define PRINT_DEBUG true
 
+// Build timestamp in compact format: MMDD.HHMM (auto-generated at compile time)
+// Example: "0302.1415" = March 2nd, 14:15
+#define BUILD_TIMESTAMP_COMPACT __DATE__ " " __TIME__  // Full date/time (displayed as compact format in MQTT)
+
 // Timing Constants
 #define NFC_DEBOUNCE_TIME_MS 200
 #define NFC_MIN_PUBLISH_INTERVAL_MS 100
@@ -177,6 +181,9 @@ uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
   0xbc, 0x10, 0xf8, 0xb8,
   0x50, 0x01, 0x04, 0xe0};
 
+// Track first boot vs wake from sleep
+static bool is_first_boot = true;
+
 // Network Objects
 EspMQTTClient mqtt_client(
   MQTT_SERVER_PI,
@@ -198,7 +205,6 @@ String mqtt_topic_cube;
 String mqtt_topic_cube_nfc;
 String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
-String mqtt_topic_version;
 String mqtt_topic_cube_right;  // publishes numeric cube index (1..6) to /cube/<id>/right
 
 // UDP Configuration
@@ -1015,8 +1021,29 @@ void onConnectionEstablished() {
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
-  mqtt_topic_version = createMqttTopic(cube_identifier, "version");
-  
+
+  // Only publish version on first boot, not on wake from sleep
+  // Manual testing: verify version publishes on power-on but not after sleep/wake
+  if (is_first_boot) {
+    const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+    int month = 1;
+    for (int i = 0; i < 12; i++) {
+      if (strncmp(__DATE__, months[i], 3) == 0) {
+        month = i + 1;
+        break;
+      }
+    }
+    int day = atoi(__DATE__ + 4);
+    int hour = atoi(__TIME__);
+    int minute = atoi(__TIME__ + 3);
+
+    char build_timestamp[16];
+    snprintf(build_timestamp, sizeof(build_timestamp),
+             "%02d%02d.%02d%02d", month, day, hour, minute);
+
+    mqtt_client.publish(mqtt_topic_echo, build_timestamp);
+  }
+
   // Subscribe to all command topics
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [](const String& msg) { display_manager->handleBrightnessCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", handleRebootCommand );
@@ -1234,7 +1261,10 @@ void setup() {
 
   // Handle wake up from deep sleep
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  
+
+  // Track if this is first boot or wake from sleep
+  is_first_boot = (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED);
+
   mqtt_client.enableDebuggingMessages(true);
   mqtt_client.setMaxPacketSize(11999);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
@@ -1264,11 +1294,29 @@ void setup() {
   debugPrintln("setting up wifi...");
   setupWiFiConnection();
   debugPrintln("wifi done");
-  
+
   String cube_id = cube_identifier;
   // Create display manager
   display_manager = new DisplayManager(cube_id);
-  display_manager->displayDebugMessage(VERSION);
+
+  // Generate compact build timestamp for display: MMDD.HHMM
+  const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+  int month = 1;
+  for (int i = 0; i < 12; i++) {
+    if (strncmp(__DATE__, months[i], 3) == 0) {
+      month = i + 1;
+      break;
+    }
+  }
+  int day = atoi(__DATE__ + 4);
+  int hour = atoi(__TIME__);
+  int minute = atoi(__TIME__ + 3);
+
+  char build_timestamp_compact[16];
+  snprintf(build_timestamp_compact, sizeof(build_timestamp_compact),
+           "%02d%02d.%02d%02d", month, day, hour, minute);
+
+  display_manager->displayDebugMessage(build_timestamp_compact);
   delay(DISPLAY_STARTUP_DELAY_MS);
 
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
