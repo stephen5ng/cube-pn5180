@@ -21,7 +21,7 @@
 // ============= Configuration =============
 // Hardware pin configuration is determined at compile time by board type:
 //   BOARD_V6 (v6 board): MISO=34, PN5180_BUSY=35, A_PIN=19, GPIO5=TPS22975 power switch
-//   Default (v1 board):  MISO=39, PN5180_BUSY=36, A_PIN=5
+//   Default (v1 board):  MISO=39, PN5180_BUSY=36, A_PIN=19
 // Pin definitions (set by configurePins based on board type)
 static int miso_pin = 0;        // Will be set by configurePins()
 static int pn5180_busy_pin = 0; // Will be set by configurePins()
@@ -128,7 +128,7 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
 #ifdef BOARD_V6
   19,  //A_PIN (38-pin board: GPIO5 used for TPS22975 power switch)
 #else
-  5,   //A_PIN (socket board)
+  19,  //A_PIN (socket board)
 #endif
   21,  //B_PIN,
   4,   //C_PIN,
