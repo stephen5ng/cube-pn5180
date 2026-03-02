@@ -6,6 +6,8 @@
 COUNT=${1:-1}
 UDP_PORT=54321
 TIMEOUT=2
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UDP_QUERY="$SCRIPT_DIR/udp_query.py"
 
 # Cube IPs: cube_id + 20 is the last octet
 # P0: cubes 1-6 -> IPs .21-.26
@@ -23,7 +25,9 @@ query_cube() {
   local ip="${1%%:*}"
   local label="${1##*:}"
   local response
-  response=$(echo -n "diag" | nc -u -w $TIMEOUT "$ip" $UDP_PORT 2>/dev/null)
+  # Use Python script for proper UDP timeout handling
+  response=$("$UDP_QUERY" "$ip" $UDP_PORT "diag" 0.5 2>/dev/null)
+
   if [ -n "$response" ]; then
     echo "$response"
   else
