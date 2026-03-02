@@ -778,9 +778,10 @@ void setupWiFiConnection() {
   bool try_portable = true;
   Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
+  uint8_t ip_octet = getCubeIpOctet();
   Serial.print("ip octet: ");
-  Serial.println(getCubeIpOctet());
-  IPAddress local_IP(192, 168, 8, getCubeIpOctet());
+  Serial.println(ip_octet);
+  IPAddress local_IP(192, 168, 8, ip_octet);
   Serial.print("local IP: ");
   Serial.println(local_IP);
   IPAddress gateway(192, 168, 8, 1);
