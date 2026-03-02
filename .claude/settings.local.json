@@ -23,7 +23,18 @@
       "Bash(~/.platformio/penv/bin/platformio test -e native -vv)",
       "Bash(~/.platformio/penv/bin/platformio run -e esp32dev)",
       "Bash(xargs:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(~/.platformio/penv/bin/platformio run:*)",
+      "Bash(nc:*)",
+      "Bash(bash:*)",
+      "Bash(/Users/stephenng/programming/blockwords/cube-pn5180/tools/udp_query.py:*)",
+      "Bash(mosquitto_pub:*)",
+      "Bash(ping:*)",
+      "Bash(~/.platformio/penv/bin/esptool.py:*)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.13/bin/esptool.py:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.13/bin/esptool:*)"
     ],
     "deny": []
   }
