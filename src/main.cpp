@@ -268,6 +268,7 @@ private:
   uint8_t border_style_left;
   uint8_t border_style_right;
   bool is_border_word;
+  uint8_t debug_line;
   uint16_t border_color;
   unsigned long animation_start_time;
   long highlight_end_time;
@@ -289,8 +290,8 @@ private:
   char current_letter;
 
 public:
-  DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true), 
-                                is_border_word(false),
+  DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true),
+                                is_border_word(false), debug_line(0),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), font_size(1), is_lock(false),
@@ -299,7 +300,7 @@ public:
                                 vline_height(PANEL_RES),
                                 hline_color_top(0),
                                 hline_color_bottom(0),
-                                image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr), 
+                                image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
     rotation = (cube_id_int <= 6) ? 2 : 0;
@@ -341,14 +342,30 @@ public:
     led_display->clearScreen();
   }
 
+  void clearDebugDisplay() {
+    led_display->clearScreen();
+    debug_line = 0;
+  }
+
   void displayDebugMessage(const char* message) {
-    led_display->setCursor(10, 20);
+    int y_pos = debug_line * 8 + 8;
+
+    led_display->setCursor(1, y_pos);
     led_display->setTextSize(1);
     led_display->setFont(NULL);
     led_display->setTextColor(RED, BLACK);
     led_display->print(message);
-    led_display->flipDMABuffer();    
-    led_display->clearScreen();
+    led_display->flipDMABuffer();
+    led_display->setCursor(1, y_pos);
+    led_display->setTextSize(1);
+    led_display->setFont(NULL);
+    led_display->setTextColor(RED, BLACK);
+    led_display->print(message);
+
+    debug_line++;
+    if (strlen(message) > 10) {
+      debug_line++;
+    }
   }
 
   void animate(unsigned long current_time) {
@@ -975,7 +992,7 @@ void handleWakeUp() {
   }
   else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
     debugPrintln("Woken by external signal (Pin 0 released)");
-    display_manager->displayDebugMessage("WAKE");
+    // Wake reason "wake:2" already indicates button wake, no need for "WAKE" message
     is_sleep_mode = false;
     Serial.println("Pin 0 wake-up detected - staying awake");
   }
@@ -1023,7 +1040,6 @@ void onConnectionEstablished() {
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
 
   // Only publish version on first boot, not on wake from sleep
-  // Manual testing: verify version publishes on power-on but not after sleep/wake
   if (is_first_boot) {
     const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
     int month = 1;
@@ -1316,11 +1332,12 @@ void setup() {
   snprintf(build_timestamp_compact, sizeof(build_timestamp_compact),
            "%02d%02d.%02d%02d", month, day, hour, minute);
 
+  display_manager->clearDebugDisplay();
   display_manager->displayDebugMessage(build_timestamp_compact);
   delay(DISPLAY_STARTUP_DELAY_MS);
 
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
-  
+
   handleWakeUp();
   
   // If we're in battery maintenance mode, skip the rest of setup
@@ -1334,11 +1351,9 @@ void setup() {
   static String client_name = cube_id;
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
-  char ipDisplay[128];
-  snprintf(ipDisplay, sizeof(ipDisplay), "%s, %s,%s", 
-    WiFi.localIP().toString().c_str(),
-    WiFi.macAddress().c_str(),
-    cube_id.c_str());
+  char ipDisplay[64];
+  snprintf(ipDisplay, sizeof(ipDisplay), "%s",
+    WiFi.localIP().toString().c_str());
   display_manager->displayDebugMessage(ipDisplay);
 
   display_manager->displayDebugMessage("nfc...");
@@ -1347,8 +1362,6 @@ void setup() {
   debugPrintln("setting up nfc reader...");
   setupNfcReader();
   debugPrintln("nfc reader done");
-
-  display_manager->clearScreen();
 
   debugPrintln("setting up udp...");
   setupUDP(); // Add UDP setup
