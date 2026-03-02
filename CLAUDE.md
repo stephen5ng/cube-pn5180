@@ -122,3 +122,32 @@ When bottleneck is message volume, **reduce message count at source** rather tha
 - Any references to future state in the code should be in a TODO.
 - Do not comment code that is obvious. (And if code isn't obvious, try to rewrite it so that it is obvious)
 - Be wary of putting information in comments that repeats the same information in the code. There generally should only be one source of truth.
+
+## Brightness Persistence Across Sleep ✅
+**Date**: March 2026
+**Status**: IMPLEMENTED
+
+### Implementation:
+- **RTC Memory**: Uses `RTC_DATA_ATTR uint16_t saved_brightness` to persist brightness across deep sleep cycles
+- **Initialization**: Defaults to `BRIGHTNESS` (255) on first boot
+- **Storage**: `handleBrightnessCommand()` saves new brightness values to RTC memory
+- **Restoration**: `setupDisplay()` uses `saved_brightness` instead of hardcoded `BRIGHTNESS`
+
+### How It Works:
+1. First boot: `saved_brightness` = 255 (default)
+2. MQTT brightness command: Updates `saved_brightness` and applies immediately
+3. Enter deep sleep: `saved_brightness` retained in RTC memory
+4. Wake from sleep: `setupDisplay()` restores `saved_brightness`
+5. New MQTT brightness: Can update anytime, always wins
+
+### Testing:
+- Compiles successfully for ESP32
+- No native tests possible (RTC memory is hardware-specific)
+- Manual testing required: Set brightness → sleep → wake → verify brightness maintained
+
+### No Race Conditions:
+- `saved_brightness` is always the source of truth
+- Initialized to default on first boot
+- Updated by MQTT commands
+- Survives deep sleep in RTC memory
+- New MQTT commands can update it anytime

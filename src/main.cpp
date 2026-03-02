@@ -118,6 +118,7 @@ RTC_DATA_ATTR bool is_sleep_mode = false;
 RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 RTC_DATA_ATTR uint32_t sleep_interval_s = 20;  // Default 20s, configurable via MQTT
+RTC_DATA_ATTR uint16_t saved_brightness = BRIGHTNESS;  // Persist brightness across sleep
 
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
@@ -322,7 +323,7 @@ public:
     display_config.gpio.b2 = rgb[5];
     led_display = new MatrixPanel_I2S_DMA(display_config);
     led_display->begin();
-    led_display->setBrightness(BRIGHTNESS);
+    led_display->setBrightness(saved_brightness);  // Use saved brightness (persistent across sleep)
     led_display->setRotation(rotation);
     led_display->setTextWrap(true);
     led_display->clearScreen();
@@ -533,6 +534,7 @@ public:
   void handleBrightnessCommand(const String& message) {
     debugPrintln("setting brightness due to /brightness");
     uint16_t brightness = message.toInt();
+    saved_brightness = brightness;  // Save to RTC memory for persistence across sleep
     led_display->setBrightness(brightness);
   }
 
