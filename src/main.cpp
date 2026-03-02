@@ -260,8 +260,6 @@ private:
   uint16_t* image;
   uint16_t* previous_image;
   String display_string;
-  uint8_t border_style_left;
-  uint8_t border_style_right;
   bool is_border_word;
   uint8_t debug_line;
   uint16_t border_color;
@@ -290,7 +288,6 @@ public:
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), font_size(1), is_lock(false),
-                                border_style_left(0), border_style_right(0),
                                 vline_color_left(0), vline_color_right(0),
                                 vline_height(PANEL_RES),
                                 hline_color_top(0),
@@ -587,36 +584,6 @@ public:
     debugPrintln("setting border bottom banner due to /border_bottom_banner");
     Serial.println(message);
     hline_color_bottom = strtol(message.c_str(), NULL, 16);    
-    is_dirty = true;  
-  }
-
-  void handleBorderSideCommand(const String& message) {
-    debugPrintln("setting border side due to /border_side");
-    char border_style_side = message.charAt(0);
-    // < ( {
-    switch (border_style_side)
-    {
-      case '<':
-        border_style_left = 0;
-        break;
-      case '(':
-        border_style_left = 1;
-        break;
-      case '{':
-        border_style_left = 2;
-        break;
-        case '>':
-        border_style_right = 0;
-        break;
-      case ')':
-        border_style_right = 1;
-        break;
-      case '}':
-        border_style_right = 2;
-        break;
-      default:
-        break;
-    }
     is_dirty = true;  
   }
 
