@@ -992,6 +992,21 @@ void handleSleepIntervalCommand(const String& message) {
   }
 }
 
+void getBuildTimestamp(char* buf, size_t buf_size) {
+  const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+  int month = 1;
+  for (int i = 0; i < 12; i++) {
+    if (strncmp(__DATE__, months[i], 3) == 0) {
+      month = i + 1;
+      break;
+    }
+  }
+  int day = atoi(__DATE__ + 4);
+  int hour = atoi(__TIME__);
+  int minute = atoi(__TIME__ + 3);
+  snprintf(buf, buf_size, "%02d%02d.%02d%02d", month, day, hour, minute);
+}
+
 void onConnectionEstablished() {
   debugSend("MQTT connected");
 
@@ -1004,22 +1019,8 @@ void onConnectionEstablished() {
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
-    const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-    int month = 1;
-    for (int i = 0; i < 12; i++) {
-      if (strncmp(__DATE__, months[i], 3) == 0) {
-        month = i + 1;
-        break;
-      }
-    }
-    int day = atoi(__DATE__ + 4);
-    int hour = atoi(__TIME__);
-    int minute = atoi(__TIME__ + 3);
-
     char build_timestamp[16];
-    snprintf(build_timestamp, sizeof(build_timestamp),
-             "%02d%02d.%02d%02d", month, day, hour, minute);
-
+    getBuildTimestamp(build_timestamp, sizeof(build_timestamp));
     mqtt_client.publish(createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_VERSION), build_timestamp, true);  // retained
   }
 
@@ -1278,22 +1279,8 @@ void setup() {
   // Create display manager
   display_manager = new DisplayManager(cube_id);
 
-  // Generate compact build timestamp for display: MMDD.HHMM
-  const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-  int month = 1;
-  for (int i = 0; i < 12; i++) {
-    if (strncmp(__DATE__, months[i], 3) == 0) {
-      month = i + 1;
-      break;
-    }
-  }
-  int day = atoi(__DATE__ + 4);
-  int hour = atoi(__TIME__);
-  int minute = atoi(__TIME__ + 3);
-
   char build_timestamp_compact[16];
-  snprintf(build_timestamp_compact, sizeof(build_timestamp_compact),
-           "%02d%02d.%02d%02d", month, day, hour, minute);
+  getBuildTimestamp(build_timestamp_compact, sizeof(build_timestamp_compact));
 
   display_manager->clearDebugDisplay();
   display_manager->displayDebugMessage(build_timestamp_compact);
