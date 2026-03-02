@@ -1178,6 +1178,22 @@ void handleUDP() {
         Serial.printf("Sent temperature to %s:%d: %s\n",
                       udp.remoteIP().toString().c_str(), udp.remotePort(), tempStr);
       }
+      // Check if message is "testdebug" - send test UDP debug packet
+      else if (strcmp(udpBuffer, "testdebug") == 0) {
+        const char* testMsg = "debug test: hello from cube";
+        debugSend(testMsg);
+        Serial.printf("Sent debug test\n");
+      }
+      // Check if message is "setdebugip" - set debug destination IP
+      else if (strncmp(udpBuffer, "setdebugip ", 11) == 0) {
+        debugIP = udp.remoteIP();  // Use requester's IP
+        char reply[64];
+        snprintf(reply, sizeof(reply), "debug IP set to %s", debugIP.toString().c_str());
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)reply, strlen(reply));
+        udp.endPacket();
+        Serial.printf("Debug IP set to %s\n", debugIP.toString().c_str());
+      }
     }
   }
 }
