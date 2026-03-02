@@ -22,6 +22,7 @@ const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
 const char* MQTT_TOPIC_PREFIX_GAME = "game/";
 const char* MQTT_TOPIC_PREFIX_NFC = "nfc/";
 const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
+const char* MQTT_TOPIC_PREFIX_VERSION = "version";
 
 int findMacAddressPosition(const char *mac_address) {
   for (int i = 0; i < NUM_CUBE_MAC_ADDRESSES; i++) {

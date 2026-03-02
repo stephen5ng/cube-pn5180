@@ -1052,7 +1052,7 @@ void onConnectionEstablished() {
     snprintf(build_timestamp, sizeof(build_timestamp),
              "%02d%02d.%02d%02d", month, day, hour, minute);
 
-    mqtt_client.publish(mqtt_topic_echo, build_timestamp, true);  // retained
+    mqtt_client.publish(createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_VERSION), build_timestamp, true);  // retained
   }
 
   // Subscribe to all command topics
