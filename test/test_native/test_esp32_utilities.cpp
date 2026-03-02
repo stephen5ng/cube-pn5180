@@ -32,10 +32,34 @@ void test_findMacAddressPosition_known_addresses() {
     TEST_ASSERT_EQUAL(5, findMacAddressPosition("14:33:5C:30:25:98"));
 }
 
+void test_findMacAddressPosition_all_positions() {
+    // Test all 12 MAC addresses in the table
+    TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:9F:C2:84"));  // 1
+    TEST_ASSERT_EQUAL(1, findMacAddressPosition("D4:8A:FC:9F:B0:C0"));  // 2
+    TEST_ASSERT_EQUAL(2, findMacAddressPosition("8C:4F:00:37:7C:DC"));  // 3
+    TEST_ASSERT_EQUAL(3, findMacAddressPosition("5C:01:3B:64:E2:84"));  // 4
+    TEST_ASSERT_EQUAL(4, findMacAddressPosition("EC:E3:34:B4:8F:B4"));  // 5
+    TEST_ASSERT_EQUAL(5, findMacAddressPosition("14:33:5C:30:25:98"));  // 6
+    TEST_ASSERT_EQUAL(6, findMacAddressPosition("CC:DB:A7:9B:5D:9C"));  // 7
+    TEST_ASSERT_EQUAL(7, findMacAddressPosition("EC:E3:34:79:9D:2C"));  // 8
+    TEST_ASSERT_EQUAL(8, findMacAddressPosition("04:83:08:59:6E:74"));  // 9
+    TEST_ASSERT_EQUAL(9, findMacAddressPosition("94:54:C5:EE:89:4C"));  // 10
+    TEST_ASSERT_EQUAL(10, findMacAddressPosition("8C:4F:00:36:7A:88")); // 11
+    TEST_ASSERT_EQUAL(11, findMacAddressPosition("D8:BC:38:F9:39:30")); // 12
+}
+
 void test_findMacAddressPosition_unknown_address() {
     TEST_ASSERT_EQUAL(-1, findMacAddressPosition("AA:BB:CC:DD:EE:FF"));
     TEST_ASSERT_EQUAL(-1, findMacAddressPosition(""));
     TEST_ASSERT_EQUAL(-1, findMacAddressPosition("INVALID"));
+}
+
+void test_findMacAddressPosition_case_sensitivity() {
+    // Test that MAC address lookup is case-sensitive
+    // Lowercase should not match uppercase entries
+    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("cc:db:a7:9f:c2:84"));  // lowercase
+    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("CC:DB:A7:9F:C2:84:00"));  // too long
+    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("CC:DB:A7:9F:C2"));  // too short
 }
 
 void test_convertNfcIdToHexString_full_id() {
@@ -60,12 +84,33 @@ void test_convertNfcIdToHexString_edge_cases() {
     char zero_buffer[5];
     convertNfcIdToHexString(zero_id, 2, zero_buffer);
     TEST_ASSERT_EQUAL_STRING("0000", zero_buffer);
-    
+
     // Test with max values
     uint8_t max_id[] = {0xFF, 0xFF};
     char max_buffer[5];
     convertNfcIdToHexString(max_id, 2, max_buffer);
     TEST_ASSERT_EQUAL_STRING("FFFF", max_buffer);
+}
+
+void test_convertNfcIdToHexString_single_byte() {
+    // Test single byte conversion
+    uint8_t single_byte[] = {0xAB};
+    char buffer[3];
+    convertNfcIdToHexString(single_byte, 1, buffer);
+    TEST_ASSERT_EQUAL_STRING("AB", buffer);
+}
+
+void test_convertNfcIdToHexString_mixed_values() {
+    // Test with mixed byte values (low, mid, high)
+    uint8_t mixed[] = {0x01, 0x80, 0xFF, 0x0A};
+    char buffer[9];
+    convertNfcIdToHexString(mixed, 4, buffer);
+    TEST_ASSERT_EQUAL_STRING("0180FF0A", buffer);
+}
+
+void test_num_cube_mac_addresses() {
+    // Test that the MAC address table has the expected size
+    TEST_ASSERT_EQUAL(12, NUM_CUBE_MAC_ADDRESSES);
 }
 
 void test_calculateCubeIpOctet() {
@@ -88,6 +133,16 @@ void test_calculateCubeIdentifier() {
     TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(5));  // Cube 6
 }
 
+void test_calculateCubeIdentifier_extended() {
+    // Test extended cube IDs (positions 6-11)
+    TEST_ASSERT_EQUAL(7, calculateCubeIdentifier(6));   // Cube 7
+    TEST_ASSERT_EQUAL(8, calculateCubeIdentifier(7));   // Cube 8
+    TEST_ASSERT_EQUAL(9, calculateCubeIdentifier(8));   // Cube 9
+    TEST_ASSERT_EQUAL(10, calculateCubeIdentifier(9));  // Cube 10
+    TEST_ASSERT_EQUAL(11, calculateCubeIdentifier(10)); // Cube 11
+    TEST_ASSERT_EQUAL(12, calculateCubeIdentifier(11)); // Cube 12
+}
+
 
 void test_mac_to_cube_configuration_integration() {
     // Test complete workflow: MAC -> position -> cube config
@@ -107,22 +162,28 @@ void test_mac_to_cube_configuration_integration() {
 
 int main(void) {
     UNITY_BEGIN();
-    
+
     // MAC address lookup tests
     RUN_TEST(test_findMacAddressPosition_known_addresses);
+    RUN_TEST(test_findMacAddressPosition_all_positions);
     RUN_TEST(test_findMacAddressPosition_unknown_address);
-    
+    RUN_TEST(test_findMacAddressPosition_case_sensitivity);
+
     // NFC ID conversion tests
     RUN_TEST(test_convertNfcIdToHexString_full_id);
     RUN_TEST(test_convertNfcIdToHexString_partial_id);
+    RUN_TEST(test_convertNfcIdToHexString_single_byte);
+    RUN_TEST(test_convertNfcIdToHexString_mixed_values);
     RUN_TEST(test_convertNfcIdToHexString_edge_cases);
-    
+
     // Cube configuration tests
     RUN_TEST(test_calculateCubeIpOctet);
     RUN_TEST(test_calculateCubeIdentifier);
-    
+    RUN_TEST(test_calculateCubeIdentifier_extended);
+    RUN_TEST(test_num_cube_mac_addresses);
+
     // Integration tests
     RUN_TEST(test_mac_to_cube_configuration_integration);
-    
+
     return UNITY_END();
 }
