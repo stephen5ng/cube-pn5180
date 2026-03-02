@@ -200,7 +200,7 @@ String mqtt_topic_cube;
 String mqtt_topic_cube_nfc;
 String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
-String mqtt_topic_cube_right;  // publishes numeric cube index (1..6) to /cube/<id>/right
+String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
