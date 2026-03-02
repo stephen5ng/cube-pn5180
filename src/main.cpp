@@ -107,6 +107,7 @@ void configurePins(int cube_id) {
 RTC_DATA_ATTR bool is_sleep_mode = false;
 RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
+RTC_DATA_ATTR uint32_t sleep_interval_s = 20;  // Default 20s, configurable via MQTT
 
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
@@ -862,14 +863,18 @@ void enterSleepMode() {
   // Configure pull-up to ensure stable high state during sleep
   rtc_gpio_pulldown_dis(SLEEP_PIN);
   rtc_gpio_pullup_en(SLEEP_PIN);
-  
-  // Also enable timer wake-up for battery maintenance
-  esp_sleep_enable_timer_wakeup((uint64_t)BATTERY_MAINTENANCE_INTERVAL_S * uS_TO_S_FACTOR);
-  
+
+  // Enable timer wake-up using configurable interval
+  esp_sleep_enable_timer_wakeup((uint64_t)sleep_interval_s * uS_TO_S_FACTOR);
+
   is_sleep_mode = true;
   sleep_start_time = millis();
-  
-  Serial.println("Will wake up on Pin 0 release or in 1 hour for battery maintenance...");
+
+  // Send debug via UDP
+  char dbg[64];
+  snprintf(dbg, sizeof(dbg), "sleeping for %lu seconds", sleep_interval_s);
+  debugSend(dbg);
+  Serial.printf("Will wake on Pin 0 release or every %lu seconds...\n", sleep_interval_s);
   Serial.flush();
   
   esp_deep_sleep_start();
@@ -906,6 +911,20 @@ void handleSleepCommand(const String& message) {
   }
 }
 
+void handleSleepIntervalCommand(const String& message) {
+  uint32_t new_interval = message.toInt();
+  if (new_interval >= 10 && new_interval <= 300) {
+    sleep_interval_s = new_interval;
+    char dbg[64];
+    snprintf(dbg, sizeof(dbg), "sleep_interval=%lu", sleep_interval_s);
+    debugSend(dbg);
+    Serial.printf("Sleep interval set to %lu seconds\n", sleep_interval_s);
+  } else {
+    debugSend("invalid sleep_interval");
+    Serial.println("Invalid sleep interval: must be 10-300 seconds");
+  }
+}
+
 void onConnectionEstablished() {
   // Pre-allocate common topics
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
@@ -921,6 +940,7 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep", handleSleepCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
 
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [](const String& msg) { display_manager->handleConsolidatedBorderCommand(msg); });
