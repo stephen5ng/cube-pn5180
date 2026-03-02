@@ -39,13 +39,30 @@ void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
   hex_buffer[id_length * 2] = '\0';
 }
 
-#ifndef NATIVE_TESTING
+#ifdef NATIVE_TESTING
+// C versions for native testing
+void removeColonsFromMacC(const char* mac_address, char* output, size_t output_size) {
+  size_t j = 0;
+  for (size_t i = 0; mac_address[i] != '\0' && j < output_size - 1; i++) {
+    if (mac_address[i] != ':') {
+      output[j++] = mac_address[i];
+    }
+  }
+  output[j] = '\0';
+}
+
+void createMqttTopicC(const char* cube_identifier, const char* suffix, char* output, size_t output_size) {
+  snprintf(output, output_size, "%s%s/%s", MQTT_TOPIC_PREFIX_CUBE, cube_identifier, suffix);
+}
+#else
+// Arduino String versions for ESP32
 String removeColonsFromMac(const String& mac_address) {
   String result;
   result.reserve(mac_address.length());
   for (size_t i = 0; i < mac_address.length(); i++) {
-    if (mac_address.charAt(i) != ':') {
-      result += mac_address.charAt(i); 
+    char c = mac_address[i];
+    if (c != ':') {
+      result += c;
     }
   }
   return result;

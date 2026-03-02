@@ -256,6 +256,114 @@ void test_lookupCubeNumberByTag_whitespace_variations() {
     TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("\tA9121466080104E0")); // leading tab
 }
 
+// ========== String Utility Tests ==========
+
+void test_removeColonsFromMac_standard_format() {
+    // Test standard MAC address format
+    char output[20];
+    removeColonsFromMacC("CC:DB:A7:9F:C2:84", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("CCDBA79FC284", output);
+
+    removeColonsFromMacC("D8:AF:CF:9B:0C:C0", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("D8AFCF9B0CC0", output);
+}
+
+void test_removeColonsFromMac_no_colons() {
+    // Test MAC address without colons (should return as-is)
+    char output[20];
+    removeColonsFromMacC("CCDBA79FC284", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("CCDBA79FC284", output);
+
+    removeColonsFromMacC("123456", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("123456", output);
+}
+
+void test_removeColonsFromMac_empty_string() {
+    // Test empty string
+    char output[20];
+    removeColonsFromMacC("", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("", output);
+}
+
+void test_removeColonsFromMac_only_colons() {
+    // Test string with only colons
+    char output[20];
+    removeColonsFromMacC(":::::::", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("", output);
+}
+
+void test_removeColonsFromMac_mixed_separators() {
+    // Test that only colons are removed, other characters preserved
+    char output[30];
+    removeColonsFromMacC("CC:-:DB:-:A7:-:9F:-:C2:-:84", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("CC-DB-A7-9F-C2-84", output);
+}
+
+void test_removeColonsFromMac_single_colon() {
+    // Test single colon
+    char output[20];
+    removeColonsFromMacC("ABCDE:F", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("ABCDEF", output);
+
+    removeColonsFromMacC(":ABCDEF", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("ABCDEF", output);
+
+    removeColonsFromMacC("ABCDEF:", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("ABCDEF", output);
+}
+
+void test_createMqttTopic_basic() {
+    // Test basic topic creation
+    char output[50];
+    createMqttTopicC("1", "echo", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("cube/1/echo", output);
+
+    createMqttTopicC("5", "brightness", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("cube/5/brightness", output);
+
+    createMqttTopicC("12", "nfc", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("cube/12/nfc", output);
+}
+
+void test_createMqttTopic_empty_suffix() {
+    // Test with empty suffix
+    char output[50];
+    createMqttTopicC("1", "", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("cube/1/", output);
+}
+
+void test_createMqttTopic_special_characters() {
+    // Test with special characters in suffix
+    char output[50];
+    createMqttTopicC("1", "test_123", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("cube/1/test_123", output);
+
+    createMqttTopicC("5", "sub/topic", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("cube/5/sub/topic", output);
+}
+
+void test_createMqttTopic_long_identifiers() {
+    // Test with longer cube identifiers
+    char output[50];
+    createMqttTopicC("cube123", "echo", output, sizeof(output));
+    TEST_ASSERT_EQUAL_STRING("cube/cube123/echo", output);
+}
+
+void test_createMqttTopic_constants() {
+    // Test that prefix constant is used correctly
+    char output[50];
+    createMqttTopicC("1", "test", output, sizeof(output));
+
+    // Should start with "cube/"
+    TEST_ASSERT_TRUE(strncmp(output, "cube/", 5) == 0);
+
+    // Should contain the identifier
+    TEST_ASSERT_TRUE(strstr(output, "1") != NULL);
+
+    // Should contain the suffix
+    TEST_ASSERT_TRUE(strstr(output, "test") != NULL);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -293,6 +401,19 @@ int main(void) {
     RUN_TEST(test_lookupCubeNumberByTag_similar_tags);
     RUN_TEST(test_lookupCubeNumberByTag_whitespace_variations);
     RUN_TEST(test_num_known_tags);
+
+    // String utility tests
+    RUN_TEST(test_removeColonsFromMac_standard_format);
+    RUN_TEST(test_removeColonsFromMac_no_colons);
+    RUN_TEST(test_removeColonsFromMac_empty_string);
+    RUN_TEST(test_removeColonsFromMac_only_colons);
+    RUN_TEST(test_removeColonsFromMac_mixed_separators);
+    RUN_TEST(test_removeColonsFromMac_single_colon);
+    RUN_TEST(test_createMqttTopic_basic);
+    RUN_TEST(test_createMqttTopic_empty_suffix);
+    RUN_TEST(test_createMqttTopic_special_characters);
+    RUN_TEST(test_createMqttTopic_long_identifiers);
+    RUN_TEST(test_createMqttTopic_constants);
 
     return UNITY_END();
 }
