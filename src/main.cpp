@@ -884,13 +884,74 @@ void handleWakeUp() {
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
   
   if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
-    debugPrintln("Woken for battery maintenance");
-    display_manager->displayDebugMessage("BATT");
-    
-    mqtt_client.loop();
-    delay(2000);
-    
-    enterSleepMode();
+    // Timer wake - check if we should stay asleep or wake fully
+    debugSend("timer wake");
+
+    // Connect to MQTT to check for retained sleep message
+    WiFiClient keepalive_tcp;
+    PubSubClient keepalive_mqtt(keepalive_tcp);
+    keepalive_mqtt.setServer(MQTT_SERVER_PI, MQTT_PORT);
+
+    volatile bool stay_asleep = false;  // Default: wake up unless we see "1"
+    String client_id = "cube-" + String(cube_identifier) + "-ka";
+
+    // Callback to receive retained sleep message
+    keepalive_mqtt.setCallback([&stay_asleep, &keepalive_mqtt](char* topic, byte* payload, unsigned int length) {
+      // Publish debug via MQTT (UDP might not be ready in callback context)
+      String debug_topic = "cube/" + String(cube_identifier) + "/debug";
+      char dbg[64];
+
+      snprintf(dbg, sizeof(dbg), "cb: len=%d", length);
+      keepalive_mqtt.publish(debug_topic.c_str(), dbg);
+
+      if (length == 1 && payload[0] == '1') {
+        // "1" means stay asleep
+        keepalive_mqtt.publish(debug_topic.c_str(), "cb: stay asleep");
+        stay_asleep = true;
+      } else {
+        // Empty, "0", or any other value means wake up
+        snprintf(dbg, sizeof(dbg), "cb: wake (len=%d)", length);
+        keepalive_mqtt.publish(debug_topic.c_str(), dbg);
+        stay_asleep = false;
+      }
+    });
+
+    if (keepalive_mqtt.connect(client_id.c_str())) {
+      debugSend("mqtt ok");
+
+      // Publish keep-alive status
+      String status_topic = "cube/" + String(cube_identifier) + "/status";
+      keepalive_mqtt.publish(status_topic.c_str(), "keep-alive");
+
+      // Subscribe to receive the retained sleep message
+      keepalive_mqtt.subscribe("cube/sleep");
+
+      // Wait for retained message to arrive
+      unsigned long check_start = millis();
+      while (millis() - check_start < 500) {
+        keepalive_mqtt.loop();
+        delay(10);
+      }
+
+      keepalive_mqtt.disconnect();
+
+      char dbg[64];
+      snprintf(dbg, sizeof(dbg), "stay_asleep=%d", stay_asleep);
+      debugSend(dbg);
+    } else {
+      debugSend("mqtt fail");
+    }
+
+    if (stay_asleep) {
+      // Go back to sleep
+      debugSend("sleep again");
+      enterSleepMode();
+    } else {
+      // Wake fully
+      debugSend("WAKE FULL - staying awake");
+      is_sleep_mode = false;
+      Serial.println("Waking fully - continuing setup");
+    }
   }
   else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
     debugPrintln("Woken by external signal (Pin 0 released)");
