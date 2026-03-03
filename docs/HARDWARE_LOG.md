@@ -50,4 +50,22 @@ Tracking hardware modifications, replacements, and issues to identify patterns.
 
 **Notes**: Important to specify `--environment v6` for v6 boards to get correct pin assignments.
 
+### Cube 4 - ESP32 Replacement
+- **Action**: Replacement
+- **Reason**: No UDP response - MQTT working but UDP server not responding. Previous history of PN5180 BUSY pin issues causing ~1 second NFC delays.
+- **Old Hardware**: 30-pin ESP32
+  - MAC: 5C:01:3B:64:E2:84
+  - Problem: No UDP response, history of PN5180 BUSY pin hardware issues (documented in hardware-debugging.md)
+- **New Hardware**: 30-pin ESP32 for v6 board (Attempt 2)
+  - MAC: 3C:8A:1F:77:B9:24
+  - Chip type: ESP32-D0WD-V3 (revision v3.1)
+  - Features: Wi-Fi, BT, Dual Core + LP Core, 240MHz, Vref calibration in eFuse, Coding Scheme None
+  - Crystal: 40MHz
+  - Flash: 4MB
+  - Form factor: 30-pin standard ESP32 dev board
+  - Board version: v6 (requires BOARD_V6 build flag)
+- **Result**: Firmware (v6) flashed successfully, awaiting testing
+
+**Notes**: Previous attempt used MAC 14:33:5C:30:25:98 but was replaced. Board version reference from `/Users/stephenng/programming/blockwords/cubes/cube_board_versions.txt`
+
 ---
