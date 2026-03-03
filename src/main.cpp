@@ -1355,6 +1355,28 @@ void loop() {
 
     uint8_t card_id[NFCID_LENGTH];
     ISO15693ErrorCode read_result = readNfcCard(card_id);
+    nfc_us = micros() - nfc_start;
+
+    // A stuck BUSY pin causes ~1000ms NFC reads that return EC_NO_CARD (not an
+    // error code), so the recovery below is triggered by timing, not result code.
+    // Normal reads are ~200µs; 100ms is an unambiguous signal of stuck BUSY.
+    static unsigned long last_nfc_reset = 0;
+    static int consecutive_slow_reads = 0;
+    if (nfc_us > 100000UL) {
+      consecutive_slow_reads++;
+      if (consecutive_slow_reads > 3 && (millis() - last_nfc_reset > 5000)) {
+        Serial.printf("Resetting NFC reader: stuck BUSY detected (%lu us)\n", nfc_us);
+        if (nfc_reader != nullptr) {
+          nfc_reader->reset();
+          nfc_reader->setupRF();
+        }
+        last_nfc_reset = millis();
+        consecutive_slow_reads = 0;
+      }
+    } else {
+      consecutive_slow_reads = 0;
+    }
+
     if (read_result == ISO15693_EC_OK) {
       char neighbor_id[NFCID_LENGTH * 2 + 1];
       convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
@@ -1392,23 +1414,8 @@ void loop() {
       }
     } else {
       Serial.printf("NFC read failed with error code: %d\n", read_result);
-
-      // Reset NFC reader on persistent errors to prevent buffer issues
-      static unsigned long last_nfc_reset = 0;
-      static int consecutive_errors = 0;
-
-      consecutive_errors++;
-      if (consecutive_errors > 5 && (millis() - last_nfc_reset > 5000)) {
-        Serial.println("Resetting NFC reader due to consecutive errors...");
-        if (nfc_reader != nullptr) {
-          nfc_reader->reset();
-          nfc_reader->setupRF();
-        }
-        last_nfc_reset = millis();
-        consecutive_errors = 0;
-      }
     }
-    nfc_us = micros() - nfc_start;
+
     if (nfc_us > nfc_read_max_us) {
       nfc_read_max_us = nfc_us;
     }
