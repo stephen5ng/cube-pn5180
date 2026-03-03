@@ -37,6 +37,9 @@
 - `src/main.cpp` - Main ESP32 application code
 - `src/cube_utilities.cpp/.h` - Utility functions for MAC/NFC handling
 - `test/test_native/` - Native unit tests for utility functions
+- `tools/` - Cube management: `flash_cubes.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `check_cubes.sh`, `show_cube_numbers.py`, diagnostics
+- `docs/` - Planning docs, hardware debugging notes, analysis write-ups
+- `cube_board_versions.txt` - Maps cube IDs to board version (v1/v6) for flashing
 - Sleep mode uses GPIO 5 for button input
 - MAC address table determines cube configuration and RGB pin assignments
 
@@ -74,7 +77,7 @@ The ESP32 firmware has been optimized to achieve **99.7% of theoretical maximum 
 - **Border Message Filtering**: Identified as primary bottleneck (99% improvement when filtered)
 
 ### Tested and REJECTED Approaches:
-1. **ESP32-side Message Deduplication**: Instrumentation showed 66% duplicate messages, but deduplication overhead (2ms+ per message) would exceed benefits. See `mqtt_deduplication_analysis.md` for detailed analysis.
+1. **ESP32-side Message Deduplication**: Instrumentation showed 66% duplicate messages, but deduplication overhead (2ms+ per message) would exceed benefits. See `docs/mqtt_deduplication_analysis.md` for detailed analysis.
 2. **Complex Performance Instrumentation**: Simple solutions (30 FPS throttling) were more effective than complex measurement systems.
 
 ### Recommended Future Optimizations:

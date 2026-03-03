@@ -34,8 +34,22 @@
       "Bash(/Library/Frameworks/Python.framework/Versions/3.13/bin/esptool.py:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(/Library/Frameworks/Python.framework/Versions/3.13/bin/esptool:*)"
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.13/bin/esptool:*)",
+      "Bash(tools/diag_cubes.sh 3:*)"
     ],
     "deny": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "platformio",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "always specify v1 or v6 when flashing"
+          }
+        ]
+      }
+    ]
   }
 }
