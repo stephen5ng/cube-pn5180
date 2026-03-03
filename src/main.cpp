@@ -111,6 +111,9 @@ void configurePins(int cube_id) {
 #define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
 #define BATTERY_MAINTENANCE_INTERVAL_S  360000ULL  /* Wake up for battery maintenance */
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
+#ifdef BOARD_V6
+#define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
+#endif
 
 // Sleep state management
 RTC_DATA_ATTR bool is_sleep_mode = false;
@@ -545,6 +548,22 @@ public:
     is_dirty = false;
   }
 
+#ifdef BOARD_V6
+  void shutdownForSleep() {
+    led_display->stopDMAoutput();
+    const int hub75_pins[] = {
+      display_config.gpio.r1, display_config.gpio.g1, display_config.gpio.b1,
+      display_config.gpio.r2, display_config.gpio.g2, display_config.gpio.b2,
+      display_config.gpio.a,  display_config.gpio.b,  display_config.gpio.c,
+      display_config.gpio.d,  display_config.gpio.e,
+      display_config.gpio.lat, display_config.gpio.oe, display_config.gpio.clk
+    };
+    for (int pin : hub75_pins) {
+      pinMode(pin, INPUT);
+    }
+  }
+#endif
+
 
   void handleBrightnessCommand(const String& message) {
     debugPrintln("setting brightness due to /brightness");
@@ -846,7 +865,14 @@ void enterSleepMode() {
   display_manager->displayDebugMessage("sleep...");
   delay(2000);
 
-  // GPIO5 will automatically go low when entering deep sleep
+#ifdef BOARD_V6
+  // Stop DMA and tri-state HUB75 pins to prevent backfeed through panel clamping diodes.
+  // Hold all GPIO states through deep sleep so tri-stated pins don't float on power-down.
+  display_manager->shutdownForSleep();
+  digitalWrite(POWER_SWITCH_PIN, LOW);
+  gpio_hold_en(POWER_SWITCH_PIN);
+  gpio_deep_sleep_hold_en();
+#endif
 
   // Read current pin state and store it in RTC memory
   pin0_state_at_sleep = digitalRead(SLEEP_PIN);
@@ -978,6 +1004,19 @@ void handleSleepCommand(const String& message) {
   }
 }
 
+#ifdef BOARD_V6
+void handlePowerTestCommand(const String& message) {
+  if (message == "0") {
+    display_manager->shutdownForSleep();
+    digitalWrite(POWER_SWITCH_PIN, LOW);
+    debugSend("DMA stopped, pins tri-stated, GPIO5 LOW");
+  } else {
+    digitalWrite(POWER_SWITCH_PIN, HIGH);
+    debugSend("GPIO5 HIGH - reboot to restore display");
+  }
+}
+#endif
+
 void handleSleepIntervalCommand(const String& message) {
   uint32_t new_interval = message.toInt();
   if (new_interval >= 10 && new_interval <= 300) {
@@ -1049,6 +1088,9 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
+#ifdef BOARD_V6
+  mqtt_client.subscribe(mqtt_topic_cube + "/power_test", handlePowerTestCommand);
+#endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
   mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
 }
@@ -1265,9 +1307,11 @@ void setup() {
   pinMode(0, INPUT_PULLUP);
 
 #ifdef BOARD_V6
-  // Drive GPIO5 high to enable TPS22975 HUB75 power switch
-  pinMode(5, OUTPUT);
-  digitalWrite(5, HIGH);
+  // Release holds set in enterSleepMode(), re-enable TPS22975
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(POWER_SWITCH_PIN);
+  pinMode(POWER_SWITCH_PIN, OUTPUT);
+  digitalWrite(POWER_SWITCH_PIN, HIGH);
 #endif
   
   // Initialize WiFi and get cube identifier
