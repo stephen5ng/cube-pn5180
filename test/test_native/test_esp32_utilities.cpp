@@ -28,7 +28,7 @@ void test_findMacAddressPosition_known_addresses() {
     TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:9F:C2:84"));
 
     // Test second cube (position 1)
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("D4:8A:FC:9F:B0:C0"));
+    TEST_ASSERT_EQUAL(1, findMacAddressPosition("3C:8A:1F:77:DF:8C"));
 
     // Test sixth cube (position 5)
     TEST_ASSERT_EQUAL(5, findMacAddressPosition("04:83:08:58:2B:40"));
@@ -37,9 +37,9 @@ void test_findMacAddressPosition_known_addresses() {
 void test_findMacAddressPosition_all_positions() {
     // Test all 12 MAC addresses in the table
     TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:9F:C2:84"));  // 1
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("D4:8A:FC:9F:B0:C0"));  // 2
+    TEST_ASSERT_EQUAL(1, findMacAddressPosition("3C:8A:1F:77:DF:8C"));  // 2
     TEST_ASSERT_EQUAL(2, findMacAddressPosition("8C:4F:00:37:7C:DC"));  // 3
-    TEST_ASSERT_EQUAL(3, findMacAddressPosition("5C:01:3B:64:E2:84"));  // 4
+    TEST_ASSERT_EQUAL(3, findMacAddressPosition("3C:8A:1F:77:B9:24"));  // 4
     TEST_ASSERT_EQUAL(4, findMacAddressPosition("EC:E3:34:B4:8F:B4"));  // 5
     TEST_ASSERT_EQUAL(5, findMacAddressPosition("04:83:08:58:2B:40"));  // 6
     TEST_ASSERT_EQUAL(6, findMacAddressPosition("CC:DB:A7:9B:5D:9C"));  // 7
