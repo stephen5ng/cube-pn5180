@@ -1,0 +1,7 @@
+# Cube ID = Board Version
+1=v1
+2=v6
+3=v1
+4=v6
+5=v1
+6=v1

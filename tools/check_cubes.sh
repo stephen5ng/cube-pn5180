@@ -74,6 +74,13 @@ printf "%-6s %-5s %10s %10s %10s %12s %12s %7s\n" \
 all_pass=true
 
 for cube_id in "${CUBES[@]}"; do
+  ip="192.168.8.$((20 + cube_id))"
+  if ! ping -c 1 -W 1000 "$ip" &>/dev/null; then
+    printf "%-6s ${RED}%-5s${NC}\n" "$cube_id" "OFFLINE"
+    all_pass=false
+    continue
+  fi
+
   raw=$(query $cube_id)
   if [ -z "$raw" ]; then
     printf "%-6s ${RED}%-5s${NC}\n" "$cube_id" "TIMEOUT"
