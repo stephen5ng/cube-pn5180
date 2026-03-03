@@ -116,6 +116,19 @@ When bottleneck is message volume, **reduce message count at source** rather tha
 - Python: `cubes_to_game.py:185` - `_mark_tiles_for_guess()` updated
 - Topic: `cube/{id}/border` (consolidated) vs `cube/{id}/border_hline_top` (legacy)
 
+## Sleep Mode: HUB75 Power-Off (v6 boards)
+
+The v6 PCB has a TPS22975 load switch on GPIO5 that gates 5V to the HUB75 panel. Cutting power in deep sleep requires a specific sequence because:
+1. I2S DMA continuously drives HUB75 data pins — must be stopped first
+2. HUB75 data pins at 3.3V backfeed ~2.2V through the panel's clamping diodes — must be tri-stated
+3. Non-RTC GPIO states don't persist through deep sleep — `gpio_deep_sleep_hold_en()` required
+
+**Sleep sequence** (`enterSleepMode()`): `stopDMAoutput()` → tri-state all HUB75 pins → `gpio_hold_en(GPIO_NUM_5)` → `gpio_deep_sleep_hold_en()` → `esp_deep_sleep_start()`
+
+**Wake sequence** (`setup()`): `gpio_deep_sleep_hold_dis()` → `gpio_hold_dis(GPIO_NUM_5)` → `pinMode(5, OUTPUT)` → `digitalWrite(5, HIGH)`
+
+**PCB note**: The "EN" test pad is the ESP32 chip enable/reset — NOT the TPS22975 enable. GPIO5 (TPS22975 control) has no test pad.
+
 ## Testing Notes
 - Native tests run utility functions without ESP32 dependencies
 - All tests must pass before deployment

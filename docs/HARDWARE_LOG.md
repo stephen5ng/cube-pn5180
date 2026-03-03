@@ -69,3 +69,31 @@ Tracking hardware modifications, replacements, and issues to identify patterns.
 **Notes**: Previous attempt used MAC 14:33:5C:30:25:98 but was replaced. Board version reference from `/Users/stephenng/programming/blockwords/cubes/cube_board_versions.txt`
 
 ---
+
+## v6 PCB Design Issues (for next revision)
+
+### HUB75 power not cut during deep sleep (RESOLVED)
+
+- **Symptom**: 5V present across HUB75 connector even when ESP32 is in deep sleep
+- **Root causes** (two independent issues):
+  1. **GPIO5 not held low in deep sleep**: GPIO5 controls TPS22975 enable. Without explicit hold, GPIO5 floats during deep sleep and the switch stays on.
+  2. **HUB75 data pin backfeed**: Even with TPS22975 off, the ESP32's HUB75 data pins (driven at 3.3V by I2S DMA) backfeed ~2.2V onto the 5V rail through the panel's input clamping/ESD diodes.
+- **Misdiagnosis**: Initially thought the PCB "EN" test pad was the TPS22975 enable — it's actually the ESP32 chip enable/reset pin. A 100kΩ resistor was soldered to the wrong signal (should be removed).
+- **Fix** (firmware only, no PCB change needed):
+  1. `stopDMAoutput()` — stop I2S DMA from driving HUB75 pins
+  2. `pinMode(pin, INPUT)` on all 14 HUB75 data pins — tri-state to prevent backfeed
+  3. `digitalWrite(5, LOW)` + `gpio_hold_en(GPIO_NUM_5)` — disable TPS22975
+  4. `gpio_deep_sleep_hold_en()` — hold ALL GPIO states through deep sleep (critical for non-RTC pins like A=19, B=21, D=22, CLK=16 which would otherwise float)
+- **Verified working** on cube 4, 2026-03-03
+
+### GPIO34/35 have no internal pull resistors
+
+- **Symptom**: PN5180 BUSY pin floats HIGH if PN5180 dies or has a bad connection, causing 250ms timeout per SPI transaction (~1s per NFC read)
+- **Root cause**: GPIO34–39 on ESP32 are input-only with no internal pull-up or pull-down capability
+- **Fix for next revision**: Add 10kΩ pull-down on BUSY line (defaults BUSY to LOW = not busy when PN5180 is absent or dead)
+
+### PN5180 on a cable
+
+- **Symptom**: Repeated PN5180 failures across multiple cubes — erratic reads before full failure
+- **Root cause**: Cable between PCB and PN5180 module introduces noise pickup from HUB75 switching currents, ESD exposure, and connector intermittency. Decoupling cap on main PCB doesn't help with 10cm of wire to the chip.
+- **Fix for next revision**: Move PN5180 onto the main PCB to eliminate cable entirely. If cable is retained, add 100nF decoupling cap at the PN5180 end of the cable.
