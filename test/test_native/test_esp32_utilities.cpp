@@ -31,7 +31,7 @@ void test_findMacAddressPosition_known_addresses() {
     TEST_ASSERT_EQUAL(1, findMacAddressPosition("3C:8A:1F:77:DF:8C"));
 
     // Test sixth cube (position 5)
-    TEST_ASSERT_EQUAL(5, findMacAddressPosition("04:83:08:58:2B:40"));
+    TEST_ASSERT_EQUAL(5, findMacAddressPosition("14:33:5C:30:29:EC"));
 }
 
 void test_findMacAddressPosition_all_positions() {
@@ -41,7 +41,7 @@ void test_findMacAddressPosition_all_positions() {
     TEST_ASSERT_EQUAL(2, findMacAddressPosition("8C:4F:00:37:7C:DC"));  // 3
     TEST_ASSERT_EQUAL(3, findMacAddressPosition("3C:8A:1F:77:B9:24"));  // 4
     TEST_ASSERT_EQUAL(4, findMacAddressPosition("EC:E3:34:B4:8F:B4"));  // 5
-    TEST_ASSERT_EQUAL(5, findMacAddressPosition("04:83:08:58:2B:40"));  // 6
+    TEST_ASSERT_EQUAL(5, findMacAddressPosition("14:33:5C:30:29:EC"));  // 6
     TEST_ASSERT_EQUAL(6, findMacAddressPosition("CC:DB:A7:9B:5D:9C"));  // 7
     TEST_ASSERT_EQUAL(7, findMacAddressPosition("EC:E3:34:79:9D:2C"));  // 8
     TEST_ASSERT_EQUAL(8, findMacAddressPosition("04:83:08:59:6E:74"));  // 9
@@ -156,7 +156,7 @@ void test_mac_to_cube_configuration_integration() {
     TEST_ASSERT_EQUAL(20, calculateCubeIpOctet(pos));
 
     // Test Cube 6 (position 5)
-    pos = findMacAddressPosition("04:83:08:58:2B:40");
+    pos = findMacAddressPosition("14:33:5C:30:29:EC");
     TEST_ASSERT_EQUAL(5, pos);
     TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(pos));
     TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(pos));
