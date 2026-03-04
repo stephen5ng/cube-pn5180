@@ -131,6 +131,10 @@ RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 RTC_DATA_ATTR uint32_t sleep_interval_s = 20;  // Default 20s, configurable via MQTT
 RTC_DATA_ATTR uint16_t saved_brightness = BRIGHTNESS;  // Persist brightness across sleep
 
+// Auto-sleep inactivity tracking
+#define AUTO_SLEEP_TIMEOUT_MS  600000UL  // 10 minutes
+RTC_DATA_ATTR unsigned long last_mqtt_message_time = 0;
+
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
 #define MQTT_PORT 1883
@@ -869,6 +873,13 @@ void handleResetCommand(const String& message) {
   }
 }
 
+void publishAutoSleepFlag() {
+  if (mqtt_topic_cube.isEmpty()) return;
+  String flag_topic = mqtt_topic_cube + "/auto_sleep";
+  mqtt_client.publish(flag_topic.c_str(), "1", true);
+  delay(100);  // Give MQTT time to flush before sleep
+}
+
 void enterSleepMode() {
   debugPrintln("Entering deep sleep mode...");
   display_manager->displayDebugMessage("sleep...");
@@ -929,26 +940,14 @@ void handleWakeUp() {
 
     volatile bool stay_asleep = false;  // Default: wake up unless we see "1"
     String client_id = "cube-" + String(cube_identifier) + "-ka";
+    String auto_sleep_topic = "cube/" + String(cube_identifier) + "/auto_sleep";
 
-    // Callback to receive retained sleep message
-    keepalive_mqtt.setCallback([&stay_asleep, &keepalive_mqtt](char* topic, byte* payload, unsigned int length) {
-      // Publish debug via MQTT (UDP might not be ready in callback context)
-      String debug_topic = "cube/" + String(cube_identifier) + "/debug";
-      char dbg[64];
-
-      snprintf(dbg, sizeof(dbg), "cb: len=%d", length);
-      keepalive_mqtt.publish(debug_topic.c_str(), dbg);
-
-      if (length == 1 && payload[0] == '1') {
-        // "1" means stay asleep
-        keepalive_mqtt.publish(debug_topic.c_str(), "cb: stay asleep");
-        stay_asleep = true;
-      } else {
-        // Empty, "0", or any other value means wake up
-        snprintf(dbg, sizeof(dbg), "cb: wake (len=%d)", length);
-        keepalive_mqtt.publish(debug_topic.c_str(), dbg);
-        stay_asleep = false;
-      }
+    // Callback to receive retained sleep message.
+    // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses its
+    // internal buffer for both incoming and outgoing messages, so publishing inside
+    // the callback overwrites the payload bytes.
+    keepalive_mqtt.setCallback([&stay_asleep](char* topic, byte* payload, unsigned int length) {
+      stay_asleep = (length == 1 && payload[0] == '1');
     });
 
     if (keepalive_mqtt.connect(client_id.c_str())) {
@@ -958,39 +957,47 @@ void handleWakeUp() {
       String status_topic = "cube/" + String(cube_identifier) + "/status";
       keepalive_mqtt.publish(status_topic.c_str(), "keep-alive");
 
-      // Subscribe to receive the retained sleep message
-      keepalive_mqtt.subscribe("cube/sleep");
+      // Subscribe to per-cube auto_sleep flag
+      keepalive_mqtt.subscribe(auto_sleep_topic.c_str());
 
       // Wait for retained message to arrive
       unsigned long check_start = millis();
-      while (millis() - check_start < 500) {
+      while (millis() - check_start < 1000) {
         keepalive_mqtt.loop();
         delay(10);
       }
 
-      keepalive_mqtt.disconnect();
-
       char dbg[64];
       snprintf(dbg, sizeof(dbg), "stay_asleep=%d", stay_asleep);
       debugSend(dbg);
+
+      if (stay_asleep) {
+        // Go back to sleep
+        keepalive_mqtt.disconnect();
+        debugSend("sleep again");
+        enterSleepMode();
+      } else {
+        // Clear the auto_sleep retained flag so cube stays awake after next reboot
+        keepalive_mqtt.publish(auto_sleep_topic.c_str(), "", true);
+        delay(100);
+        keepalive_mqtt.disconnect();
+
+        debugSend("WAKE FULL - staying awake");
+        last_mqtt_message_time = millis();  // Reset auto-sleep timer on wake
+        is_sleep_mode = false;
+        Serial.println("Waking fully - continuing setup");
+      }
     } else {
       debugSend("mqtt fail");
-    }
-
-    if (stay_asleep) {
-      // Go back to sleep
-      debugSend("sleep again");
-      enterSleepMode();
-    } else {
-      // Wake fully
-      debugSend("WAKE FULL - staying awake");
+      // If MQTT failed, assume we should wake (safer default)
+      last_mqtt_message_time = millis();  // Reset auto-sleep timer
       is_sleep_mode = false;
-      Serial.println("Waking fully - continuing setup");
     }
   }
   else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
     debugPrintln("Woken by external signal (Pin 0 released)");
     // Wake reason "wake:2" already indicates button wake, no need for "WAKE" message
+    last_mqtt_message_time = millis();  // Reset auto-sleep timer
     is_sleep_mode = false;
     Serial.println("Pin 0 wake-up detected - staying awake");
   }
@@ -1000,17 +1007,10 @@ void handleWakeUp() {
   }
 }
 
-void handleSleepCommand(const String& message) {
-  char dbg[64];
-  snprintf(dbg, sizeof(dbg), "sleep cmd: '%s' len=%d", message.c_str(), message.length());
-  debugSend(dbg);
-  if (message == "1") {
-    debugSend("entering sleep mode");
-    debugPrintln("sleeping due to /sleep");
-    enterSleepMode();
-  } else {
-    debugSend("sleep cmd: not '1', ignoring");
-  }
+void handleSleepNowCommand(const String& /*message*/) {
+  debugSend("sleep_now cmd received");
+  publishAutoSleepFlag();
+  enterSleepMode();
 }
 
 #ifdef BOARD_V6
@@ -1077,13 +1077,18 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", handleRebootCommand );
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep", handleSleepCommand);
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep_now", handleSleepNowCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
 
-  mqtt_client.subscribe(mqtt_topic_cube + "/border", [](const String& msg) { display_manager->handleConsolidatedBorderCommand(msg); });
-  
-  // Legacy border topics for backward compatibility  
+  // Game-activity topics reset the inactivity timer. Infrastructure topics (sleep, reboot,
+  // brightness, reset) intentionally do NOT reset it — we don't want a reboot command to
+  // keep the cube awake, and we don't want retained messages on reconnect to reset the timer.
+  auto resetActivityTimer = []() { last_mqtt_message_time = millis(); };
+
+  mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
+
+  // Legacy border topics for backward compatibility
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
@@ -1091,17 +1096,22 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [](const String& msg) { display_manager->handleImageBinaryCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleImageBinaryCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
 #ifdef BOARD_V6
   mqtt_client.subscribe(mqtt_topic_cube + "/power_test", handlePowerTestCommand);
 #endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
-  mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
+  mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
+
+  // Start inactivity timer from first MQTT connection
+  if (last_mqtt_message_time == 0) {
+    last_mqtt_message_time = millis();
+  }
 }
 
 // ============= System Functions =============
@@ -1384,6 +1394,13 @@ void loop() {
   mqtt_client.loop();
   unsigned long mqtt_end = micros();
   unsigned long mqtt_us = mqtt_end - section_start;
+
+  if (last_mqtt_message_time > 0 &&
+      (millis() - last_mqtt_message_time > AUTO_SLEEP_TIMEOUT_MS)) {
+    debugSend("auto-sleep: inactivity timeout");
+    publishAutoSleepFlag();
+    enterSleepMode();
+  }
 
   esp_task_wdt_reset();  // Feed the watchdog timer
 
