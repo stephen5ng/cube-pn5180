@@ -9,8 +9,9 @@ COUNT=${1:-1}
 UDP_PORT=54321
 TIMEOUT=2
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 UDP_QUERY="$SCRIPT_DIR/udp_query.py"
-LOG_FILE="$SCRIPT_DIR/diag_cubes.log"
+LOG_FILE="$PROJECT_DIR/logs/diag_cubes.log"
 
 # Cube IPs: cube_id + 20 is the last octet
 # P0: cubes 1-6 -> IPs .21-.26
