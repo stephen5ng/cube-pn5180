@@ -69,19 +69,19 @@ flash_cube() {
         fi
     fi
 
-    # Get current firmware timestamp from cube (MMDD.HHMM format)
-    local current_timestamp=$(get_cube_version "$cube_id")
+    # Get current firmware git SHA from cube
+    local current_sha=$(get_cube_version "$cube_id")
+    local target_sha=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD)
 
-    # Check if cube is already running the current build (exact MMDD.HHMM match)
-    local current_build=$(date +%m%d.%H%M)
-    if [[ "$current_timestamp" == "$current_build" ]]; then
-        echo "✅ Cube $cube_id already running current firmware (timestamp: $current_timestamp, skipping)"
+    # Check if cube is already running the current commit
+    if [[ "$current_sha" == "$target_sha" ]]; then
+        echo "✅ Cube $cube_id already running current firmware ($current_sha, skipping)"
         return 0
     fi
 
     echo "Flashing cube $cube_id (IP: $ip) with $version firmware..."
-    if [ -n "$current_timestamp" ]; then
-        echo "   Current timestamp: $current_timestamp (date: $(echo $current_timestamp | cut -c1-4))"
+    if [ -n "$current_sha" ]; then
+        echo "   Current SHA: $current_sha → $target_sha"
     fi
 
     cd "$FW_DIR"
