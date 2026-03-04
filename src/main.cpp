@@ -1094,9 +1094,14 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [](const String& msg) { display_manager->handleStringCommand(msg); });
 
-  mqtt_client.subscribe(mqtt_topic_cube + "/border", [](const String& msg) { display_manager->handleConsolidatedBorderCommand(msg); });
-  
-  // Legacy border topics for backward compatibility  
+  // Game-activity topics reset the inactivity timer. Infrastructure topics (sleep, reboot,
+  // brightness, reset) intentionally do NOT reset it — we don't want a reboot command to
+  // keep the cube awake, and we don't want retained messages on reconnect to reset the timer.
+  auto resetActivityTimer = []() { last_mqtt_message_time = millis(); };
+
+  mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
+
+  // Legacy border topics for backward compatibility
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [](const String& msg) { display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [](const String& msg) { display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [](const String& msg) { display_manager->handleBorderFrameCommand(msg); });
@@ -1104,22 +1109,17 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [](const String& msg) { display_manager->handleBorderVLineLeftCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [](const String& msg) { display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [](const String& msg) { display_manager->handleFontSizeCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/flash", [](const String& msg) { display_manager->handleFlashCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [](const String& msg) { display_manager->handleImageBinaryCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/letter", [](const String& msg) { display_manager->handleLetterCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleImageBinaryCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [](const String& msg) { display_manager->handleLockCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/ping", handlePingCommand);
+  mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/reboot", handleRebootCommand);
 #ifdef BOARD_V6
   mqtt_client.subscribe(mqtt_topic_cube + "/power_test", handlePowerTestCommand);
 #endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", handleResetCommand);
-  mqtt_client.subscribe(mqtt_topic_game_nfc, handleNfcCommand);
-
-  // Wildcard subscription to reset inactivity timer on any cube-specific message
-  mqtt_client.subscribe(mqtt_topic_cube + "/#", [](const String& /*msg*/) {
-    last_mqtt_message_time = millis();
-  });
+  mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
   // Start inactivity timer from first MQTT connection
   if (last_mqtt_message_time == 0) {

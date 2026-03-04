@@ -72,10 +72,10 @@ flash_cube() {
     # Get current firmware timestamp from cube (MMDD.HHMM format)
     local current_timestamp=$(get_cube_version "$cube_id")
 
-    # Check if timestamp is from today (MMDD matches current date)
-    local today=$(date +%m%d)
-    if [[ "$current_timestamp" == "$today"* ]]; then
-        echo "✅ Cube $cube_id already running today's $version firmware (timestamp: $current_timestamp, skipping)"
+    # Check if cube is already running the current build (exact MMDD.HHMM match)
+    local current_build=$(date +%m%d.%H%M)
+    if [[ "$current_timestamp" == "$current_build" ]]; then
+        echo "✅ Cube $cube_id already running current firmware (timestamp: $current_timestamp, skipping)"
         return 0
     fi
 
