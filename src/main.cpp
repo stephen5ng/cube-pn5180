@@ -1067,9 +1067,7 @@ void onConnectionEstablished() {
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
-    char build_timestamp[16];
-    getBuildTimestamp(build_timestamp, sizeof(build_timestamp));
-    mqtt_client.publish(createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_VERSION), build_timestamp, true);  // retained
+    mqtt_client.publish(createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_VERSION), GIT_VERSION, true);  // retained
   }
 
   // Subscribe to all command topics
