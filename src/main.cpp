@@ -942,25 +942,12 @@ void handleWakeUp() {
     String client_id = "cube-" + String(cube_identifier) + "-ka";
     String auto_sleep_topic = "cube/" + String(cube_identifier) + "/auto_sleep";
 
-    // Callback to receive retained sleep message
-    keepalive_mqtt.setCallback([&stay_asleep, &keepalive_mqtt](char* topic, byte* payload, unsigned int length) {
-      // Publish debug via MQTT (UDP might not be ready in callback context)
-      String debug_topic = "cube/" + String(cube_identifier) + "/debug";
-      char dbg[64];
-
-      snprintf(dbg, sizeof(dbg), "cb: len=%d", length);
-      keepalive_mqtt.publish(debug_topic.c_str(), dbg);
-
-      if (length == 1 && payload[0] == '1') {
-        // "1" means stay asleep
-        keepalive_mqtt.publish(debug_topic.c_str(), "cb: stay asleep");
-        stay_asleep = true;
-      } else {
-        // Empty, "0", or any other value means wake up
-        snprintf(dbg, sizeof(dbg), "cb: wake (len=%d)", length);
-        keepalive_mqtt.publish(debug_topic.c_str(), dbg);
-        stay_asleep = false;
-      }
+    // Callback to receive retained sleep message.
+    // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses its
+    // internal buffer for both incoming and outgoing messages, so publishing inside
+    // the callback overwrites the payload bytes.
+    keepalive_mqtt.setCallback([&stay_asleep](char* topic, byte* payload, unsigned int length) {
+      stay_asleep = (length == 1 && payload[0] == '1');
     });
 
     if (keepalive_mqtt.connect(client_id.c_str())) {
