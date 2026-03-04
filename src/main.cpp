@@ -1040,20 +1040,6 @@ void handleSleepIntervalCommand(const String& message) {
   }
 }
 
-void getBuildTimestamp(char* buf, size_t buf_size) {
-  const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-  int month = 1;
-  for (int i = 0; i < 12; i++) {
-    if (strncmp(__DATE__, months[i], 3) == 0) {
-      month = i + 1;
-      break;
-    }
-  }
-  int day = atoi(__DATE__ + 4);
-  int hour = atoi(__TIME__);
-  int minute = atoi(__TIME__ + 3);
-  snprintf(buf, buf_size, "%02d%02d.%02d%02d", month, day, hour, minute);
-}
 
 void onConnectionEstablished() {
   debugSend("MQTT connected");
@@ -1345,11 +1331,8 @@ void setup() {
   // Create display manager
   display_manager = new DisplayManager(cube_id);
 
-  char build_timestamp_compact[16];
-  getBuildTimestamp(build_timestamp_compact, sizeof(build_timestamp_compact));
-
   display_manager->clearDebugDisplay();
-  display_manager->displayDebugMessage(build_timestamp_compact);
+  display_manager->displayDebugMessage(GIT_TIMESTAMP);
   delay(DISPLAY_STARTUP_DELAY_MS);
 
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
