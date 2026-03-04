@@ -16,4 +16,5 @@ sleep_changes.cpp
 *.kicad_pcb.lck
 *-backups/
 fp-info-cache
-hardware/v6/kicad/production/backups/hardware/
+hardware/v6/kicad/production/backups/
+hardware/
