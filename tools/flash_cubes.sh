@@ -20,6 +20,11 @@ is_cube_online() {
     return $?
 }
 
+get_cube_version() {
+    local cube_id=$1
+    mosquitto_sub -h 192.168.8.247 -t "cube/$cube_id/version" -C 1 -W 2 2>/dev/null | tr -d '\n'
+}
+
 wake_cube() {
     local cube_id=$1
     echo "Waking cube $cube_id..."
@@ -64,8 +69,23 @@ flash_cube() {
         fi
     fi
 
+    # Get current firmware timestamp from cube (MMDD.HHMM format)
+    local current_timestamp=$(get_cube_version "$cube_id")
+
+    # Check if timestamp is from today (MMDD matches current date)
+    local today=$(date +%m%d)
+    if [[ "$current_timestamp" == "$today"* ]]; then
+        echo "✅ Cube $cube_id already running today's $version firmware (timestamp: $current_timestamp, skipping)"
+        return 0
+    fi
+
     echo "Flashing cube $cube_id (IP: $ip) with $version firmware..."
+    if [ -n "$current_timestamp" ]; then
+        echo "   Current timestamp: $current_timestamp (date: $(echo $current_timestamp | cut -c1-4))"
+    fi
+
     cd "$FW_DIR"
+
     $PIO run -e "$version" -t upload --upload-port "$ip"
 
     if [ $? -eq 0 ]; then
