@@ -105,6 +105,11 @@ void configurePins(int cube_id) {
 #define ANIMATION_DURATION_MS 1000
 #define ANIMATION_SCALE 100
 #define DISPLAY_STARTUP_DELAY_MS 600
+#define HALL_SENSOR_CHECK_INTERVAL_MS 50  /* Hall sensor polling interval (matches NFC read rate) */
+
+// Hall Sensor Status Strings
+#define HALL_SENSOR_STATUS_CONNECTED "connected"
+#define HALL_SENSOR_STATUS_DISCONNECTED "disconnected"
 
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
@@ -113,6 +118,10 @@ void configurePins(int cube_id) {
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
 #ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
+// #define HALL_SENSOR_ENABLED    /* Uncomment to enable Hall effect sensor gating on this cube */
+#ifdef HALL_SENSOR_ENABLED
+#define HALL_SENSOR_PIN GPIO_NUM_36  /* GPIO36 reads A3144 Hall effect sensor (open-collector, active LOW) */
+#endif
 #endif
 
 // Sleep state management
@@ -1312,6 +1321,11 @@ void setup() {
   gpio_hold_dis(POWER_SWITCH_PIN);
   pinMode(POWER_SWITCH_PIN, OUTPUT);
   digitalWrite(POWER_SWITCH_PIN, HIGH);
+
+#ifdef HALL_SENSOR_ENABLED
+  // Initialize Hall effect sensor (GPIO36, input-only, open-collector active LOW)
+  pinMode(HALL_SENSOR_PIN, INPUT);
+#endif
 #endif
   
   // Initialize WiFi and get cube identifier
@@ -1464,6 +1478,23 @@ void loop() {
       nfc_read_max_us = nfc_us;
     }
   }
+
+#ifdef HALL_SENSOR_ENABLED
+  // Track Hall sensor state and log connect/disconnect via MQTT
+  static unsigned long last_hall_check = 0;
+  static bool last_hall_present = false;
+  if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
+    last_hall_check = current_time;
+    bool hall_present = (digitalRead(HALL_SENSOR_PIN) == LOW);
+
+    if (hall_present != last_hall_present) {
+      last_hall_present = hall_present;
+      const char* status = hall_present ? HALL_SENSOR_STATUS_CONNECTED : HALL_SENSOR_STATUS_DISCONNECTED;
+      mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
+      Serial.printf("Hall sensor %s\n", status);
+    }
+  }
+#endif
 
   // Accumulate per-section timing
   section_timing_accum.mqtt_us += mqtt_us;

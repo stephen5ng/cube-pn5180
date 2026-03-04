@@ -33,6 +33,14 @@
 - Array bounds checking for MAC address lookups
 - Memory usage staying within ESP32 limits
 
+## Git Commit Guidelines
+
+**Commit granularity:** Each commit should be at **feature-level**, not by file type.
+- One feature = one commit (even if it touches firmware, build config, scripts)
+- Example: "Add Hall sensor support" (not separate commits for firmware, build env, flash script)
+- Exception: Refactoring/cleanup = separate commit from feature additions
+- Aim for commits that explain *what changed and why*, not individual file changes
+
 ## Project Structure
 - `src/main.cpp` - Main ESP32 application code
 - `src/cube_utilities.cpp/.h` - Utility functions for MAC/NFC handling

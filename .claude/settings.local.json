@@ -35,7 +35,12 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(/Library/Frameworks/Python.framework/Versions/3.13/bin/esptool:*)",
-      "Bash(tools/diag_cubes.sh 3:*)"
+      "Bash(tools/diag_cubes.sh 3:*)",
+      "Bash(ls:*)",
+      "Bash(./tools/flash_cubes.sh 4:*)",
+      "Bash(/Users/stephenng/.platformio/penv/bin/pio run:*)",
+      "Bash(mosquitto_sub:*)",
+      "Bash(do:*)"
     ],
     "deny": []
   },

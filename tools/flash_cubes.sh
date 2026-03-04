@@ -13,10 +13,56 @@ show_inventory() {
     echo ""
 }
 
+is_cube_online() {
+    local cube_id=$1
+    mosquitto_pub -h 192.168.8.247 -t "cube/$cube_id/ping" -m "test" >/dev/null 2>&1
+    mosquitto_sub -h 192.168.8.247 -t "cube/$cube_id/echo" -C 1 -W 2 >/dev/null 2>&1
+    return $?
+}
+
+wake_cube() {
+    local cube_id=$1
+    echo "Waking cube $cube_id..."
+
+    # Use wake script to clear retained sleep message
+    MQTT_SERVER=192.168.8.247 "$(dirname "$0")/wake.sh"
+    sleep 2  # Give cube time to wake
+}
+
+wait_for_cube_online() {
+    local cube_id=$1
+    local max_attempts=30
+    local attempt=0
+
+    echo "Waiting for cube $cube_id to come online..."
+    while [ $attempt -lt $max_attempts ]; do
+        if is_cube_online "$cube_id"; then
+            echo "✅ Cube $cube_id is online"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo "  Attempt $attempt/$max_attempts..."
+        sleep 1
+    done
+
+    echo "❌ Cube $cube_id did not come online after 30 seconds"
+    return 1
+}
+
 flash_cube() {
     local cube_id=$1
     local version=$2
     local ip="192.168.8.$((cube_id + 20))"
+
+    # Check if cube is online, wake if sleeping
+    if ! is_cube_online "$cube_id"; then
+        echo "⚠️  Cube $cube_id not responding to MQTT (possibly sleeping)"
+        wake_cube "$cube_id"
+        if ! wait_for_cube_online "$cube_id"; then
+            echo "❌ Could not wake cube $cube_id. Aborting flash."
+            return 1
+        fi
+    fi
 
     echo "Flashing cube $cube_id (IP: $ip) with $version firmware..."
     cd "$FW_DIR"
