@@ -90,6 +90,17 @@ flash_cube() {
 
     cd "$FW_DIR"
 
+    # Rebuild if working tree state doesn't match build state
+    # (clean tree but binary has "u" suffix = was built dirty)
+    if git -C "$(dirname "$0")/.." diff --quiet 2>/dev/null; then
+        # Tree is clean - check if binary was built dirty
+        if strings .pio/build/"$version"/firmware.elf 2>/dev/null | grep -qE '^[0-9]{4}\.[0-9]{4}u$'; then
+            echo "   Rebuilding: clean tree but binary was built dirty"
+            rm -rf ".pio/build/$version"
+            $PIO run -e "$version" --target build
+        fi
+    fi
+
     $PIO run -e "$version" -t upload --upload-port "$ip"
 
     if [ $? -eq 0 ]; then
