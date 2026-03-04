@@ -1231,6 +1231,24 @@ void handleUDP() {
         max_letter_interval = 0;
         nfc_read_max_us = 0;
       }
+      // Check if message is "chip" - return ESP32 chip info
+      else if (strcmp(udpBuffer, "chip") == 0) {
+        esp_chip_info_t chip_info;
+        esp_chip_info(&chip_info);
+
+        char chipStr[128];
+        snprintf(chipStr, sizeof(chipStr),
+          "%s|model=%d|cores=%d|revision=%d|features=%lu",
+          cube_identifier.c_str(), chip_info.model, chip_info.cores,
+          chip_info.revision, chip_info.features);
+
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)chipStr, strlen(chipStr));
+        udp.endPacket();
+
+        Serial.printf("Sent chip info to %s:%d: %s\n",
+                      udp.remoteIP().toString().c_str(), udp.remotePort(), chipStr);
+      }
       // Check if message is "temp" - return cube_id:temperature_celsius
       else if (strcmp(udpBuffer, "temp") == 0) {
         // Read internal temperature sensor
