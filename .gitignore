@@ -20,3 +20,4 @@ hardware/v6/kicad/production/backups/
 hardware/
 logs/
 .claude/
+.worktrees/
