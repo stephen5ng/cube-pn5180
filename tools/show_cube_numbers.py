@@ -14,9 +14,9 @@ def main():
 
     for cube_id in CUBE_IDS:
         topic = f"cube/{cube_id}/letter"
-        display_text = f"{cube_id:>2}" if cube_id < 10 else str(cube_id)
+        display_text = str(cube_id)
         client.publish(topic, display_text)
-        print(f"Cube {cube_id}: displayed")
+        print(f"Cube {cube_id}: published '{display_text}' to {topic}")
 
     client.loop_stop()
     client.disconnect()
