@@ -1,6 +1,24 @@
 #include "cube_utilities.h"
 
-// MAC Address Table - Main screens only
+#ifdef NATIVE_TESTING
+// Test MAC addresses - stable values that never change
+// Hardware replacements should NOT require test updates
+const char *CUBE_MAC_ADDRESSES[] = {
+  "AA:AA:AA:AA:AA:AA",  // Test cube 1
+  "BB:BB:BB:BB:BB:BB",  // Test cube 2
+  "CC:CC:CC:CC:CC:CC",  // Test cube 3
+  "DD:DD:DD:DD:DD:DD",  // Test cube 4
+  "EE:EE:EE:EE:EE:EE",  // Test cube 5
+  "FF:FF:FF:FF:FF:FF",  // Test cube 6
+  "01:01:01:01:01:01",  // Test cube 7
+  "02:02:02:02:02:02",  // Test cube 8
+  "03:03:03:03:03:03",  // Test cube 9
+  "04:04:04:04:04:04",  // Test cube 10
+  "05:05:05:05:05:05",  // Test cube 11
+  "06:06:06:06:06:06",  // Test cube 12
+};
+#else
+// Production MAC addresses - actual hardware
 const char *CUBE_MAC_ADDRESSES[] = {
   "CC:DB:A7:9F:C2:84",  // 1 30-pin
   "3C:8A:1F:77:DF:8C",  // 2 30-pin
@@ -8,13 +26,14 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "3C:8A:1F:77:B9:24",  // 4 30-pin
   "EC:E3:34:B4:8F:B4",  // 5 30-pin (New chip)
   "14:33:5C:30:29:EC",  // 6 30-pin (New chip)
-  "CC:DB:A7:9B:5D:9C",  // 7 -  11 30-pin 
+  "CC:DB:A7:9B:5D:9C",  // 7 -  11 30-pin
   "EC:E3:34:79:9D:2C",  // 8 -  12 30-pin
   "04:83:08:59:6E:74",  // 9  - 13 30-pin
   "94:54:C5:EE:89:4C",  // 10 - 14 30-pin
   "8C:4F:00:36:7A:88",  // 11 - 15 30-pin
   "D8:BC:38:F9:39:30",  // 12 - 16 30-pin
 };
+#endif
 const int NUM_CUBE_MAC_ADDRESSES = sizeof(CUBE_MAC_ADDRESSES) / sizeof(CUBE_MAC_ADDRESSES[0]);
 
 // MQTT Topic Prefixes

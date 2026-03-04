@@ -24,30 +24,31 @@ void setUp(void) {}
 void tearDown(void) {}
 
 void test_findMacAddressPosition_known_addresses() {
-    // Test first cube (position 0)
-    TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:9F:C2:84"));
+    // Test first cube (position 0) - uses test MAC, not production
+    TEST_ASSERT_EQUAL(0, findMacAddressPosition("AA:AA:AA:AA:AA:AA"));
 
     // Test second cube (position 1)
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("3C:8A:1F:77:DF:8C"));
+    TEST_ASSERT_EQUAL(1, findMacAddressPosition("BB:BB:BB:BB:BB:BB"));
 
     // Test sixth cube (position 5)
-    TEST_ASSERT_EQUAL(5, findMacAddressPosition("14:33:5C:30:29:EC"));
+    TEST_ASSERT_EQUAL(5, findMacAddressPosition("FF:FF:FF:FF:FF:FF"));
 }
 
 void test_findMacAddressPosition_all_positions() {
-    // Test all 12 MAC addresses in the table
-    TEST_ASSERT_EQUAL(0, findMacAddressPosition("CC:DB:A7:9F:C2:84"));  // 1
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("3C:8A:1F:77:DF:8C"));  // 2
-    TEST_ASSERT_EQUAL(2, findMacAddressPosition("8C:4F:00:37:7C:DC"));  // 3
-    TEST_ASSERT_EQUAL(3, findMacAddressPosition("3C:8A:1F:77:B9:24"));  // 4
-    TEST_ASSERT_EQUAL(4, findMacAddressPosition("EC:E3:34:B4:8F:B4"));  // 5
-    TEST_ASSERT_EQUAL(5, findMacAddressPosition("14:33:5C:30:29:EC"));  // 6
-    TEST_ASSERT_EQUAL(6, findMacAddressPosition("CC:DB:A7:9B:5D:9C"));  // 7
-    TEST_ASSERT_EQUAL(7, findMacAddressPosition("EC:E3:34:79:9D:2C"));  // 8
-    TEST_ASSERT_EQUAL(8, findMacAddressPosition("04:83:08:59:6E:74"));  // 9
-    TEST_ASSERT_EQUAL(9, findMacAddressPosition("94:54:C5:EE:89:4C"));  // 10
-    TEST_ASSERT_EQUAL(10, findMacAddressPosition("8C:4F:00:36:7A:88")); // 11
-    TEST_ASSERT_EQUAL(11, findMacAddressPosition("D8:BC:38:F9:39:30")); // 12
+    // Test all 12 positions using test MACs (not production)
+    // These values are stable and never change with hardware replacements
+    TEST_ASSERT_EQUAL(0, findMacAddressPosition("AA:AA:AA:AA:AA:AA"));
+    TEST_ASSERT_EQUAL(1, findMacAddressPosition("BB:BB:BB:BB:BB:BB"));
+    TEST_ASSERT_EQUAL(2, findMacAddressPosition("CC:CC:CC:CC:CC:CC"));
+    TEST_ASSERT_EQUAL(3, findMacAddressPosition("DD:DD:DD:DD:DD:DD"));
+    TEST_ASSERT_EQUAL(4, findMacAddressPosition("EE:EE:EE:EE:EE:EE"));
+    TEST_ASSERT_EQUAL(5, findMacAddressPosition("FF:FF:FF:FF:FF:FF"));
+    TEST_ASSERT_EQUAL(6, findMacAddressPosition("01:01:01:01:01:01"));
+    TEST_ASSERT_EQUAL(7, findMacAddressPosition("02:02:02:02:02:02"));
+    TEST_ASSERT_EQUAL(8, findMacAddressPosition("03:03:03:03:03:03"));
+    TEST_ASSERT_EQUAL(9, findMacAddressPosition("04:04:04:04:04:04"));
+    TEST_ASSERT_EQUAL(10, findMacAddressPosition("05:05:05:05:05:05"));
+    TEST_ASSERT_EQUAL(11, findMacAddressPosition("06:06:06:06:06:06"));
 }
 
 void test_findMacAddressPosition_unknown_address() {
@@ -148,15 +149,16 @@ void test_calculateCubeIdentifier_extended() {
 
 void test_mac_to_cube_configuration_integration() {
     // Test complete workflow: MAC -> position -> cube config
+    // Uses test MACs, not production - stable across hardware changes
 
     // Test Cube 1 (position 0)
-    int pos = findMacAddressPosition("CC:DB:A7:9F:C2:84");
+    int pos = findMacAddressPosition("AA:AA:AA:AA:AA:AA");
     TEST_ASSERT_EQUAL(0, pos);
     TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(pos));
     TEST_ASSERT_EQUAL(20, calculateCubeIpOctet(pos));
 
     // Test Cube 6 (position 5)
-    pos = findMacAddressPosition("14:33:5C:30:29:EC");
+    pos = findMacAddressPosition("FF:FF:FF:FF:FF:FF");
     TEST_ASSERT_EQUAL(5, pos);
     TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(pos));
     TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(pos));
