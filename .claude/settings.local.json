@@ -40,7 +40,8 @@
       "Bash(./tools/flash_cubes.sh 4:*)",
       "Bash(/Users/stephenng/.platformio/penv/bin/pio run:*)",
       "Bash(mosquitto_sub:*)",
-      "Bash(do:*)"
+      "Bash(do:*)",
+      "Bash(./tools/flash_cubes.sh all:*)"
     ],
     "deny": []
   },
