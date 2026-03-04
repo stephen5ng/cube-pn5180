@@ -120,10 +120,12 @@ fi
 if [ "$1" = "all" ]; then
     show_inventory
     echo ""
-    read -p "Flash ALL cubes with their correct firmware? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
+    if [ -t 0 ]; then
+        read -p "Flash ALL cubes with their correct firmware? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
     fi
 
     while IFS='=' read -r cube_id version; do
