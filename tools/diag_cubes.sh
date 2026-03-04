@@ -67,10 +67,10 @@ query_cube() {
 }
 
 print_header() {
-  printf "%-6s %-17s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
-    "CUBE" "MAC" "LOOP" "MQTT" "DISP" "UDP" "NFC" "NFC_MAX" "LTR_AVG" "LTR_MAX" "RSSI"
-  printf "%-6s %-17s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
-    "----" "-----------------" "----" "----" "----" "---" "---" "-------" "-------" "-------" "----"
+  printf "%-6s %7s %7s %7s %7s %7s %9s %9s %9s %8s\n" \
+    "CUBE" "LOOP" "MQTT" "DISP" "UDP" "NFC" "NFC_MAX" "LTR_AVG" "LTR_MAX" "RSSI"
+  printf "%-6s %7s %7s %7s %7s %7s %9s %9s %9s %8s\n" \
+    "------" "-------" "-------" "-------" "-------" "-------" "---------_" "---------_" "---------_" "--------"
 }
 
 parse_and_print() {
@@ -79,7 +79,7 @@ parse_and_print() {
 
   if [[ "$line" == *"|TIMEOUT" ]]; then
     local cube="${line%%|*}"
-    printf "%-6s %-17s %8s\n" "$cube" "" "TIMEOUT"
+    printf "%-6s %8s\n" "$cube" "TIMEOUT"
     log_result "$timestamp" "$cube" ""
     return
   fi
@@ -97,8 +97,8 @@ parse_and_print() {
   local ltr_max=$(echo "$line" | grep -o 'letter_max=[0-9]*' | cut -d= -f2)
   local rssi=$(echo "$line" | grep -o 'rssi=-\?[0-9]*' | cut -d= -f2)
 
-  printf "%-6s %-17s %7sus %7sus %7sus %7sus %7sus %9sus %9sms %9sms %5sdB\n" \
-    "$cube" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
+  printf "%-6s %7sus %7sus %7sus %7sus %7sus %9sus %9sms %9sms %5sdB\n" \
+    "$cube" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
 
   log_result "$timestamp" "$cube" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
 }
