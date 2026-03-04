@@ -132,7 +132,7 @@ RTC_DATA_ATTR uint32_t sleep_interval_s = 20;  // Default 20s, configurable via 
 RTC_DATA_ATTR uint16_t saved_brightness = BRIGHTNESS;  // Persist brightness across sleep
 
 // Auto-sleep inactivity tracking
-#define AUTO_SLEEP_TIMEOUT_MS  80000UL  // 80 seconds (for testing)
+#define AUTO_SLEEP_TIMEOUT_MS  600000UL  // 10 minutes
 RTC_DATA_ATTR unsigned long last_mqtt_message_time = 0;
 
 // MQTT Configuration
