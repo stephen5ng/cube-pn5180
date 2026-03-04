@@ -25,7 +25,7 @@ const char *CUBE_MAC_ADDRESSES[] = {
   "8C:4F:00:37:7C:DC",  // 3 30-pin
   "3C:8A:1F:77:B9:24",  // 4 30-pin
   "EC:E3:34:B4:8F:B4",  // 5 30-pin (New chip)
-  "14:33:5C:30:29:EC",  // 6 30-pin (New chip)
+  "EC:E3:34:79:8A:BC",  // 6 30-pin (Genuine Espressif replacement)
   "CC:DB:A7:9B:5D:9C",  // 7 -  11 30-pin
   "EC:E3:34:79:9D:2C",  // 8 -  12 30-pin
   "04:83:08:59:6E:74",  // 9  - 13 30-pin
