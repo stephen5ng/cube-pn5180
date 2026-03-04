@@ -1214,8 +1214,8 @@ void handleUDP() {
           "v1";
 #endif
         snprintf(diagStr, sizeof(diagStr),
-          "%s|board=%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d",
-          cube_identifier.c_str(), fw_board, GIT_VERSION, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
+          "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d",
+          cube_identifier.c_str(), fw_board, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, avg_letter_interval, max_letter_interval, letter_interval_count,
           WiFi.RSSI(), section_timing_count);
 
