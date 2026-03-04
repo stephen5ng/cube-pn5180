@@ -11,3 +11,8 @@ MQTT_BROKER_ANALYSIS*.md
 POWER_STATUS.md
 POWER_STRESS_TEST_PLAN.md
 sleep_changes.cpp
+
+# KiCad
+*.kicad_pcb.lck
+*-backups/
+fp-info-cache
