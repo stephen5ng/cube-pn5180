@@ -69,19 +69,23 @@ flash_cube() {
         fi
     fi
 
-    # Get current firmware git SHA from cube
-    local current_sha=$(get_cube_version "$cube_id")
-    local target_sha=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD)
-
-    # Check if cube is already running the current commit
-    if [[ "$current_sha" == "$target_sha" ]]; then
-        echo "✅ Cube $cube_id already running current firmware ($current_sha, skipping)"
-        return 0
+    # Get current firmware version from cube, compare to target
+    local current_version=$(get_cube_version "$cube_id")
+    local target_version=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || echo "dirty")
+    # If working tree is dirty, target is a timestamp that won't match current_version
+    if git -C "$(dirname "$0")/.." diff --quiet 2>/dev/null; then
+        # Clean tree - use SHA for comparison
+        target_version=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD)
+        if [[ "$current_version" == "$target_version" ]]; then
+            echo "✅ Cube $cube_id already running current firmware ($current_version, skipping)"
+            return 0
+        fi
     fi
+    # Dirty tree - always flash (timestamp version won't match)
 
     echo "Flashing cube $cube_id (IP: $ip) with $version firmware..."
-    if [ -n "$current_sha" ]; then
-        echo "   Current SHA: $current_sha → $target_sha"
+    if [ -n "$current_version" ]; then
+        echo "   Current: $current_version → $target_version"
     fi
 
     cd "$FW_DIR"

@@ -33,20 +33,21 @@ init_log() {
 log_result() {
   local timestamp="$1"
   local cube="$2"
-  local loop="$3"
-  local mqtt="$4"
-  local disp="$5"
-  local udp_t="$6"
-  local nfc="$7"
-  local nfc_max="$8"
-  local ltr_avg="$9"
-  local ltr_max="${10}"
-  local rssi="${11}"
+  local mac="$3"
+  local loop="$4"
+  local mqtt="$5"
+  local disp="$6"
+  local udp_t="$7"
+  local nfc="$8"
+  local nfc_max="$9"
+  local ltr_avg="${10}"
+  local ltr_max="${11}"
+  local rssi="${12}"
 
   if [[ "$cube" == *"TIMEOUT"* ]]; then
     echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"timeout\":true}" >> "$LOG_FILE"
   else
-    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
+    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
   fi
 }
 
@@ -65,10 +66,10 @@ query_cube() {
 }
 
 print_header() {
-  printf "%-6s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
-    "CUBE" "LOOP" "MQTT" "DISP" "UDP" "NFC" "NFC_MAX" "LTR_AVG" "LTR_MAX" "RSSI"
-  printf "%-6s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
-    "----" "----" "----" "----" "---" "---" "-------" "-------" "-------" "----"
+  printf "%-6s %-17s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
+    "CUBE" "MAC" "LOOP" "MQTT" "DISP" "UDP" "NFC" "NFC_MAX" "LTR_AVG" "LTR_MAX" "RSSI"
+  printf "%-6s %-17s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
+    "----" "-----------------" "----" "----" "----" "---" "---" "-------" "-------" "-------" "----"
 }
 
 parse_and_print() {
@@ -77,13 +78,14 @@ parse_and_print() {
 
   if [[ "$line" == *"|TIMEOUT" ]]; then
     local cube="${line%%|*}"
-    printf "%-6s %8s\n" "$cube" "TIMEOUT"
-    log_result "$timestamp" "$cube"
+    printf "%-6s %-17s %8s\n" "$cube" "" "TIMEOUT"
+    log_result "$timestamp" "$cube" ""
     return
   fi
 
-  # Parse: cube_id|loop=N|mqtt=N|disp=N|udp=N|nfc=N|nfc_max=N|letter_avg=N|letter_max=N|letter_n=N|rssi=N|samples=N
+  # Parse: cube_id|fw=N|mac=XX:XX...|loop=N|mqtt=N|disp=N|udp=N|nfc=N|nfc_max=N|letter_avg=N|letter_max=N|letter_n=N|rssi=N|samples=N
   local cube=$(echo "$line" | cut -d'|' -f1)
+  local mac=$(echo "$line" | grep -o 'mac=[0-9A-F:]*' | cut -d= -f2)
   local loop=$(echo "$line" | grep -o 'loop=[0-9]*' | cut -d= -f2)
   local mqtt=$(echo "$line" | grep -o 'mqtt=[0-9]*' | cut -d= -f2)
   local disp=$(echo "$line" | grep -o 'disp=[0-9]*' | cut -d= -f2)
@@ -94,10 +96,10 @@ parse_and_print() {
   local ltr_max=$(echo "$line" | grep -o 'letter_max=[0-9]*' | cut -d= -f2)
   local rssi=$(echo "$line" | grep -o 'rssi=-\?[0-9]*' | cut -d= -f2)
 
-  printf "%-6s %7sus %7sus %7sus %7sus %7sus %9sus %9sms %9sms %5sdB\n" \
-    "$cube" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
+  printf "%-6s %-17s %7sus %7sus %7sus %7sus %7sus %9sus %9sms %9sms %5sdB\n" \
+    "$cube" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
 
-  log_result "$timestamp" "$cube" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
+  log_result "$timestamp" "$cube" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
 }
 
 # Initialize log file
