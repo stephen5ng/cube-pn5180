@@ -41,21 +41,22 @@ init_log() {
 log_result() {
   local timestamp="$1"
   local cube="$2"
-  local mac="$3"
-  local loop="$4"
-  local mqtt="$5"
-  local disp="$6"
-  local udp_t="$7"
-  local nfc="$8"
-  local nfc_max="$9"
-  local ltr_avg="${10}"
-  local ltr_max="${11}"
-  local rssi="${12}"
+  local board="$3"
+  local mac="$4"
+  local loop="$5"
+  local mqtt="$6"
+  local disp="$7"
+  local udp_t="$8"
+  local nfc="$9"
+  local nfc_max="${10}"
+  local ltr_avg="${11}"
+  local ltr_max="${12}"
+  local rssi="${13}"
 
   if [[ "$cube" == *"TIMEOUT"* ]]; then
-    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"timeout\":true}" >> "$LOG_FILE"
+    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"timeout\":true}" >> "$LOG_FILE"
   else
-    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
+    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
   fi
 }
 
@@ -89,7 +90,7 @@ parse_and_print() {
     local cube_id="${cube#cube}"
     local board=$(get_board_version "$cube_id")
     printf "%-6s %6s %8s\n" "$cube" "$board" "TIMEOUT"
-    log_result "$timestamp" "$cube" ""
+    log_result "$timestamp" "$cube" "$board" ""
     return
   fi
 
@@ -113,7 +114,7 @@ parse_and_print() {
   printf "%-6s %6s %7sus %7sus %7sus %7sus %7sus %9sus %9sms %9sms %5sdB\n" \
     "$cube" "$board" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
 
-  log_result "$timestamp" "$cube" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
+  log_result "$timestamp" "$cube" "$board" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
 }
 
 # Initialize log file
