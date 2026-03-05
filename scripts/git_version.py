@@ -6,8 +6,8 @@ Import("env")
 # Ensure git commands run from project directory
 project_dir = env['PROJECT_DIR']
 
-# Check for uncommitted changes (ignore submodule errors)
-result = subprocess.run(["git", "status", "--porcelain", "--ignore-submodules"],
+# Check for uncommitted changes in src folder only (ignore submodule errors)
+result = subprocess.run(["git", "status", "--porcelain", "--ignore-submodules", "src"],
                        cwd=project_dir, capture_output=True, text=True)
 is_dirty = len(result.stdout.strip()) > 0
 

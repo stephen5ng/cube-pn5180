@@ -72,8 +72,8 @@ flash_cube() {
     # Get current firmware version from cube, compare to target
     local current_version=$(get_cube_version "$cube_id")
     local target_version=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || echo "dirty")
-    # If working tree is dirty, target is a timestamp that won't match current_version
-    if git -C "$(dirname "$0")/.." diff --quiet 2>/dev/null; then
+    # If src is dirty, target is a timestamp that won't match current_version
+    if git -C "$(dirname "$0")/.." diff --quiet -- src 2>/dev/null; then
         # Clean tree - use SHA for comparison
         target_version=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD)
         if [[ "$current_version" == "$target_version" ]]; then
@@ -92,7 +92,7 @@ flash_cube() {
 
     # Rebuild if working tree state doesn't match build state
     # (clean tree but binary has "u" suffix = was built dirty)
-    if git -C "$(dirname "$0")/.." diff --quiet 2>/dev/null; then
+    if git -C "$(dirname "$0")/.." diff --quiet -- src 2>/dev/null; then
         # Tree is clean - check if binary was built dirty
         if strings .pio/build/"$version"/firmware.elf 2>/dev/null | grep -qE '^[0-9]{4}\.[0-9]{4}u$'; then
             echo "   Rebuilding: clean tree but binary was built dirty"
