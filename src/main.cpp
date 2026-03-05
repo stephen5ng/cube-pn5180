@@ -1366,8 +1366,8 @@ void setup() {
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
   char ipDisplay[64];
-  snprintf(ipDisplay, sizeof(ipDisplay), "%s",
-    WiFi.localIP().toString().c_str());
+  snprintf(ipDisplay, sizeof(ipDisplay), "%d",
+    WiFi.localIP()[3]);
   display_manager->displayDebugMessage(ipDisplay);
 
   debugPrintln(WiFi.macAddress().c_str());
