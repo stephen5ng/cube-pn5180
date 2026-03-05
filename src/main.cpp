@@ -1370,12 +1370,31 @@ void setup() {
     WiFi.localIP().toString().c_str());
   display_manager->displayDebugMessage(ipDisplay);
 
-  display_manager->displayDebugMessage("nfc...");
   debugPrintln(WiFi.macAddress().c_str());
+
+  // Self-test: check BUSY pin state before init (should be LOW)
+  pinMode(pn5180_busy_pin, INPUT);
+  bool busy_before_init = digitalRead(pn5180_busy_pin);
 
   debugPrintln("setting up nfc reader...");
   setupNfcReader();
   debugPrintln("nfc reader done");
+
+  // Self-test: timed NFC read
+  uint8_t test_card_id[NFCID_LENGTH];
+  unsigned long nfc_test_start = micros();
+  readNfcCard(test_card_id);
+  unsigned long nfc_test_us = micros() - nfc_test_start;
+
+  char nfc_test_result[32];
+  if (busy_before_init) {
+    snprintf(nfc_test_result, sizeof(nfc_test_result), "nfc:BUSY!");
+  } else if (nfc_test_us > 100000UL) {
+    snprintf(nfc_test_result, sizeof(nfc_test_result), "nfc:SLOW %lums", (nfc_test_us + 500) / 1000);
+  } else {
+    snprintf(nfc_test_result, sizeof(nfc_test_result), "nfc %lums", (nfc_test_us + 500) / 1000);
+  }
+  display_manager->displayDebugMessage(nfc_test_result);
 
   debugPrintln("setting up udp...");
   setupUDP(); // Add UDP setup
