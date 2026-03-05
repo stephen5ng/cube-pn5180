@@ -133,7 +133,7 @@ RTC_DATA_ATTR uint16_t saved_brightness = BRIGHTNESS;  // Persist brightness acr
 
 // Auto-sleep inactivity tracking
 #define AUTO_SLEEP_TIMEOUT_MS  600000UL  // 10 minutes
-RTC_DATA_ATTR unsigned long last_mqtt_message_time = 0;
+RTC_DATA_ATTR unsigned long last_activity_time = 0;
 
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
@@ -983,21 +983,21 @@ void handleWakeUp() {
         keepalive_mqtt.disconnect();
 
         debugSend("WAKE FULL - staying awake");
-        last_mqtt_message_time = millis();  // Reset auto-sleep timer on wake
+        last_activity_time = millis();  // Reset auto-sleep timer on wake
         is_sleep_mode = false;
         Serial.println("Waking fully - continuing setup");
       }
     } else {
       debugSend("mqtt fail");
       // If MQTT failed, assume we should wake (safer default)
-      last_mqtt_message_time = millis();  // Reset auto-sleep timer
+      last_activity_time = millis();  // Reset auto-sleep timer
       is_sleep_mode = false;
     }
   }
   else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
     debugPrintln("Woken by external signal (Pin 0 released)");
     // Wake reason "wake:2" already indicates button wake, no need for "WAKE" message
-    last_mqtt_message_time = millis();  // Reset auto-sleep timer
+    last_activity_time = millis();  // Reset auto-sleep timer
     is_sleep_mode = false;
     Serial.println("Pin 0 wake-up detected - staying awake");
   }
@@ -1057,7 +1057,7 @@ void onConnectionEstablished() {
   }
 
   // Reset activity timer on any MQTT message except sleep_now and sleep_interval
-  auto resetActivityTimer = []() { last_mqtt_message_time = millis(); };
+  auto resetActivityTimer = []() { last_activity_time = millis(); };
 
   // Subscribe to all command topics
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBrightnessCommand(msg); });
@@ -1087,8 +1087,8 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
   // Start inactivity timer from first MQTT connection
-  if (last_mqtt_message_time == 0) {
-    last_mqtt_message_time = millis();
+  if (last_activity_time == 0) {
+    last_activity_time = millis();
   }
 }
 
@@ -1222,6 +1222,9 @@ void handleUDP() {
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)diagStr, strlen(diagStr));
         udp.endPacket();
+
+        // Reset auto-sleep timer - active diagnostics should keep cube awake
+        last_activity_time = millis();
 
         // Reset accumulators after reading
         section_timing_accum = {0, 0, 0, 0, 0};
@@ -1388,8 +1391,8 @@ void loop() {
   unsigned long mqtt_end = micros();
   unsigned long mqtt_us = mqtt_end - section_start;
 
-  if (last_mqtt_message_time > 0 &&
-      (millis() - last_mqtt_message_time > AUTO_SLEEP_TIMEOUT_MS)) {
+  if (last_activity_time > 0 &&
+      (millis() - last_activity_time > AUTO_SLEEP_TIMEOUT_MS)) {
     debugSend("auto-sleep: inactivity timeout");
     publishAutoSleepFlag();
     enterSleepMode();
