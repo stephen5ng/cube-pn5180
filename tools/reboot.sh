@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-while IFS= read -r line; do
-  mosquitto_pub -h $MQTT_SERVER -t "cube/$line/reboot" -m "0"
-#  mosquitto_pub -h localhost -t "cube/$line/sleep" -m "0" --retain
-done < "cube_ids.txt"
+MQTT_HOST=${MQTT_SERVER:-192.168.8.247}
+
+# Reboot all cubes (global topic - firmware doesn't support single-cube reboot)
+mosquitto_pub -h $MQTT_HOST -t "cube/reboot" -m "1"
