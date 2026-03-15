@@ -118,10 +118,14 @@ void configurePins(int cube_id) {
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
 #ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
-// #define HALL_SENSOR_ENABLED    /* Uncomment to enable Hall effect sensor gating on this cube */
 #ifdef HALL_SENSOR_ENABLED
 #define HALL_SENSOR_PIN GPIO_NUM_36  /* GPIO36 reads A3144 Hall effect sensor (open-collector, active LOW) */
+#define HAS_HALL_SENSOR true
+#else
+#define HAS_HALL_SENSOR false
 #endif
+#else
+#define HAS_HALL_SENSOR false
 #endif
 
 // Sleep state management
@@ -1331,8 +1335,8 @@ void setup() {
   pinMode(POWER_SWITCH_PIN, OUTPUT);
   digitalWrite(POWER_SWITCH_PIN, HIGH);
 
-#ifdef HALL_SENSOR_ENABLED
   // Initialize Hall effect sensor (GPIO36, input-only, open-collector active LOW)
+#ifdef HALL_SENSOR_ENABLED
   pinMode(HALL_SENSOR_PIN, INPUT);
 #endif
 #endif
@@ -1405,6 +1409,8 @@ void setup() {
 void loop() {
   loop_start_time = micros();
 
+  static bool last_hall_present = false;
+
   unsigned long section_start = micros();
   mqtt_client.loop();
   unsigned long mqtt_end = micros();
@@ -1467,43 +1473,55 @@ void loop() {
       consecutive_slow_reads = 0;
     }
 
-    if (read_result == ISO15693_EC_OK) {
-      char neighbor_id[NFCID_LENGTH * 2 + 1];
-      convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
-      int cube_num = lookupCubeNumberByTag(neighbor_id);
-      if (strcmp(neighbor_id, last_neighbor_id) != 0) {
-        debugPrintln(F("New card"));
-        unsigned long publish_start = millis();
-        bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
-        if (cube_num > 0) {
-          char buf[8];
-          snprintf(buf, sizeof(buf), "%d", cube_num);
-          mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+    // Gate neighbor publishing on Hall sensor state
+    if (!HAS_HALL_SENSOR || last_hall_present) {
+      if (read_result == ISO15693_EC_OK) {
+        char neighbor_id[NFCID_LENGTH * 2 + 1];
+        convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
+        int cube_num = lookupCubeNumberByTag(neighbor_id);
+        if (strcmp(neighbor_id, last_neighbor_id) != 0) {
+          debugPrintln(F("New card"));
+          unsigned long publish_start = millis();
+          bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
+          if (cube_num > 0) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", cube_num);
+            mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+          }
+          unsigned long publish_end = millis();
+          Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
+          if (success) {
+            strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
+            last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+          }
         }
-        unsigned long publish_end = millis();
-        Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
-        if (success) {
-          strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
-          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+      } else if (read_result == EC_NO_CARD) {
+        // Publish "-" to indicate no neighbor.
+        if (strcmp(last_neighbor_id, "-") != 0) {
+          debugPrintln(F("No card detected"));
+          unsigned long publish_start = millis();
+          bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+          // Also publish to numeric neighbor topic with "-" to denote no neighbor
+          mqtt_client.publish(mqtt_topic_cube_right, "-", true);
+          unsigned long publish_end = millis();
+          Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
+          if (success) {
+            strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
+            last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+          }
         }
+      } else {
+        Serial.printf("NFC read failed with error code: %d\n", read_result);
       }
-    } else if (read_result == EC_NO_CARD) {
-      // Publish "-" to indicate no neighbor.
+    } else if (HAS_HALL_SENSOR) {
+      // Hall sensor DISCONNECTED - force publish "-" regardless of NFC state
       if (strcmp(last_neighbor_id, "-") != 0) {
-        debugPrintln(F("No card detected"));
-        unsigned long publish_start = millis();
-        bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
-        // Also publish to numeric neighbor topic with "-" to denote no neighbor
+        debugPrintln(F("Hall sensor disconnected - no neighbor"));
+        mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
         mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-        unsigned long publish_end = millis();
-        Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
-        if (success) {
-          strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
-          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-        }
+        strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
+        last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
       }
-    } else {
-      Serial.printf("NFC read failed with error code: %d\n", read_result);
     }
 
     if (nfc_us > nfc_read_max_us) {
@@ -1511,19 +1529,20 @@ void loop() {
     }
   }
 
-#ifdef HALL_SENSOR_ENABLED
   // Track Hall sensor state and log connect/disconnect via MQTT
-  static unsigned long last_hall_check = 0;
-  static bool last_hall_present = false;
-  if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
-    last_hall_check = current_time;
-    bool hall_present = (digitalRead(HALL_SENSOR_PIN) == LOW);
+#ifdef HALL_SENSOR_ENABLED
+  {
+    static unsigned long last_hall_check = 0;
+    if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
+      last_hall_check = current_time;
+      bool hall_present = (digitalRead(HALL_SENSOR_PIN) == LOW);
 
-    if (hall_present != last_hall_present) {
-      last_hall_present = hall_present;
-      const char* status = hall_present ? HALL_SENSOR_STATUS_CONNECTED : HALL_SENSOR_STATUS_DISCONNECTED;
-      mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
-      Serial.printf("Hall sensor %s\n", status);
+      if (hall_present != last_hall_present) {
+        last_hall_present = hall_present;
+        const char* status = hall_present ? HALL_SENSOR_STATUS_CONNECTED : HALL_SENSOR_STATUS_DISCONNECTED;
+        mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
+        Serial.printf("Hall sensor %s\n", status);
+      }
     }
   }
 #endif
