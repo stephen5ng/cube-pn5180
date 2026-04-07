@@ -169,8 +169,8 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
   16,  //CLK_PIN
 };
 
-int8_t rgb_large[] = {25, 26, 33, 13, 27, 14};
-int8_t rgb_small[] = {33, 26, 25, 14, 27, 13};
+int8_t rgb_pins[] = {25, 26, 33, 13, 27, 14};
+int8_t bgr_pins[] = {33, 26, 25, 14, 27, 13};
 
 HUB75_I2S_CFG display_config(
   PANEL_RES_X,
@@ -333,7 +333,7 @@ public:
     
     // Safe bounds checking for RGB pin array access
     int cube_id_int = cube_id.toInt();    
-    int8_t* rgb = cube_id_int <= 6 ? rgb_small : rgb_large;
+    int8_t* rgb = cube_id_int <= 6 ? bgr_pins : rgb_pins;
     display_config.gpio.r1 = rgb[0];
     display_config.gpio.g1 = rgb[1];
     display_config.gpio.b1 = rgb[2];
