@@ -118,14 +118,20 @@ void configurePins(int cube_id) {
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
 #ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
-#ifdef HALL_SENSOR_ENABLED
-#define HALL_SENSOR_PIN GPIO_NUM_36  /* GPIO36 reads A3144 Hall effect sensor (open-collector, active LOW) */
-#define HAS_HALL_SENSOR true
-#else
-#define HAS_HALL_SENSOR false
 #endif
+
+// Hall sensor modes (mutually exclusive)
+#if defined(HALL_SENSOR_ENABLED)
+#define HALL_SENSOR_PIN GPIO_NUM_36
+#define HAS_HALL_SENSOR true
+#define HAS_HALL_ANALOG false
+#elif defined(HALL_SENSOR_ANALOG)
+#define HALL_SENSOR_PIN GPIO_NUM_36
+#define HAS_HALL_SENSOR false
+#define HAS_HALL_ANALOG true
 #else
 #define HAS_HALL_SENSOR false
+#define HAS_HALL_ANALOG false
 #endif
 
 // Sleep state management
@@ -269,6 +275,7 @@ unsigned long letter_interval_accum = 0;
 int letter_interval_count = 0;
 unsigned long max_letter_interval = 0;
 unsigned long nfc_read_max_us = 0;
+int nfc_reset_count = 0;
 
 // ============= DisplayManager Class =============
 class DisplayManager {
@@ -1335,8 +1342,12 @@ void setup() {
   pinMode(POWER_SWITCH_PIN, OUTPUT);
   digitalWrite(POWER_SWITCH_PIN, HIGH);
 
-  // Initialize Hall effect sensor (GPIO36, input-only, open-collector active LOW)
-#ifdef HALL_SENSOR_ENABLED
+  // Initialize Hall effect sensor on GPIO36
+#if defined(HALL_SENSOR_ENABLED)
+  pinMode(HALL_SENSOR_PIN, INPUT);
+#elif defined(HALL_SENSOR_ANALOG)
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
   pinMode(HALL_SENSOR_PIN, INPUT);
 #endif
 #endif
@@ -1468,13 +1479,14 @@ void loop() {
         }
         last_nfc_reset = millis();
         consecutive_slow_reads = 0;
+        nfc_reset_count++;
       }
     } else {
       consecutive_slow_reads = 0;
     }
 
-    // Gate neighbor publishing on Hall sensor state
-    if (!HAS_HALL_SENSOR || last_hall_present) {
+    // Gate neighbor publishing on Hall sensor state (analog mode: no gating)
+    if (!HAS_HALL_SENSOR || last_hall_present || HAS_HALL_ANALOG) {
       if (read_result == ISO15693_EC_OK) {
         char neighbor_id[NFCID_LENGTH * 2 + 1];
         convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
@@ -1542,6 +1554,25 @@ void loop() {
         const char* status = hall_present ? HALL_SENSOR_STATUS_CONNECTED : HALL_SENSOR_STATUS_DISCONNECTED;
         mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
         Serial.printf("Hall sensor %s\n", status);
+      }
+    }
+  }
+#endif
+
+#ifdef HALL_SENSOR_ANALOG
+  {
+    static unsigned long last_hall_check = 0;
+    static int last_hall_value = -1;
+    if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
+      last_hall_check = current_time;
+      int hall_value = analogRead(HALL_SENSOR_PIN);
+
+      if (hall_value != last_hall_value) {
+        last_hall_value = hall_value;
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", hall_value);
+        mqtt_client.publish(mqtt_topic_cube + "/hall_analog", buf, true);
+        Serial.printf("Hall analog: %d\n", hall_value);
       }
     }
   }
