@@ -1,7 +1,7 @@
 # Cube ID = Board Version (with optional Hall sensor flag)
-1=v6
-2=v6
-3=v1
+1=v6_with_hall
+2=v6_with_hall
+3=v6_with_hall
 4=v6_with_hall
-5=v1
-6=v6
+5=v6_with_hall
+6=v6_with_hall
