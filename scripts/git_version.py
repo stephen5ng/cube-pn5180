@@ -11,14 +11,17 @@ result = subprocess.run(["git", "status", "--porcelain", "--ignore-submodules", 
                        cwd=project_dir, capture_output=True, text=True)
 is_dirty = len(result.stdout.strip()) > 0
 
+env_name = env['PIOENV']
+
 if is_dirty:
     # Uncommitted changes exist - use build timestamp to force flash
     build_ts = str(int(datetime.now().timestamp()))
-    version = build_ts
+    version = f"{build_ts}+{env_name}"
 else:
     # Clean working tree - use git SHA for reproducible builds
-    version = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
+    sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
                                     cwd=project_dir).decode().strip()
+    version = f"{sha}+{env_name}"
 
 env.Append(CPPDEFINES=[("GIT_VERSION", env.StringifyMacro(version))])
 

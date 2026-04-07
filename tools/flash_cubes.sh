@@ -70,12 +70,12 @@ flash_cube() {
     fi
 
     # Get current firmware version from cube, compare to target
+    # Version format: "<sha>+<env>" (e.g. "1a73415+v6_with_hall") so env changes force a reflash
     local current_version=$(get_cube_version "$cube_id")
-    local target_version=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || echo "dirty")
-    # If src is dirty, target is a timestamp that won't match current_version
     if git -C "$(dirname "$0")/.." diff --quiet -- src 2>/dev/null; then
-        # Clean tree - use SHA for comparison
-        target_version=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD)
+        # Clean tree - compare sha+env
+        local sha=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD)
+        local target_version="${sha}+${version}"
         if [[ "$current_version" == "$target_version" ]]; then
             echo "✅ Cube $cube_id already running current firmware ($current_version, skipping)"
             return 0
@@ -85,7 +85,7 @@ flash_cube() {
 
     echo "Flashing cube $cube_id (IP: $ip) with $version firmware..."
     if [ -n "$current_version" ]; then
-        echo "   Current: $current_version → $target_version"
+        echo "   Current: $current_version"
     fi
 
     cd "$FW_DIR"
@@ -97,7 +97,7 @@ flash_cube() {
         if strings .pio/build/"$version"/firmware.elf 2>/dev/null | grep -qE '^[0-9]{4}\.[0-9]{4}u$'; then
             echo "   Rebuilding: clean tree but binary was built dirty"
             rm -rf ".pio/build/$version"
-            $PIO run -e "$version" --target build
+            $PIO run -e "$version"
         fi
     fi
 
