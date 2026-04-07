@@ -49,14 +49,15 @@ log_result() {
   local udp_t="$8"
   local nfc="$9"
   local nfc_max="${10}"
-  local ltr_avg="${11}"
-  local ltr_max="${12}"
-  local rssi="${13}"
+  local nfc_resets="${11}"
+  local ltr_avg="${12}"
+  local ltr_max="${13}"
+  local rssi="${14}"
 
   if [[ "$cube" == *"TIMEOUT"* ]]; then
     echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"timeout\":true}" >> "$LOG_FILE"
   else
-    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
+    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"nfc_resets\":$nfc_resets,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
   fi
 }
 
@@ -75,10 +76,10 @@ query_cube() {
 }
 
 print_header() {
-  printf "%-6s %6s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
-    "CUBE" "BOARD" "LOOP" "MQTT" "DISP" "UDP" "NFC" "NFC_MAX" "LTR_AVG" "LTR_MAX" "RSSI"
-  printf "%-6s %6s %8s %8s %8s %8s %8s %10s %10s %10s %6s\n" \
-    "----" "-----" "----" "----" "----" "---" "---" "-------" "-------" "-------" "----"
+  printf "%-6s %6s %8s %8s %8s %8s %8s %10s %5s %10s %10s %6s\n" \
+    "CUBE" "BOARD" "LOOP" "MQTT" "DISP" "UDP" "NFC" "NFC_MAX" "RST" "LTR_AVG" "LTR_MAX" "RSSI"
+  printf "%-6s %6s %8s %8s %8s %8s %8s %10s %5s %10s %10s %6s\n" \
+    "----" "-----" "----" "----" "----" "---" "---" "-------" "---" "-------" "-------" "----"
 }
 
 parse_and_print() {
@@ -107,18 +108,22 @@ parse_and_print() {
   local udp_t=$(echo "$line" | grep -o 'udp=[0-9]*' | cut -d= -f2)
   local nfc=$(echo "$line" | grep -o 'nfc=[0-9]*' | head -1 | cut -d= -f2)
   local nfc_max=$(echo "$line" | grep -o 'nfc_max=[0-9]*' | cut -d= -f2)
+  local nfc_resets=$(echo "$line" | grep -o 'nfc_resets=[0-9]*' | cut -d= -f2)
   local ltr_avg=$(echo "$line" | grep -o 'letter_avg=[0-9]*' | cut -d= -f2)
   local ltr_max=$(echo "$line" | grep -o 'letter_max=[0-9]*' | cut -d= -f2)
   local rssi=$(echo "$line" | grep -o 'rssi=-\?[0-9]*' | cut -d= -f2)
 
-  printf "%-6s %6s %7sus %7sus %7sus %7sus %7sus %9sus %9sms %9sms %5sdB\n" \
-    "$cube" "$board" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
+  printf "%-6s %6s %7sus %7sus %7sus %7sus %7sus %9sus %5s %9sms %9sms %5sdB\n" \
+    "$cube" "$board" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "${nfc_resets:-0}" "$ltr_avg" "$ltr_max" "$rssi"
 
-  log_result "$timestamp" "$cube" "$board" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$ltr_avg" "$ltr_max" "$rssi"
+  log_result "$timestamp" "$cube" "$board" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$nfc_resets" "$ltr_avg" "$ltr_max" "$rssi"
 }
 
 # Initialize log file
 init_log
+
+# Suppress auto-sleep for all cubes during diagnostics
+MQTT_SERVER=192.168.8.247 "$SCRIPT_DIR/wake.sh" >/dev/null 2>&1
 
 iteration=0
 while true; do
@@ -139,6 +144,6 @@ while true; do
   done
 
   if [ "$COUNT" -eq 0 ] || [ "$iteration" -lt "$COUNT" ]; then
-    sleep 3
+    sleep 10
   fi
 done
