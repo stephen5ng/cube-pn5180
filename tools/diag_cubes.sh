@@ -133,7 +133,7 @@ while true; do
     break
   fi
 
-  timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  timestamp=$(date +"%Y-%m-%dT%H:%M:%S")
   echo ""
   echo "=== Diagnostic query #$iteration $(date '+%H:%M:%S') ==="
   print_header
