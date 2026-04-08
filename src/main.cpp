@@ -1097,6 +1097,10 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
+  // Publish initial "no neighbor" state so game server sees all cubes on startup
+  mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+  mqtt_client.publish(mqtt_topic_cube_right, "-", true);
+
   // Start inactivity timer from first MQTT connection
   if (last_activity_time == 0) {
     last_activity_time = millis();
@@ -1420,7 +1424,7 @@ void setup() {
 void loop() {
   loop_start_time = micros();
 
-  static bool last_hall_present = false;
+  static bool last_hall_present = true;
 
   unsigned long section_start = micros();
   mqtt_client.loop();
