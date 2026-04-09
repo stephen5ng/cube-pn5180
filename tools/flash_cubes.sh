@@ -136,6 +136,7 @@ if [ "$1" = "all" ]; then
     show_inventory
     echo ""
     if [ -t 0 ]; then
+        read -p "Flash all cubes? [y/N] " REPLY
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             exit 1
         fi
