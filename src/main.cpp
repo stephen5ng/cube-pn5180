@@ -1489,54 +1489,57 @@ void loop() {
       consecutive_slow_reads = 0;
     }
 
-    // Gate neighbor publishing on Hall sensor state (analog mode: no gating)
-    if (!HAS_HALL_SENSOR || last_hall_present || HAS_HALL_ANALOG) {
-      if (read_result == ISO15693_EC_OK) {
-        char neighbor_id[NFCID_LENGTH * 2 + 1];
-        convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
-        int cube_num = lookupCubeNumberByTag(neighbor_id);
-        if (strcmp(neighbor_id, last_neighbor_id) != 0) {
-          debugPrintln(F("New card"));
-          unsigned long publish_start = millis();
-          bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
-          if (cube_num > 0) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "%d", cube_num);
-            mqtt_client.publish(mqtt_topic_cube_right, buf, true);
-          }
-          unsigned long publish_end = millis();
-          Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
-          if (success) {
-            strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
-            last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-          }
+    // Always publish NFC tag IDs (needed for nfc_control_daemon).
+    // Only gate "right" neighbor messages on hall sensor state.
+    bool hall_allows_neighbor = !HAS_HALL_SENSOR || last_hall_present || HAS_HALL_ANALOG;
+
+    if (read_result == ISO15693_EC_OK) {
+      char neighbor_id[NFCID_LENGTH * 2 + 1];
+      convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
+      int cube_num = lookupCubeNumberByTag(neighbor_id);
+      if (strcmp(neighbor_id, last_neighbor_id) != 0) {
+        debugPrintln(F("New card"));
+        unsigned long publish_start = millis();
+        bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
+        if (cube_num > 0 && hall_allows_neighbor) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), "%d", cube_num);
+          mqtt_client.publish(mqtt_topic_cube_right, buf, true);
         }
-      } else if (read_result == EC_NO_CARD) {
-        // Publish "-" to indicate no neighbor.
-        if (strcmp(last_neighbor_id, "-") != 0) {
-          debugPrintln(F("No card detected"));
-          unsigned long publish_start = millis();
-          bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
-          // Also publish to numeric neighbor topic with "-" to denote no neighbor
-          mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-          unsigned long publish_end = millis();
-          Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
-          if (success) {
-            strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
-            last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-          }
+        unsigned long publish_end = millis();
+        Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
+        if (success) {
+          strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
+          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
         }
-      } else {
-        Serial.printf("NFC read failed with error code: %d\n", read_result);
       }
-    } else if (HAS_HALL_SENSOR) {
-      // Hall sensor DISCONNECTED - force publish "-" regardless of NFC state
+    } else if (read_result == EC_NO_CARD) {
+      // If hall sensor says neighbor is present, NFC no-card is likely a flake — don't publish "-"
+      if (HAS_HALL_SENSOR && last_hall_present) {
+        // skip
+      } else if (strcmp(last_neighbor_id, "-") != 0) {
+        debugPrintln(F("No card detected"));
+        unsigned long publish_start = millis();
+        bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+        if (hall_allows_neighbor) {
+          mqtt_client.publish(mqtt_topic_cube_right, "-", true);
+        }
+        unsigned long publish_end = millis();
+        Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
+        if (success) {
+          strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
+          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
+        }
+      }
+    } else {
+      Serial.printf("NFC read failed with error code: %d\n", read_result);
+    }
+
+    if (!hall_allows_neighbor && HAS_HALL_SENSOR) {
+      // Hall sensor DISCONNECTED - clear "right" neighbor state
       if (strcmp(last_neighbor_id, "-") != 0) {
-        debugPrintln(F("Hall sensor disconnected - no neighbor"));
-        mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+        debugPrintln(F("Hall sensor disconnected - clearing neighbor"));
         mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-        strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
-        last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
       }
     }
 
