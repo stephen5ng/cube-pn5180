@@ -43,3 +43,15 @@ Symptom: erratic behavior (slow reads) before full failure. Likely causes in ord
 - Normal letter interval during random_letters.sh (250ms send rate): ~270ms received
 - Bad NFC read (timeout): hits commandTimeout at 250ms per transaction
 - NFC is throttled to 50ms intervals, but blocking reads still stall the entire loop
+
+## Raspberry Pi 4 Thermal Throttling (2026-04-10)
+
+### Symptom
+Pi 4 running the MQTT broker and game server running hot. May have contributed to observed latency issues.
+
+### Affected Pis
+- **neotropolis** — needs fan/cooling/case
+- **unSCruz** — needs fan/cooling/case
+
+### Notes
+Raspberry Pi 4 throttles CPU at 80°C, which can increase MQTT broker latency and game loop timing. This is a potential contributing factor to latency issues previously attributed to ESP32 firmware.
