@@ -1,0 +1,16 @@
+MAC,Cube ID,Role,Board Version,Chip,Revision,Pin Config,Notes
+CC:DB:A7:9F:C2:84,1,primary,v6_with_hall,ESP32-D0WD-V3,v3.0,30-pin,
+3C:8A:1F:77:DF:8C,2,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+8C:4F:00:37:7C:DC,3,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+CC:DB:A7:9B:5D:9C,4,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,moved from cube 11
+5C:01:3B:4A:CB:D4,5,primary,v6_with_hall,ESP32-D0WD-V3,,38-pin,
+EC:E3:34:79:8A:BC,6,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,Genuine Espressif replacement
+94:54:C5:F1:AF:00,11,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,EMPTY - chip moved to cube 4
+EC:E3:34:79:9D:2C,12,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+04:83:08:59:6E:74,13,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+94:54:C5:EE:89:4C,14,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+8C:4F:00:36:7A:88,15,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+D8:BC:38:F9:39:30,16,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+14:2B:2F:DA:FB:F4,1,backup,v6,ESP32-D0WD-V3,v3.1,,no hall sensor
+80:F3:DA:54:53:B8,,spare,,ESP32-D0WD-V3,v3.1,,
+CC:DB:A7:99:0F:E0,,spare,,ESP32-D0WD-V3,v3.0,,could not enter download mode
