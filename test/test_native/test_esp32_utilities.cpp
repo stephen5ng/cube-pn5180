@@ -6,63 +6,42 @@
 #include "../../src/cube_utilities.cpp"
 #include "../../src/cube_tags.cpp"
 
-// Derived functions for testing cube configuration logic
-uint8_t calculateCubeIpOctet(int mac_position) {
-  if (mac_position == -1) {
-    mac_position = 21;  // Default fallback from getCubeIpOctet
-  }
-  return 20 + mac_position;
-}
-
-int calculateCubeIdentifier(int mac_position) {
-  return 1 + mac_position;  // Updated: each MAC = one cube
-}
-
-
 // Test functions
 void setUp(void) {}
 void tearDown(void) {}
 
-void test_findMacAddressPosition_known_addresses() {
-    // Test first cube (position 0) - uses test MAC, not production
-    TEST_ASSERT_EQUAL(0, findMacAddressPosition("AA:AA:AA:AA:AA:AA"));
-
-    // Test second cube (position 1)
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("BB:BB:BB:BB:BB:BB"));
-
-    // Test sixth cube (position 5)
-    TEST_ASSERT_EQUAL(5, findMacAddressPosition("FF:FF:FF:FF:FF:FF"));
+void test_findCubeId_known_addresses() {
+    TEST_ASSERT_EQUAL(1, findCubeId("AA:AA:AA:AA:AA:AA"));
+    TEST_ASSERT_EQUAL(2, findCubeId("BB:BB:BB:BB:BB:BB"));
+    TEST_ASSERT_EQUAL(6, findCubeId("FF:FF:FF:FF:FF:FF"));
 }
 
-void test_findMacAddressPosition_all_positions() {
-    // Test all 12 positions using test MACs (not production)
-    // These values are stable and never change with hardware replacements
-    TEST_ASSERT_EQUAL(0, findMacAddressPosition("AA:AA:AA:AA:AA:AA"));
-    TEST_ASSERT_EQUAL(1, findMacAddressPosition("BB:BB:BB:BB:BB:BB"));
-    TEST_ASSERT_EQUAL(2, findMacAddressPosition("CC:CC:CC:CC:CC:CC"));
-    TEST_ASSERT_EQUAL(3, findMacAddressPosition("DD:DD:DD:DD:DD:DD"));
-    TEST_ASSERT_EQUAL(4, findMacAddressPosition("EE:EE:EE:EE:EE:EE"));
-    TEST_ASSERT_EQUAL(5, findMacAddressPosition("FF:FF:FF:FF:FF:FF"));
-    TEST_ASSERT_EQUAL(6, findMacAddressPosition("01:01:01:01:01:01"));
-    TEST_ASSERT_EQUAL(7, findMacAddressPosition("02:02:02:02:02:02"));
-    TEST_ASSERT_EQUAL(8, findMacAddressPosition("03:03:03:03:03:03"));
-    TEST_ASSERT_EQUAL(9, findMacAddressPosition("04:04:04:04:04:04"));
-    TEST_ASSERT_EQUAL(10, findMacAddressPosition("05:05:05:05:05:05"));
-    TEST_ASSERT_EQUAL(11, findMacAddressPosition("06:06:06:06:06:06"));
+void test_findCubeId_all_cubes() {
+    // Test all cube IDs using test MACs
+    TEST_ASSERT_EQUAL( 1, findCubeId("AA:AA:AA:AA:AA:AA"));
+    TEST_ASSERT_EQUAL( 2, findCubeId("BB:BB:BB:BB:BB:BB"));
+    TEST_ASSERT_EQUAL( 3, findCubeId("CC:CC:CC:CC:CC:CC"));
+    TEST_ASSERT_EQUAL( 4, findCubeId("DD:DD:DD:DD:DD:DD"));
+    TEST_ASSERT_EQUAL( 5, findCubeId("EE:EE:EE:EE:EE:EE"));
+    TEST_ASSERT_EQUAL( 6, findCubeId("FF:FF:FF:FF:FF:FF"));
+    TEST_ASSERT_EQUAL(11, findCubeId("01:01:01:01:01:01"));
+    TEST_ASSERT_EQUAL(12, findCubeId("02:02:02:02:02:02"));
+    TEST_ASSERT_EQUAL(13, findCubeId("03:03:03:03:03:03"));
+    TEST_ASSERT_EQUAL(14, findCubeId("04:04:04:04:04:04"));
+    TEST_ASSERT_EQUAL(15, findCubeId("05:05:05:05:05:05"));
+    TEST_ASSERT_EQUAL(16, findCubeId("06:06:06:06:06:06"));
 }
 
-void test_findMacAddressPosition_unknown_address() {
-    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("AA:BB:CC:DD:EE:FF"));
-    TEST_ASSERT_EQUAL(-1, findMacAddressPosition(""));
-    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("INVALID"));
+void test_findCubeId_unknown_address() {
+    TEST_ASSERT_EQUAL(-1, findCubeId("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_EQUAL(-1, findCubeId(""));
+    TEST_ASSERT_EQUAL(-1, findCubeId("INVALID"));
 }
 
-void test_findMacAddressPosition_case_sensitivity() {
-    // Test that MAC address lookup is case-sensitive
-    // Lowercase should not match uppercase entries
-    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("cc:db:a7:9f:c2:84"));  // lowercase
-    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("CC:DB:A7:9F:C2:84:00"));  // too long
-    TEST_ASSERT_EQUAL(-1, findMacAddressPosition("CC:DB:A7:9F:C2"));  // too short
+void test_findCubeId_case_sensitivity() {
+    TEST_ASSERT_EQUAL(-1, findCubeId("cc:db:a7:9f:c2:84"));  // lowercase
+    TEST_ASSERT_EQUAL(-1, findCubeId("CC:DB:A7:9F:C2:84:00"));  // too long
+    TEST_ASSERT_EQUAL(-1, findCubeId("CC:DB:A7:9F:C2"));  // too short
 }
 
 void test_convertNfcIdToHexString_full_id() {
@@ -111,57 +90,13 @@ void test_convertNfcIdToHexString_mixed_values() {
     TEST_ASSERT_EQUAL_STRING("0180FF0A", buffer);
 }
 
-void test_num_cube_mac_addresses() {
-    // Test that the MAC address table has the expected size
-    TEST_ASSERT_EQUAL(12, NUM_CUBE_MAC_ADDRESSES);
+void test_num_cube_mac_entries() {
+    TEST_ASSERT_EQUAL(13, NUM_CUBE_MAC_ENTRIES);
 }
 
-void test_calculateCubeIpOctet() {
-    // Test known positions
-    TEST_ASSERT_EQUAL(20, calculateCubeIpOctet(0));   // First MAC
-    TEST_ASSERT_EQUAL(21, calculateCubeIpOctet(1));   // Second MAC
-    TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(5));   // Sixth MAC
-    
-    // Test fallback case
-    TEST_ASSERT_EQUAL(41, calculateCubeIpOctet(-1));  // Unknown MAC -> position 21 -> IP 41
-}
-
-void test_calculateCubeIdentifier() {
-    // Test cube ID calculation (each MAC = one cube)
-    TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(0));  // Cube 1
-    TEST_ASSERT_EQUAL(2, calculateCubeIdentifier(1));  // Cube 2
-    TEST_ASSERT_EQUAL(3, calculateCubeIdentifier(2));  // Cube 3
-    TEST_ASSERT_EQUAL(4, calculateCubeIdentifier(3));  // Cube 4
-    TEST_ASSERT_EQUAL(5, calculateCubeIdentifier(4));  // Cube 5
-    TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(5));  // Cube 6
-}
-
-void test_calculateCubeIdentifier_extended() {
-    // Test extended cube IDs (positions 6-11)
-    TEST_ASSERT_EQUAL(7, calculateCubeIdentifier(6));   // Cube 7
-    TEST_ASSERT_EQUAL(8, calculateCubeIdentifier(7));   // Cube 8
-    TEST_ASSERT_EQUAL(9, calculateCubeIdentifier(8));   // Cube 9
-    TEST_ASSERT_EQUAL(10, calculateCubeIdentifier(9));  // Cube 10
-    TEST_ASSERT_EQUAL(11, calculateCubeIdentifier(10)); // Cube 11
-    TEST_ASSERT_EQUAL(12, calculateCubeIdentifier(11)); // Cube 12
-}
-
-
-void test_mac_to_cube_configuration_integration() {
-    // Test complete workflow: MAC -> position -> cube config
-    // Uses test MACs, not production - stable across hardware changes
-
-    // Test Cube 1 (position 0)
-    int pos = findMacAddressPosition("AA:AA:AA:AA:AA:AA");
-    TEST_ASSERT_EQUAL(0, pos);
-    TEST_ASSERT_EQUAL(1, calculateCubeIdentifier(pos));
-    TEST_ASSERT_EQUAL(20, calculateCubeIpOctet(pos));
-
-    // Test Cube 6 (position 5)
-    pos = findMacAddressPosition("FF:FF:FF:FF:FF:FF");
-    TEST_ASSERT_EQUAL(5, pos);
-    TEST_ASSERT_EQUAL(6, calculateCubeIdentifier(pos));
-    TEST_ASSERT_EQUAL(25, calculateCubeIpOctet(pos));
+void test_findCubeId_backup_cubes() {
+    // Backup MAC should return same cube ID as primary
+    TEST_ASSERT_EQUAL(1, findCubeId("A1:A1:A1:A1:A1:A1"));
 }
 
 // ========== Cube Tags Tests ==========
@@ -369,11 +304,13 @@ void test_createMqttTopic_constants() {
 int main(void) {
     UNITY_BEGIN();
 
-    // MAC address lookup tests
-    RUN_TEST(test_findMacAddressPosition_known_addresses);
-    RUN_TEST(test_findMacAddressPosition_all_positions);
-    RUN_TEST(test_findMacAddressPosition_unknown_address);
-    RUN_TEST(test_findMacAddressPosition_case_sensitivity);
+    // MAC-to-cube-ID lookup tests
+    RUN_TEST(test_findCubeId_known_addresses);
+    RUN_TEST(test_findCubeId_all_cubes);
+    RUN_TEST(test_findCubeId_unknown_address);
+    RUN_TEST(test_findCubeId_case_sensitivity);
+    RUN_TEST(test_num_cube_mac_entries);
+    RUN_TEST(test_findCubeId_backup_cubes);
 
     // NFC ID conversion tests
     RUN_TEST(test_convertNfcIdToHexString_full_id);
@@ -381,15 +318,6 @@ int main(void) {
     RUN_TEST(test_convertNfcIdToHexString_single_byte);
     RUN_TEST(test_convertNfcIdToHexString_mixed_values);
     RUN_TEST(test_convertNfcIdToHexString_edge_cases);
-
-    // Cube configuration tests
-    RUN_TEST(test_calculateCubeIpOctet);
-    RUN_TEST(test_calculateCubeIdentifier);
-    RUN_TEST(test_calculateCubeIdentifier_extended);
-    RUN_TEST(test_num_cube_mac_addresses);
-
-    // Integration tests
-    RUN_TEST(test_mac_to_cube_configuration_integration);
 
     // Cube tags lookup tests
     RUN_TEST(test_lookupCubeNumberByTag_all_known_tags);

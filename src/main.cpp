@@ -798,20 +798,17 @@ void setupNfcReader() {
 // ============= Network Functions =============
 uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
-  uint8_t mac_position = findMacAddressPosition(mac_address.c_str());
-  if (mac_position == -1) {
-    mac_position = 20;
+  int cube_id = findCubeId(mac_address.c_str());
+  if (cube_id == -1) {
+    cube_id = 0;  // Unknown MAC fallback
   }
-  uint8_t cube_id = ((mac_position <= 5) ? 1 : 5) + mac_position;
   cube_identifier = cube_id;
-  
+
   // Configure pins based on cube ID
   configurePins(cube_id);
-  
+
   Serial.print("mac_address: ");
   Serial.println(mac_address);
-  Serial.print("mac_position: ");
-  Serial.println(mac_position);
   Serial.print("cube_id: ");
   Serial.println(cube_identifier);
   return cube_id + 20;

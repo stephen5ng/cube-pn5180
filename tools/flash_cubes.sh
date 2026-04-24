@@ -7,10 +7,22 @@ FW_DIR="$(dirname "$0")/.."
 PIO="$HOME/.platformio/penv/bin/pio"
 
 show_inventory() {
-    echo "Cube Board Version Inventory:"
-    echo "------------------------------"
-    cat "$CUBE_VERSIONS_FILE" | grep -v "^#" | sort
+    echo "MAC-to-Board-Version Inventory:"
+    echo "--------------------------------"
+    grep -v "^#" "$CUBE_VERSIONS_FILE" | grep -v "^$" | sort
     echo ""
+}
+
+get_mac_from_arp() {
+    local cube_id=$1
+    local ip="192.168.8.$((cube_id + 20))"
+    ping -c 1 -t 1 "$ip" >/dev/null 2>&1
+    arp -a | grep "$ip" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | tr 'a-f' 'A-F'
+}
+
+get_version_by_mac() {
+    local mac=$1
+    grep -i "^${mac}=" "$CUBE_VERSIONS_FILE" | cut -d= -f2
 }
 
 is_cube_online() {
@@ -58,6 +70,21 @@ flash_cube() {
     local cube_id=$1
     local version=$2
     local ip="192.168.8.$((cube_id + 20))"
+
+    # If no version specified, resolve MAC from ARP and look up version
+    if [ -z "$version" ]; then
+        local mac=$(get_mac_from_arp "$cube_id")
+        if [ -z "$mac" ]; then
+            echo "❌ Could not resolve MAC for cube $cube_id at $ip"
+            return 1
+        fi
+        echo "Detected MAC: $mac"
+        version=$(get_version_by_mac "$mac")
+        if [ -z "$version" ]; then
+            echo "❌ MAC $mac not found in $CUBE_VERSIONS_FILE"
+            return 1
+        fi
+    fi
 
     # Check if cube is online, wake if sleeping
     if ! is_cube_online "$cube_id"; then
@@ -142,25 +169,12 @@ if [ "$1" = "all" ]; then
         fi
     fi
 
-    while IFS='=' read -r cube_id version; do
-        if [[ ! "$cube_id" =~ ^# ]] && [[ -n "$cube_id" ]]; then
-            flash_cube "$cube_id" "$version"
-            echo ""
-        fi
-    done < "$CUBE_VERSIONS_FILE"
+    for cube_id in 1 2 3 4 5 6; do
+        flash_cube "$cube_id"
+        echo ""
+    done
 else
     cube_id=$1
     version=$2
-
-    if [ -z "$version" ]; then
-        # Look up version from inventory
-        version=$(grep "^$cube_id=" "$CUBE_VERSIONS_FILE" | cut -d= -f2)
-        if [ -z "$version" ]; then
-            echo "❌ Cube $cube_id not found in inventory. Please specify version."
-            echo "   Usage: $0 $cube_id v1"
-            exit 1
-        fi
-    fi
-
     flash_cube "$cube_id" "$version"
 fi
