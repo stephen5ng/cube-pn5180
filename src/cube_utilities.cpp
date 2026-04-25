@@ -35,6 +35,9 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"D8:BC:38:F9:39:30", 16, RGB_ORDER_RGB},  // 30-pin
   {"80:F3:DA:54:53:B8",  1, RGB_ORDER_BGR},
   {"5C:01:3B:65:46:2C",  2, RGB_ORDER_RGB},
+  {"D4:8A:FC:9F:B0:C0",  4, RGB_ORDER_BGR},  // 38-pin backup
+  {"D8:BC:38:E5:A8:38",  5, RGB_ORDER_RGB},  // backup
+  {"5C:01:3B:4A:87:4C",  6, RGB_ORDER_RGB},  // backup
 };
 #endif
 const int NUM_CUBE_MAC_ENTRIES = sizeof(CUBE_MAC_TABLE) / sizeof(CUBE_MAC_TABLE[0]);
