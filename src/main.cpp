@@ -1513,12 +1513,12 @@ void loop() {
       if (HAS_HALL_SENSOR && last_hall_present) {
         // skip
       } else if (strcmp(last_neighbor_id, "-") != 0) {
+        // Reached only when both sensors agree there's no neighbor
+        // (hall present already skipped above).
         debugPrintln(F("No card detected"));
         unsigned long publish_start = millis();
         bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
-        if (hall_allows_neighbor) {
-          mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-        }
+        mqtt_client.publish(mqtt_topic_cube_right, "-", true);
         unsigned long publish_end = millis();
         Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
         if (success) {
@@ -1528,14 +1528,6 @@ void loop() {
       }
     } else {
       Serial.printf("NFC read failed with error code: %d\n", read_result);
-    }
-
-    if (!hall_allows_neighbor && HAS_HALL_SENSOR) {
-      // Hall sensor DISCONNECTED - clear "right" neighbor state
-      if (strcmp(last_neighbor_id, "-") != 0) {
-        debugPrintln(F("Hall sensor disconnected - clearing neighbor"));
-        mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-      }
     }
 
     if (nfc_us > nfc_read_max_us) {
@@ -1556,6 +1548,17 @@ void loop() {
         const char* status = hall_present ? HALL_SENSOR_STATUS_CONNECTED : HALL_SENSOR_STATUS_DISCONNECTED;
         mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
         Serial.printf("Hall sensor %s\n", status);
+
+        // On hall connect, if NFC still remembers a tag from before, republish
+        // its cube_num immediately so /right doesn't sit empty while NFC re-acquires.
+        if (hall_present && strcmp(last_neighbor_id, "-") != 0) {
+          int cube_num = lookupCubeNumberByTag(last_neighbor_id);
+          if (cube_num > 0) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", cube_num);
+            mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+          }
+        }
       }
     }
   }
