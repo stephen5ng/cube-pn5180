@@ -2,7 +2,7 @@
 # MAC Address = Board Version
 3C:8A:1F:77:DF:8C=v6_with_hall
 5C:01:3B:4A:87:4C=v6
-5C:01:3B:4A:CB:D4=v6_with_hall
+04:83:08:59:76:98=v6_with_hall
 5C:01:3B:64:E2:84=v6
 5C:01:3B:65:46:2C=v6
 5C:01:3B:66:08:20=v6

@@ -25,7 +25,7 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"3C:8A:1F:77:DF:8C",  2, RGB_ORDER_BGR},  // 30-pin
   {"8C:4F:00:37:7C:DC",  3, RGB_ORDER_BGR},  // 30-pin
   {"CC:DB:A7:9B:5D:9C",  4, RGB_ORDER_BGR},  // 30-pin (moved from cube 11)
-  {"5C:01:3B:4A:CB:D4",  5, RGB_ORDER_BGR},  // 38-pin
+  {"04:83:08:59:76:98",  5, RGB_ORDER_BGR},
   {"EC:E3:34:79:8A:BC",  6, RGB_ORDER_BGR},  // 30-pin (Genuine Espressif replacement)
   {"94:54:C5:F1:AF:00", 11, RGB_ORDER_RGB},  // 30-pin (EMPTY - chip moved to cube 4)
   {"EC:E3:34:79:9D:2C", 12, RGB_ORDER_RGB},  // 30-pin
