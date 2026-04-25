@@ -215,6 +215,7 @@ EspMQTTClient mqtt_client(
 );
 WiFiClient wifi_client;
 static String cube_identifier;
+static RgbOrder current_rgb_order = RGB_ORDER_BGR;
 const char* nfc_topic_out;
 
 // Animation
@@ -323,7 +324,7 @@ public:
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
     rotation = (cube_id_int <= 6) ? 2 : 0;
-    setupDisplay(cube_id);
+    setupDisplay();
     letter_animation.duration(ANIMATION_DURATION_MS);
     letter_animation.scale(ANIMATION_SCALE);
 
@@ -334,13 +335,11 @@ public:
     memset(image2, 0, PIXEL_COUNT * sizeof(uint16_t));
   }
 
-  void setupDisplay(String cube_id) {
+  void setupDisplay() {
     display_config.clkphase = false;
     display_config.double_buff = true;
     
-    // Safe bounds checking for RGB pin array access
-    int cube_id_int = cube_id.toInt();    
-    int8_t* rgb = cube_id_int <= 6 ? bgr_pins : rgb_pins;
+    int8_t* rgb = current_rgb_order == RGB_ORDER_BGR ? bgr_pins : rgb_pins;
     display_config.gpio.r1 = rgb[0];
     display_config.gpio.g1 = rgb[1];
     display_config.gpio.b1 = rgb[2];
@@ -798,10 +797,9 @@ void setupNfcReader() {
 // ============= Network Functions =============
 uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
-  int cube_id = findCubeId(mac_address.c_str());
-  if (cube_id == -1) {
-    cube_id = 0;  // Unknown MAC fallback
-  }
+  const CubeMacEntry* entry = findCubeEntry(mac_address.c_str());
+  int cube_id = entry ? entry->cube_id : 0;
+  current_rgb_order = entry ? entry->rgb_order : RGB_ORDER_BGR;
   cube_identifier = cube_id;
 
   // Configure pins based on cube ID

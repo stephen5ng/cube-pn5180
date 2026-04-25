@@ -4,37 +4,37 @@
 // Test MAC table - stable values that never change
 // Hardware replacements should NOT require test updates
 const CubeMacEntry CUBE_MAC_TABLE[] = {
-  {"AA:AA:AA:AA:AA:AA",  1},
-  {"BB:BB:BB:BB:BB:BB",  2},
-  {"CC:CC:CC:CC:CC:CC",  3},
-  {"DD:DD:DD:DD:DD:DD",  4},
-  {"EE:EE:EE:EE:EE:EE",  5},
-  {"FF:FF:FF:FF:FF:FF",  6},
-  {"01:01:01:01:01:01", 11},
-  {"02:02:02:02:02:02", 12},
-  {"03:03:03:03:03:03", 13},
-  {"04:04:04:04:04:04", 14},
-  {"05:05:05:05:05:05", 15},
-  {"06:06:06:06:06:06", 16},
-  {"A1:A1:A1:A1:A1:A1",  1},  // Backup cube 1
+  {"AA:AA:AA:AA:AA:AA",  1, RGB_ORDER_BGR},
+  {"BB:BB:BB:BB:BB:BB",  2, RGB_ORDER_BGR},
+  {"CC:CC:CC:CC:CC:CC",  3, RGB_ORDER_BGR},
+  {"DD:DD:DD:DD:DD:DD",  4, RGB_ORDER_BGR},
+  {"EE:EE:EE:EE:EE:EE",  5, RGB_ORDER_BGR},
+  {"FF:FF:FF:FF:FF:FF",  6, RGB_ORDER_BGR},
+  {"01:01:01:01:01:01", 11, RGB_ORDER_RGB},
+  {"02:02:02:02:02:02", 12, RGB_ORDER_RGB},
+  {"03:03:03:03:03:03", 13, RGB_ORDER_RGB},
+  {"04:04:04:04:04:04", 14, RGB_ORDER_RGB},
+  {"05:05:05:05:05:05", 15, RGB_ORDER_RGB},
+  {"06:06:06:06:06:06", 16, RGB_ORDER_RGB},
+  {"A1:A1:A1:A1:A1:A1",  1, RGB_ORDER_RGB},  // backup with R/B swapped
 };
 #else
 // Production MAC addresses - actual hardware
 const CubeMacEntry CUBE_MAC_TABLE[] = {
-  {"CC:DB:A7:9F:C2:84",  1},  // 30-pin
-  {"3C:8A:1F:77:DF:8C",  2},  // 30-pin
-  {"8C:4F:00:37:7C:DC",  3},  // 30-pin
-  {"CC:DB:A7:9B:5D:9C",  4},  // 30-pin (moved from cube 11)
-  {"5C:01:3B:4A:CB:D4",  5},  // 38-pin
-  {"EC:E3:34:79:8A:BC",  6},  // 30-pin (Genuine Espressif replacement)
-  {"94:54:C5:F1:AF:00", 11},  // 30-pin (EMPTY - chip moved to cube 4)
-  {"EC:E3:34:79:9D:2C", 12},  // 30-pin
-  {"04:83:08:59:6E:74", 13},  // 30-pin
-  {"94:54:C5:EE:89:4C", 14},  // 30-pin
-  {"8C:4F:00:36:7A:88", 15},  // 30-pin
-  {"D8:BC:38:F9:39:30", 16},  // 30-pin
-  {"80:F3:DA:54:53:B8", 1},
-  {"5C:01:3B:65:46:2C", 2},
+  {"CC:DB:A7:9F:C2:84",  1, RGB_ORDER_BGR},  // 30-pin
+  {"3C:8A:1F:77:DF:8C",  2, RGB_ORDER_BGR},  // 30-pin
+  {"8C:4F:00:37:7C:DC",  3, RGB_ORDER_BGR},  // 30-pin
+  {"CC:DB:A7:9B:5D:9C",  4, RGB_ORDER_BGR},  // 30-pin (moved from cube 11)
+  {"5C:01:3B:4A:CB:D4",  5, RGB_ORDER_BGR},  // 38-pin
+  {"EC:E3:34:79:8A:BC",  6, RGB_ORDER_BGR},  // 30-pin (Genuine Espressif replacement)
+  {"94:54:C5:F1:AF:00", 11, RGB_ORDER_RGB},  // 30-pin (EMPTY - chip moved to cube 4)
+  {"EC:E3:34:79:9D:2C", 12, RGB_ORDER_RGB},  // 30-pin
+  {"04:83:08:59:6E:74", 13, RGB_ORDER_RGB},  // 30-pin
+  {"94:54:C5:EE:89:4C", 14, RGB_ORDER_RGB},  // 30-pin
+  {"8C:4F:00:36:7A:88", 15, RGB_ORDER_RGB},  // 30-pin
+  {"D8:BC:38:F9:39:30", 16, RGB_ORDER_RGB},  // 30-pin
+  {"80:F3:DA:54:53:B8",  1, RGB_ORDER_BGR},
+  {"5C:01:3B:65:46:2C",  2, RGB_ORDER_RGB},
 };
 #endif
 const int NUM_CUBE_MAC_ENTRIES = sizeof(CUBE_MAC_TABLE) / sizeof(CUBE_MAC_TABLE[0]);
@@ -46,13 +46,18 @@ const char* MQTT_TOPIC_PREFIX_NFC = "nfc/";
 const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
 const char* MQTT_TOPIC_PREFIX_VERSION = "version";
 
-int findCubeId(const char *mac_address) {
+const CubeMacEntry* findCubeEntry(const char *mac_address) {
   for (int i = 0; i < NUM_CUBE_MAC_ENTRIES; i++) {
     if (strcmp(mac_address, CUBE_MAC_TABLE[i].mac) == 0) {
-      return CUBE_MAC_TABLE[i].cube_id;
+      return &CUBE_MAC_TABLE[i];
     }
   }
-  return -1;
+  return nullptr;
+}
+
+int findCubeId(const char *mac_address) {
+  const CubeMacEntry* entry = findCubeEntry(mac_address);
+  return entry ? entry->cube_id : -1;
 }
 
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {

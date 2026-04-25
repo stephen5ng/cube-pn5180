@@ -11,10 +11,18 @@
 // Constants
 #define NFCID_LENGTH 8
 
+// HUB75 panel R/B channel order. Varies per physical display, independent of
+// chip and board. setupDisplay() picks bgr_pins vs rgb_pins accordingly.
+enum RgbOrder {
+  RGB_ORDER_BGR,
+  RGB_ORDER_RGB,
+};
+
 // MAC-to-cube-ID mapping
 struct CubeMacEntry {
   const char *mac;
   int cube_id;
+  RgbOrder rgb_order;
 };
 
 extern const CubeMacEntry CUBE_MAC_TABLE[];
@@ -26,6 +34,9 @@ extern const char* MQTT_TOPIC_PREFIX_GAME;
 extern const char* MQTT_TOPIC_PREFIX_NFC;
 extern const char* MQTT_TOPIC_PREFIX_ECHO;
 extern const char* MQTT_TOPIC_PREFIX_VERSION;
+
+// Returns pointer into CUBE_MAC_TABLE for the given MAC, or nullptr if unknown.
+const CubeMacEntry* findCubeEntry(const char *mac_address);
 
 // Returns cube_id for the given MAC address, or -1 if unknown.
 int findCubeId(const char *mac_address);
