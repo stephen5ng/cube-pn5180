@@ -164,7 +164,8 @@ void test_lookupCubeNumberByTag_similar_tags() {
 
 void test_num_known_tags() {
     // Test that the known tags table has the expected size
-    TEST_ASSERT_EQUAL(12, NUM_KNOWN_TAGS);
+    // 12 primary + 12 backup = 24 total
+    TEST_ASSERT_EQUAL(24, NUM_KNOWN_TAGS);
 }
 
 void test_lookupCubeNumberByTag_tag_to_cube_mapping() {
