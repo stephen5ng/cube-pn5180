@@ -219,7 +219,8 @@ static RgbOrder current_rgb_order = RGB_ORDER_BGR;
 const char* nfc_topic_out;
 
 // Animation
-char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";
+char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value published to /nfc
+char last_right_published[8] = "INIT";                  // last value published to /right
 unsigned long last_nfc_publish_time = 0;
 
 // Pre-allocated MQTT topics
@@ -1095,6 +1096,8 @@ void onConnectionEstablished() {
   // Publish initial "no neighbor" state so game server sees all cubes on startup
   mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
   mqtt_client.publish(mqtt_topic_cube_right, "-", true);
+  strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
+  last_right_published[sizeof(last_right_published) - 1] = '\0';
 
   // Start inactivity timer from first MQTT connection
   if (last_activity_time == 0) {
@@ -1496,11 +1499,6 @@ void loop() {
         debugPrintln(F("New card"));
         unsigned long publish_start = millis();
         bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
-        if (cube_num > 0 && hall_allows_neighbor) {
-          char buf[8];
-          snprintf(buf, sizeof(buf), "%d", cube_num);
-          mqtt_client.publish(mqtt_topic_cube_right, buf, true);
-        }
         unsigned long publish_end = millis();
         Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
         if (success) {
@@ -1508,23 +1506,35 @@ void loop() {
           last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
         }
       }
+      if (cube_num > 0 && hall_allows_neighbor) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", cube_num);
+        if (strcmp(buf, last_right_published) != 0) {
+          mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+          strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
+          last_right_published[sizeof(last_right_published) - 1] = '\0';
+        }
+      }
     } else if (read_result == EC_NO_CARD) {
-      // If hall sensor says neighbor is present, NFC no-card is likely a flake — don't publish "-"
-      if (HAS_HALL_SENSOR && last_hall_present) {
-        // skip
-      } else if (strcmp(last_neighbor_id, "-") != 0) {
-        // Reached only when both sensors agree there's no neighbor
-        // (hall present already skipped above).
+      // /nfc reflects raw NFC reads with no debouncing (debug-only topic).
+      if (strcmp(last_neighbor_id, "-") != 0) {
         debugPrintln(F("No card detected"));
         unsigned long publish_start = millis();
         bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
-        mqtt_client.publish(mqtt_topic_cube_right, "-", true);
         unsigned long publish_end = millis();
         Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
         if (success) {
           strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
           last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
         }
+      }
+      // /right flips to "-" only when both sensors agree there's no neighbor —
+      // hall-present guards an NFC flake.
+      bool hall_says_present = HAS_HALL_SENSOR && last_hall_present;
+      if (!hall_says_present && strcmp(last_right_published, "-") != 0) {
+        mqtt_client.publish(mqtt_topic_cube_right, "-", true);
+        strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
+        last_right_published[sizeof(last_right_published) - 1] = '\0';
       }
     } else {
       Serial.printf("NFC read failed with error code: %d\n", read_result);
@@ -1556,7 +1566,11 @@ void loop() {
           if (cube_num > 0) {
             char buf[8];
             snprintf(buf, sizeof(buf), "%d", cube_num);
-            mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+            if (strcmp(buf, last_right_published) != 0) {
+              mqtt_client.publish(mqtt_topic_cube_right, buf, true);
+              strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
+              last_right_published[sizeof(last_right_published) - 1] = '\0';
+            }
           }
         }
       }
