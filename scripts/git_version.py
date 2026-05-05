@@ -1,34 +1,27 @@
+import os
+import sys
 import subprocess
 from datetime import datetime
-import os
+
 Import("env")
 
-# Ensure git commands run from project directory
 project_dir = env['PROJECT_DIR']
-
-# Check for uncommitted changes in src folder only (ignore submodule errors)
-result = subprocess.run(["git", "status", "--porcelain", "--ignore-submodules", "src"],
-                       cwd=project_dir, capture_output=True, text=True)
-is_dirty = len(result.stdout.strip()) > 0
-
 env_name = env['PIOENV']
 
-if is_dirty:
-    # Uncommitted changes exist - use build timestamp to force flash
-    build_ts = str(int(datetime.now().timestamp()))
-    version = f"{build_ts}+{env_name}"
-else:
-    # Clean working tree - use git SHA for reproducible builds
-    sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
-                                    cwd=project_dir).decode().strip()
-    version = f"{sha}+{env_name}"
+sys.path.insert(0, os.path.join(project_dir, 'scripts'))
+from compute_version import compute_version, is_src_dirty
 
+version = compute_version(env_name, project_dir)
 env.Append(CPPDEFINES=[("GIT_VERSION", env.StringifyMacro(version))])
 
-# Commit timestamp in MMDD.HHMM format for display on boot
-# Append "u" if there are uncommitted changes (experimental build)
-ts = subprocess.check_output(["git", "log", "-1", "--format=%cd", "--date=format:%m%d.%H%M"],
-                           cwd=project_dir).decode().strip()
-if is_dirty:
-    ts = ts + "u"
+# Boot timestamp (MMDD.HHMM) shown on the display:
+# - clean tree: commit time, so cubes show when this firmware was tagged
+# - dirty tree: build time + "u", so each iteration shows when it was compiled
+if is_src_dirty(project_dir):
+    ts = datetime.now().strftime("%m%d.%H%M") + "u"
+else:
+    ts = subprocess.check_output(
+        ["git", "log", "-1", "--format=%cd", "--date=format:%m%d.%H%M"],
+        cwd=project_dir,
+    ).decode().strip()
 env.Append(CPPDEFINES=[("GIT_TIMESTAMP", env.StringifyMacro(ts))])

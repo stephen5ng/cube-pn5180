@@ -99,36 +99,34 @@ flash_cube() {
         fi
     fi
 
-    # Get current firmware version from cube, compare to target
-    # Version format: "<sha>+<env>" (e.g. "1a73415+v6_with_hall") so env changes force a reflash
+    # Get current firmware version from cube, compare to target.
+    # Version format: "<sha>+<env>" when clean, "<sha>-<src_hash>+<env>" when dirty.
+    # See scripts/compute_version.py.
     local current_version=$(get_cube_version "$cube_id")
-    if git -C "$(dirname "$0")/.." diff --quiet -- src 2>/dev/null; then
-        # Clean tree - compare sha+env
-        local sha=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD)
-        local target_version="${sha}+${version}"
-        if [[ "$current_version" == "$target_version" ]]; then
-            echo "✅ Cube $cube_id already running current firmware ($current_version, skipping)"
-            return 0
-        fi
+    local target_version=$(python3 "$FW_DIR/scripts/compute_version.py" "$version" "$FW_DIR")
+    if [[ "$current_version" == "$target_version" ]]; then
+        echo "✅ Cube $cube_id already running current firmware ($current_version, skipping)"
+        return 0
     fi
-    # Dirty tree - always flash (timestamp version won't match)
 
     echo "Flashing cube $cube_id (IP: $ip) with $version firmware..."
     if [ -n "$current_version" ]; then
         echo "   Current: $current_version"
+        echo "   Target:  $target_version"
     fi
 
     cd "$FW_DIR"
 
-    # Rebuild if working tree state doesn't match build state
-    # (clean tree but binary has "u" suffix = was built dirty)
-    if git -C "$(dirname "$0")/.." diff --quiet -- src 2>/dev/null; then
-        # Tree is clean - check if binary was built dirty
-        if strings .pio/build/"$version"/firmware.elf 2>/dev/null | grep -qE '^[0-9]{4}\.[0-9]{4}u$'; then
-            echo "   Rebuilding: clean tree but binary was built dirty"
-            rm -rf ".pio/build/$version"
-            $PIO run -e "$version"
+    # PIO won't rebuild when only git state changed (e.g. dirty→clean commit), so
+    # the cached binary's embedded GIT_VERSION can lag behind. Force a rebuild
+    # when it doesn't match the target.
+    local binary_version=$(strings ".pio/build/$version/firmware.elf" 2>/dev/null \
+        | grep -E "^[a-f0-9]+(-[a-f0-9]+)?\+${version}$" | head -1)
+    if [ "$binary_version" != "$target_version" ]; then
+        if [ -n "$binary_version" ]; then
+            echo "   Rebuilding: binary embeds $binary_version, target is $target_version"
         fi
+        rm -rf ".pio/build/$version"
     fi
 
     $PIO run -e "$version" -t upload --upload-port "$ip"
