@@ -54,11 +54,7 @@ log_result() {
   local ltr_max="${13}"
   local rssi="${14}"
 
-  if [[ "$cube" == *"TIMEOUT"* ]]; then
-    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"timeout\":true}" >> "$LOG_FILE"
-  else
-    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"nfc_resets\":$nfc_resets,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
-  fi
+  echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"nfc_resets\":$nfc_resets,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
 }
 
 query_cube() {
@@ -91,7 +87,7 @@ parse_and_print() {
     local cube_id="${cube#cube}"
     local board=$(get_board_version "$cube_id")
     printf "%-6s %6s %8s\n" "$cube" "$board" "TIMEOUT"
-    log_result "$timestamp" "$cube" "$board" ""
+    echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube_id\",\"board\":\"$board\",\"timeout\":true}" >> "$LOG_FILE"
     return
   fi
 
