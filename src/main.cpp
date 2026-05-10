@@ -1211,7 +1211,7 @@ void handleUDP() {
       }
       // Check if message is "diag" - return detailed per-section timing breakdown
       else if (strcmp(udpBuffer, "diag") == 0) {
-        char diagStr[288];
+        char diagStr[320];
         unsigned long avg_mqtt = section_timing_count > 0 ? section_timing_accum.mqtt_us / section_timing_count : 0;
         unsigned long avg_display = section_timing_count > 0 ? section_timing_accum.display_us / section_timing_count : 0;
         unsigned long avg_udp = section_timing_count > 0 ? section_timing_accum.udp_us / section_timing_count : 0;
@@ -1227,10 +1227,10 @@ void handleUDP() {
           "v1";
 #endif
         snprintf(diagStr, sizeof(diagStr),
-          "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d",
+          "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu",
           cube_identifier.c_str(), fw_board, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, nfc_reset_count, avg_letter_interval, max_letter_interval, letter_interval_count,
-          WiFi.RSSI(), section_timing_count);
+          WiFi.RSSI(), section_timing_count, millis());
 
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)diagStr, strlen(diagStr));
