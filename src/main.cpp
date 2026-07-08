@@ -52,8 +52,10 @@ void configurePins(int cube_id) {
   Serial.printf("Cube %d: socket board - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
 #endif
 
+#ifndef HALL_NEIGHBOR_ID
   // Initialize NFC reader with correct pins
   initializeNfcReader();
+#endif
   Serial.printf("Pin configuration complete for cube %d\n", cube_id);
 }
 
@@ -132,6 +134,27 @@ void configurePins(int cube_id) {
 #else
 #define HAS_HALL_SENSOR false
 #define HAS_HALL_ANALOG false
+#endif
+
+// 2-of-6 Hall-sensor neighbor ID decode, replacing the PN5180 NFC neighbor
+// path. See cubes/docs/hall_sensor_replacement_design.md. Enabled with
+// -DHALL_NEIGHBOR_ID (env:v6_with_hall_neighbor).
+#ifdef HALL_NEIGHBOR_ID
+// Six ID sensor GPIOs, reusing the PN5180 connector pins per the design's pin
+// table. Order is P1..P6, mapping to id_mask bits 0..5.
+static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
+#define HALL_PRESENCE_PIN 36        // existing v6 hall tap (GPIO36, input-only)
+// DRV5055A4 analog presence sensor thresholds
+#define HALL_PRESENCE_ON_THRESHOLD_LOW  1500
+#define HALL_PRESENCE_ON_THRESHOLD_HIGH 2600
+#define HALL_PRESENCE_OFF_THRESHOLD_LOW 1800
+#define HALL_PRESENCE_OFF_THRESHOLD_HIGH 2300
+// GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
+// idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
+// hall_debug: idle mask reads 111111 with HIGH as the reference level).
+#define HALL_ID_ACTIVE_LEVEL LOW
+#define HALL_POLL_INTERVAL_MS 1     // ~1 kHz polling; each digitalRead is ~us
+#define HALL_DEBOUNCE_READS 8       // consecutive identical reads to confirm (~8 ms)
 #endif
 
 // Sleep state management
@@ -1121,6 +1144,70 @@ uint8_t getWakeupReason() {
   return wakeup_reason;
 }
 
+// ============= Hall Neighbor Functions =============
+#ifdef HALL_NEIGHBOR_ID
+// Maps a 6-bit ID mask (bits P6 P5 P4 P3 P2 P1) to a neighbor cube id;
+// 0 = invalid pattern. Ids match the NFC tag table (cube_tags.cpp): player 0
+// is cubes 1-6, player 1 is cubes 11-16. Populate each cube's ID magnets with
+// the pattern that decodes to its game id.
+static uint8_t hallCubeIdForMask(uint8_t id_mask) {
+  switch (id_mask & 0x3F) {
+    case 0b000011: return 1;
+    case 0b000101: return 2;
+    case 0b001001: return 3;
+    case 0b010001: return 4;
+    case 0b100001: return 5;
+    case 0b000110: return 6;
+    case 0b001010: return 11;
+    case 0b010010: return 12;
+    case 0b100010: return 13;
+    case 0b001100: return 14;
+    case 0b010100: return 15;
+    case 0b100100: return 16;
+    default:       return 0;
+  }
+}
+
+void setupHallSensors() {
+  for (uint8_t i = 0; i < 6; i++) {
+    pinMode(HALL_ID_PINS[i], INPUT);
+  }
+  pinMode(HALL_PRESENCE_PIN, INPUT);
+
+  Serial.println(F("Hall neighbor sensors initialized"));
+}
+
+// Returns the neighbor's cube id, or 0 for no/invalid neighbor.
+uint8_t readHallNeighborId() {
+  static bool presence_active = false;
+  int adc_val = analogRead(HALL_PRESENCE_PIN);
+
+  if (!presence_active) {
+    if (adc_val < HALL_PRESENCE_ON_THRESHOLD_LOW || adc_val > HALL_PRESENCE_ON_THRESHOLD_HIGH) {
+      presence_active = true;
+    }
+  } else {
+    if (adc_val > HALL_PRESENCE_OFF_THRESHOLD_LOW && adc_val < HALL_PRESENCE_OFF_THRESHOLD_HIGH) {
+      presence_active = false;
+    }
+  }
+
+  if (!presence_active) {
+    return 0;  // presence magnet absent -> no neighbor seated
+  }
+  uint8_t id_mask = 0;
+  for (uint8_t i = 0; i < 6; i++) {
+    if (digitalRead(HALL_ID_PINS[i]) == HALL_ID_ACTIVE_LEVEL) {
+      id_mask |= (1 << i);
+    }
+  }
+  if (__builtin_popcount(id_mask) != 2) {
+    return 0;  // reject anything that isn't exactly two ID magnets
+  }
+  return hallCubeIdForMask(id_mask);  // 0 = invalid weight-2 pattern
+}
+#endif
+
 // ============= NFC Functions =============
 ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
   // Clear the card_id buffer first
@@ -1389,6 +1476,11 @@ void setup() {
 
   debugPrintln(WiFi.macAddress().c_str());
 
+#ifdef HALL_NEIGHBOR_ID
+  debugPrintln("setting up hall neighbor sensors...");
+  setupHallSensors();
+  display_manager->displayDebugMessage("hall id");
+#else
   // Self-test: check BUSY pin state before init (should be LOW)
   pinMode(pn5180_busy_pin, INPUT);
   bool busy_before_init = digitalRead(pn5180_busy_pin);
@@ -1412,6 +1504,7 @@ void setup() {
     snprintf(nfc_test_result, sizeof(nfc_test_result), "nfc %lums", (nfc_test_us + 500) / 1000);
   }
   display_manager->displayDebugMessage(nfc_test_result);
+#endif
 
   debugPrintln("setting up udp...");
   setupUDP(); // Add UDP setup
@@ -1454,10 +1547,11 @@ void loop() {
   handleUDP();
   unsigned long udp_us = micros() - udp_start;
 
+  unsigned long nfc_us = 0;
+#ifndef HALL_NEIGHBOR_ID
   // Throttle NFC reads to ~20 Hz to prevent slow NFC hardware from blocking
   // the main loop and starving MQTT processing / display animation
   static unsigned long last_nfc_read = 0;
-  unsigned long nfc_us = 0;
   if (current_time - last_nfc_read >= 50) {
     last_nfc_read = current_time;
     unsigned long nfc_start = micros();
@@ -1544,6 +1638,80 @@ void loop() {
       nfc_read_max_us = nfc_us;
     }
   }
+#endif  // !HALL_NEIGHBOR_ID
+
+  // Hall 2-of-6 neighbor decode: poll ~1 kHz, debounce, publish the neighbor
+  // cube id to cube/right/<sender> exactly as the NFC path does.
+#ifdef HALL_NEIGHBOR_ID
+  {
+    static unsigned long last_hall_poll = 0;
+    static uint8_t candidate_id = 0;
+    static int candidate_count = 0;
+    static uint8_t stable_id = 0xFF;  // sentinel forces first real publish
+    
+    // For debugging raw ID sensors U1-U6
+    static uint8_t candidate_raw = 0;
+    static int candidate_raw_count = 0;
+    static uint8_t stable_raw = 0xFF;
+
+    if (current_time - last_hall_poll >= HALL_POLL_INTERVAL_MS) {
+      last_hall_poll = current_time;
+      
+      uint8_t raw = 0;
+      for (uint8_t i = 0; i < 6; i++) {
+        if (digitalRead(HALL_ID_PINS[i]) == HALL_ID_ACTIVE_LEVEL) {
+          raw |= (1 << i);
+        }
+      }
+      
+      if (raw == candidate_raw) {
+        if (candidate_raw_count < HALL_DEBOUNCE_READS) candidate_raw_count++;
+      } else {
+        candidate_raw = raw;
+        candidate_raw_count = 1;
+      }
+      
+      if (candidate_raw_count >= HALL_DEBOUNCE_READS && candidate_raw != stable_raw) {
+        stable_raw = candidate_raw;
+        char raw_buf[7];
+        for (int i = 0; i < 6; i++) {
+          raw_buf[i] = (stable_raw & (1 << i)) ? '1' : '0';
+        }
+        raw_buf[6] = '\0';
+        if (mqtt_client.isConnected()) {
+          mqtt_client.publish(mqtt_topic_cube + "/hall_debug", raw_buf, true);
+        }
+      }
+
+      uint8_t id = readHallNeighborId();
+      if (id == candidate_id) {
+        if (candidate_count < HALL_DEBOUNCE_READS) candidate_count++;
+      } else {
+        candidate_id = id;
+        candidate_count = 1;
+      }
+      if (candidate_count >= HALL_DEBOUNCE_READS && candidate_id != stable_id) {
+        char buf[8];
+        if (candidate_id > 0) {
+          snprintf(buf, sizeof(buf), "%d", candidate_id);
+        } else {
+          strcpy(buf, "-");  // no/invalid neighbor
+        }
+
+        if (mqtt_client.isConnected() && strcmp(buf, last_right_published) != 0) {
+          if (mqtt_client.publish(mqtt_topic_cube_right, buf, true)) {
+            strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
+            last_right_published[sizeof(last_right_published) - 1] = '\0';
+            stable_id = candidate_id;
+            Serial.printf("Hall neighbor -> %s\n", buf);
+          }
+        } else {
+          stable_id = candidate_id;
+        }
+      }
+    }
+  }
+#endif
 
   // Track Hall sensor state and log connect/disconnect via MQTT
 #ifdef HALL_SENSOR_ENABLED
