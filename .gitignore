@@ -25,3 +25,6 @@ logs/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# direnv (local dev env, machine-specific paths)
+.envrc
