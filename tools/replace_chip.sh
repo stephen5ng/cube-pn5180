@@ -7,7 +7,7 @@ PORT=${2:-/dev/cu.SLAB_USBtoUART}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 MAC_FILE="$PROJECT_DIR/src/cube_utilities.cpp"
-BOARD_FILE="$PROJECT_DIR/cube_board_versions.txt"
+BOARD_FILE="$PROJECT_DIR/config/cube_board_versions.txt"
 PIO=~/.platformio/penv/bin/platformio
 ESPTOOL="$HOME/.platformio/penv/bin/python -m esptool"
 

@@ -47,7 +47,7 @@
 - `test/test_native/` - Native unit tests for utility functions
 - `tools/` - Cube management: `flash_cubes.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `check_cubes.sh`, `show_cube_numbers.py`, diagnostics
 - `docs/` - Planning docs, hardware debugging notes, analysis write-ups
-- `cube_board_versions.txt` - Maps cube IDs to board version (v1/v6) for flashing
+- `config/cube_board_versions.txt` - Maps MAC address to board version (v6/v6_with_hall); read by flashing/diagnostic scripts
 - Sleep mode uses GPIO 5 for button input
 - MAC address table determines cube configuration and RGB pin assignments
 
