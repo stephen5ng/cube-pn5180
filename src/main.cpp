@@ -148,6 +148,8 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
 #define MQTT_PORT 1883
+#define WIFI_CONNECT_ATTEMPT_TIMEOUT_MS 10000
+#define WIFI_RETRY_INTERVAL_MS 5000
 
 // MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
@@ -217,6 +219,9 @@ WiFiClient wifi_client;
 static String cube_identifier;
 static RgbOrder current_rgb_order = RGB_ORDER_BGR;
 const char* nfc_topic_out;
+static bool wifi_connection_attempt_active = false;
+static unsigned long wifi_connection_attempt_started = 0;
+static unsigned long next_wifi_connection_attempt = 0;
 
 // Animation
 char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value published to /nfc
@@ -813,8 +818,42 @@ uint8_t getCubeIpOctet() {
   return cube_id + 20;
 }
 
+void startWiFiConnectionAttempt() {
+  Serial.print("Connecting to ");
+  Serial.println(SSID_NAME_PORTABLE);
+  WiFi.setSleep(WIFI_PS_NONE);
+  WiFi.begin(SSID_NAME_PORTABLE, WIFI_PASSWORD_PORTABLE);
+  wifi_connection_attempt_started = millis();
+  wifi_connection_attempt_active = true;
+}
+
+void serviceWiFiConnection() {
+  if (WiFi.status() == WL_CONNECTED) {
+    wifi_connection_attempt_active = false;
+    next_wifi_connection_attempt = 0;
+    return;
+  }
+
+  unsigned long now = millis();
+  if (wifi_connection_attempt_active) {
+    if (now - wifi_connection_attempt_started < WIFI_CONNECT_ATTEMPT_TIMEOUT_MS) {
+      return;
+    }
+
+    Serial.println("WiFi connection attempt timed out");
+    WiFi.disconnect();
+    wifi_connection_attempt_active = false;
+    next_wifi_connection_attempt = now + WIFI_RETRY_INTERVAL_MS;
+    return;
+  }
+
+  if (next_wifi_connection_attempt == 0 ||
+      static_cast<long>(now - next_wifi_connection_attempt) >= 0) {
+    startWiFiConnectionAttempt();
+  }
+}
+
 void setupWiFiConnection() {
-  bool try_portable = true;
   Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
   uint8_t ip_octet = getCubeIpOctet();
@@ -830,21 +869,8 @@ void setupWiFiConnection() {
     Serial.println("STA Failed to configure");
   }
 
-  while (WiFi.status() != WL_CONNECTED) {
-    const char* ssid = try_portable ? SSID_NAME_PORTABLE : SSID_NAME;
-    const char* password = try_portable ? WIFI_PASSWORD_PORTABLE : WIFI_PASSWORD;
-    Serial.print("Connecting to ");
-    Serial.println(ssid);
-    WiFi.setSleep(WIFI_PS_NONE);
-    WiFi.begin(ssid, password);
-    delay(2000);
-    // try_portable = ! try_portable;
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
+  startWiFiConnectionAttempt();
+  Serial.println("WiFi connection started; setup will continue offline");
 }
 
 void handleNfcCommand(const String& message) {
@@ -1423,6 +1449,8 @@ void loop() {
   loop_start_time = micros();
 
   static bool last_hall_present = true;
+
+  serviceWiFiConnection();
 
   unsigned long section_start = micros();
   mqtt_client.loop();
