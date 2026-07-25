@@ -148,6 +148,8 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
 #define MQTT_PORT 1883
+#define MQTT_RECONNECT_DELAY_MS 5000
+#define MQTT_SOCKET_TIMEOUT_S 2
 
 // MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
@@ -960,6 +962,7 @@ void handleWakeUp() {
     WiFiClient keepalive_tcp;
     PubSubClient keepalive_mqtt(keepalive_tcp);
     keepalive_mqtt.setServer(MQTT_SERVER_PI, MQTT_PORT);
+    keepalive_mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
 
     volatile bool stay_asleep = false;  // Default: wake up unless we see "1"
     String client_id = "cube-" + String(cube_identifier) + "-ka";
@@ -1396,7 +1399,7 @@ void setup() {
   mqtt_client.setMaxPacketSize(11999);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
-  mqtt_client.setMqttReconnectionAttemptDelay(5);
+  mqtt_client.setMqttReconnectionAttemptDelay(MQTT_RECONNECT_DELAY_MS);
   mqtt_client.enableOTA();
   
   esp_chip_info_t chip_info;
