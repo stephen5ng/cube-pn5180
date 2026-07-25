@@ -152,6 +152,7 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 #define WIFI_RETRY_INTERVAL_MS 5000
 #define MQTT_RECONNECT_DELAY_MS 5000
 #define MQTT_SOCKET_TIMEOUT_S 2
+#define MQTT_CONNECTION_TIMEOUT_MS 1000
 
 // MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
@@ -1425,6 +1426,7 @@ void setup() {
   mqtt_client.setMaxPacketSize(11999);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
+  mqtt_client.setMqttConnectionTimeout(MQTT_CONNECTION_TIMEOUT_MS);
   mqtt_client.setMqttReconnectionAttemptDelay(MQTT_RECONNECT_DELAY_MS);
   mqtt_client.enableOTA();
   
