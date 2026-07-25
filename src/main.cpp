@@ -1162,9 +1162,9 @@ ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
 void nfcWorkerTask(void* /*parameter*/) {
   constexpr uint32_t NFC_RETRY_DELAY_MS = 50;
   constexpr uint32_t NFC_RECOVERY_BACKOFF_MS = 5000;
+  bool manual_reset_requested = false;
 
   for (;;) {
-    bool manual_reset_requested = ulTaskNotifyTake(pdTRUE, 0) > 0;
     NfcWorkerResult worker_result = {};
 
     unsigned long read_start = micros();
@@ -1185,7 +1185,9 @@ void nfcWorkerTask(void* /*parameter*/) {
       worker_result.recovery_attempted && !worker_result.recovery_succeeded
         ? NFC_RECOVERY_BACKOFF_MS
         : NFC_RETRY_DELAY_MS;
-    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    // Wake immediately for a reset, then carry it into the next iteration.
+    manual_reset_requested =
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms)) > 0;
   }
 }
 
