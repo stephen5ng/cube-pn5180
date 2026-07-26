@@ -217,12 +217,14 @@ The server creates a complete immutable epoch:
 1. publish the server-only epoch manifest;
 2. publish server-side owner and tag-alias records plus one bounded membership
    record for every selected device;
-3. verify the manifest digest, memberships, and all server-side records reached
-   the broker at QoS 1;
-4. publish compact roster control with `state: "ACTIVE"`, the new epoch, and
+3. publish a stable device-scoped roster-state record for every selected,
+   unselected, and previous-roster device;
+4. verify the manifest digest, memberships, roster states, and all server-side
+   records reached the broker at QoS 1;
+5. publish compact roster control with `state: "ACTIVE"`, the new epoch, and
    the manifest digest as the single global commit.
 
-Before step 4, all devices remain `ENROLLING`. At step 4, a selected device
+Before step 5, all devices remain `ENROLLING`. At step 5, a selected device
 activates only if its bounded membership record matches its device identity,
 observed tag and hardware class, rebuild ID, control epoch, and committed
 manifest digest. Firmware never downloads the aggregate manifest. Unselected
@@ -278,14 +280,35 @@ cube/device/{device_id}/sleep-state
   "lease_id": "active-lease",
   "sequence": 12,
   "applied_intent_id": "server-generated-intent",
-  "wake_deadline_ms": 1753560000000
+  "time_epoch_id": "pi-linux-boot-id",
+  "wake_deadline_tick_ms": 123456789
 }
 ```
 
-`wake_deadline_ms` is an absolute Unix timestamp derived from synchronized
-time, not a relative interval. Firmware does not enter deep sleep without a
-valid clock. The sleep-state sequence is monotonic within the full-client boot
-and is persisted across timer wakes.
+`wake_deadline_tick_ms` is an absolute deadline in the Pi's Linux
+`CLOCK_BOOTTIME` timeline, scoped by `time_epoch_id`; it is not Unix time and
+does not require Internet access or a battery-backed RTC. The sleep-state
+sequence is monotonic within the full-client boot and is persisted across timer
+wakes.
+
+On every full boot and maintenance wake, firmware requests a fresh time sample
+from the Pi game server using a random nonce. The server returns its Linux boot
+ID and current `CLOCK_BOOTTIME` milliseconds. A response is valid only when the
+nonce matches, round-trip time is at most one second, the tick does not regress
+within the same boot ID, and—after the first sample establishes a
+baseline—the server-tick advance differs from the device RTC elapsed time by no
+more than 500 ms. An out-of-tolerance sample requires two consecutive fresh
+samples to establish a new baseline while the device remains awake. Firmware
+resynchronizes on every maintenance wake, so oscillator drift does not
+accumulate across sleep cycles. The server allows two seconds of deadline
+grace.
+
+If the Pi reboots, its Linux boot ID changes and all prior sleep deadlines
+become invalid. If the time response is missing, stale, regresses, or exceeds
+tolerance, the full or maintenance client remains awake and retries; it never
+returns to sleep using an uncertain deadline. A server process restart on the
+same Pi boot preserves the time epoch because `CLOCK_BOOTTIME` and the Linux
+boot ID continue. This authority works on a cold field LAN with no public NTP.
 
 The current EspMQTTClient and PubSubClient publish APIs send QoS 0 only, so
 firmware cannot wait for an MQTT PUBACK. Instead it repeatedly publishes the
@@ -325,6 +348,10 @@ On timer wake, the minimal maintenance client:
   and remains awake;
 - if control is still `ACTIVE` for its epoch and a matching intent allows
   sleep, publishes updated device-scoped sleep status and may return to sleep;
+- if control is `ACTIVE` but the current retained roster state is absent,
+  malformed, marks the device unavailable, or does not match the saved
+  epoch/lease, starts the full client in `QUARANTINED` and never returns
+  directly to sleep;
 - if control is `REBUILDING` with a new rebuild ID, stays awake, performs the
   full enrollment boot, and does not return to sleep;
 - never publishes the legacy logical `/status` keep-alive.
@@ -341,7 +368,8 @@ then replaces the retained sleep record before relying on heartbeat health:
   "lease_id": "active-lease-or-null",
   "sequence": 1,
   "applied_intent_id": "server-generated-intent-or-null",
-  "wake_deadline_ms": null
+  "time_epoch_id": "pi-linux-boot-id",
+  "wake_deadline_tick_ms": null
 }
 ```
 
@@ -363,6 +391,18 @@ The device also replaces it with lease-less `AWAKE` when it becomes
 lease, the server does not acknowledge it and clears the topic again. These
 rules prevent a stale sleeping record from surviving activation, lease
 revocation, or a server restart.
+
+A device that slept through the entire `REBUILDING` interval therefore cannot
+continue its saved lease after waking into a successor `ACTIVE` epoch. It
+clears the saved logical slot and lease from NVS, keeps all logical
+subscriptions and sensor publication disabled, starts the full client in
+`QUARANTINED`, and reads its authoritative retained roster state. If that state
+is `AVAILABLE` for the current control epoch, it publishes new presence and
+lease-less retained `AWAKE`, then enters `AVAILABLE`. If it names a new active
+membership, the device performs normal membership validation and activation.
+A missing or inconsistent roster state leaves it awake in `QUARANTINED` for
+operator diagnosis; absence is never treated as permission to resume the old
+assignment.
 
 Device-scoped retained power intents replace logical auto-sleep flags for the
 maintenance path. The server publishes `AWAKE` for every selected device
@@ -523,6 +563,39 @@ producer and is a health signal in those states. A device that has published
 matching sleep state is instead monitored against its declared next-wake
 deadline plus grace; missing awake heartbeats never changes roster membership.
 
+### Pi boot-scoped time authority
+
+```text
+cube/device/{device_id}/time-request
+cube/device/{device_id}/time-response
+```
+
+The device publishes a non-retained request containing a random 64-bit nonce,
+its local monotonic send tick, and current known `time_epoch_id`. The game
+server replies non-retained:
+
+```json
+{
+  "protocol": 1,
+  "nonce": "random-request-nonce",
+  "time_epoch_id": "pi-linux-boot-id",
+  "server_tick_ms": 123456789
+}
+```
+
+`time_epoch_id` is the Pi's `/proc/sys/kernel/random/boot_id`;
+`server_tick_ms` is Linux `CLOCK_BOOTTIME`. The service is available whenever
+the local game server and MQTT broker are available and has no public-network
+dependency. Firmware derives an offset from the nonce-matched response and its
+local send/receive ticks. It accepts only the freshness, round-trip, rollback,
+and correction bounds defined in the sleep lifecycle.
+
+Devices persist the last accepted epoch and server tick across maintenance
+sleep. The nonce prevents response replay, while the prior tick detects
+same-epoch rollback. A Pi boot-ID change invalidates saved deadlines and forces
+resynchronization; a same-boot server-process restart does not reset the
+timeline.
+
 ### Server manifest and bounded device membership
 
 ```text
@@ -557,6 +630,52 @@ The membership is the firmware's complete activation input and is capped at
 384 bytes of minified JSON. It must agree with the server-only manifest and
 indexes. Prepared records have no effect while control remains `REBUILDING`;
 active control naming the same epoch and manifest digest is the final commit.
+
+### Device roster state
+
+```text
+cube/device/{device_id}/roster-state
+```
+
+This retained bounded record gives the maintenance client an authoritative
+answer even when a per-epoch membership is intentionally absent. For a
+selected device:
+
+```json
+{
+  "protocol": 1,
+  "state": "active",
+  "rebuild_id": "16-byte-hex-id",
+  "epoch": "16-byte-hex-id",
+  "lease_id": "16-byte-hex-id",
+  "manifest_digest": "32-byte-hex-sha256"
+}
+```
+
+For an unselected or removed device:
+
+```json
+{
+  "protocol": 1,
+  "state": "available",
+  "rebuild_id": "16-byte-hex-id",
+  "epoch": "16-byte-hex-id",
+  "lease_id": null
+}
+```
+
+The server prepares this record for every device that enrolled in the rebuild
+and every device named by the previous manifest, including devices that were
+offline for the whole enrollment window. Firmware applies it only when its
+rebuild and epoch match retained `ACTIVE` control. `active` must also match the
+device's bounded membership; `available` is explicit revocation of any saved
+slot and lease. Missing, malformed, or mismatched state means
+`QUARANTINED`, not active or available.
+
+If a commissioned inventory device outside both sets appears while control is
+already `ACTIVE`, the server may publish `available` for the current epoch
+after validating its presence. This does not reopen selection or change the
+active manifest; it only gives the surplus device an authoritative safe state.
 
 ### Assignment acknowledgement
 
@@ -609,11 +728,12 @@ Firmware-consumed topics are capped at 80 UTF-8 bytes and minified payloads at
 384 bytes. Including the MQTT PUBLISH fixed header and two-byte topic length,
 every supported inbound packet must fit within 512 bytes. Aggregate rebuild
 requests, manifests, and server indexes are published on topics firmware never
-subscribes to. CI serializes worst-case 12-cube data with maximum-width IDs,
-classes, and timestamps, asserts the firmware-bound packet sizes, and exercises
-both clients under heap instrumentation. Hardware acceptance verifies the
-512-byte allocation leaves the agreed minimum free-heap margin during Wi-Fi,
-TLS-free MQTT, NFC polling, rendering, and timer-wake operation.
+subscribes to. CI serializes worst-case control, membership, roster-state,
+time-response, power-intent, and command records with maximum-width IDs,
+classes, and ticks, asserts the firmware-bound packet sizes, and exercises both
+clients under heap instrumentation. Hardware acceptance verifies the 512-byte
+allocation leaves the agreed minimum free-heap margin during Wi-Fi, TLS-free
+MQTT, NFC polling, rendering, and timer-wake operation.
 
 ### Device power intent
 
@@ -630,18 +750,19 @@ Retained payload:
   "desired_state": "awake",
   "epoch": "active-epoch",
   "lease_id": "active-lease",
-  "issued_at_ms": 0
+  "time_epoch_id": "pi-linux-boot-id",
+  "issued_tick_ms": 123456789
 }
 ```
 
 `desired_state` is `awake` or `sleep_allowed`. A device applies an intent only
-when its `epoch` and `lease_id` exactly match the current active control and
-assignment. It ignores an intent from an old epoch or lease. During
-`REBUILDING`, the rebuild barrier takes precedence over every power intent.
-When a new epoch commits, the server publishes a new intent for each selected
-device; retained intents for devices omitted from the roster are harmless
-because their leases no longer match and may be cleared during garbage
-collection.
+when its `epoch`, `lease_id`, and `time_epoch_id` exactly match current active
+control, membership, and the accepted Pi time epoch. It ignores an intent from
+an old roster or Pi boot. During `REBUILDING`, the rebuild barrier takes
+precedence over every power intent. When a new epoch commits or the Pi reboots,
+the server publishes a new intent for each selected device; retained intents
+for devices omitted from the roster are harmless because their leases no
+longer match and may be cleared during garbage collection.
 
 Both the full and maintenance clients subscribe using device identity. A
 sleeping device checks the retained intent on every timer wake. It echoes the
@@ -708,10 +829,14 @@ ACTIVE
 
 SLEEPING
   -> keep assignment; publish device-scoped sleep state
-  -> timer wake reads roster control and device power intent
+  -> timer wake synchronizes Pi boot-scoped time
+  -> read roster control, device roster state, and power intent
+  -> epoch/lease mismatch enters QUARANTINED; never resume stale assignment
 
 QUARANTINED
   -> stop logical subscriptions and active-provenance sensor publication
+  -> clear saved assignment after authoritative mismatch
+  -> current available roster state publishes lease-less AWAKE and enters AVAILABLE
   -> enter ENROLLING only for an explicit rebuild
 ```
 
@@ -750,6 +875,8 @@ publishes a fresh snapshot for the startup topology barrier.
 | Server restarts during enrollment | Periodic heartbeats restore enrollment proof |
 | Server restarts after active commit | Periodic acknowledgements restore activation proof |
 | Sleeping active roster must start a game | Matching retained awake intent wakes it |
+| Pi reboots while cubes sleep | New time epoch invalidates deadlines; timer wake resynchronizes |
+| Former holder sleeps through rebuild and commit | Epoch mismatch forces quarantine, then available |
 
 ### Rebuild recovery
 
@@ -807,6 +934,10 @@ mode and must not count as available capacity.
   intent, and NVS last-slot preference.
 - Add retained sleep/awake state with absolute deadlines, application
   acknowledgement, and lease-revocation clearing.
+- Synchronize both client paths to the Pi boot-scoped time authority and reject
+  missing, regressing, or changed time epochs.
+- Read retained device roster state on maintenance wake and quarantine any
+  stale epoch/lease before starting the full client.
 - Gate logical commands behind the committed lease.
 - Publish raw device-scoped sensor snapshots with full provenance.
 - Disable logical `cube/right` publication and compiled tag fallback in pooled
@@ -833,8 +964,11 @@ mode and must not count as available capacity.
 - Rehydrate non-retained display state after acknowledgement.
 - Publish epoch- and lease-scoped retained power intents and wait for selected
   devices to wake before enabling gameplay.
+- Serve nonce-bound `CLOCK_BOOTTIME` samples identified by the Pi Linux boot ID.
 - Validate and acknowledge sleep-state transitions, give matching live
   heartbeats precedence, and clear revoked retained sleep state.
+- Publish retained active/available roster state for every enrolled and
+  previous-roster device at commit.
 - Expose active, enrolling, sleeping, available, missing, incompatible, and
   excluded devices in logs/admin UI.
 
@@ -843,6 +977,8 @@ mode and must not count as available capacity.
 - Install inventory and persist roster/rebuild state.
 - Add `rebuild-cube-roster` with 6/12 profile, exclusions, and progress output.
 - Update monitoring and OTA tools for device ID and mDNS.
+- Ensure the game service can read the Linux boot ID and expose boot-scoped
+  time without relying on public NTP.
 - Clear legacy retained logical neighbor topics during cutover.
 - Preserve retained control and epoch records across broker restarts.
 
@@ -854,9 +990,13 @@ mode and must not count as available capacity.
 - Sleeping status never makes a slot available.
 - Retained sleeping state reconstructs `SLEEPING` after server restart only
   for a matching active lease, presence boot, increasing sequence, and
-  unexpired absolute wake deadline.
+  unexpired deadline in the current Pi time epoch.
 - Live matching-boot heartbeat takes precedence over stale retained sleeping
   state.
+- Pi boot-ID change invalidates all old sleep deadlines without changing roster
+  membership.
+- Current active control plus an available device roster state revokes a saved
+  old lease even when the device missed the whole rebuild.
 - A server restart never starts a rebuild.
 - Only an explicit rebuild ID opens enrollment.
 - Restart recovery rejects a missing or digest-mismatched immutable request.
@@ -894,6 +1034,14 @@ mode and must not count as available capacity.
 - Timer wake under unchanged active control returns to sleep without changing
   assignment.
 - Timer wake under a new rebuild barrier stays awake and enrolls.
+- Full boot and every timer wake obtain a nonce-matched Pi `CLOCK_BOOTTIME`
+  sample before sleep.
+- Missing time response, excessive round-trip, tick rollback, excessive offset
+  correction, and Pi boot-ID change prevent return to sleep.
+- An `ACTIVE` control epoch that does not match saved roster state forces the
+  full-client quarantine path with logical traffic disabled.
+- Current retained `AVAILABLE` roster state clears the saved slot/lease,
+  publishes lease-less `AWAKE`, and enters `AVAILABLE`.
 - Enrolling heartbeat replays on reconnect and periodically with a monotonic
   per-boot sequence.
 - Fully awake `ACTIVE` and `AVAILABLE` devices continue heartbeat replay every
@@ -903,8 +1051,9 @@ mode and must not count as available capacity.
 - The full client checks `setMaxPacketSize(512)`; the maintenance client checks
   `keepalive_mqtt.setBufferSize(512)` and `getBufferSize()`, and both fail
   closed when allocation is rejected.
-- Worst-case control, membership, power-intent, and command PUBLISH packets
-  remain within 512 bytes including topic and MQTT headers.
+- Worst-case control, membership, roster-state, time-response, power-intent,
+  and command PUBLISH packets remain within 512 bytes including topic and MQTT
+  headers.
 - Firmware never subscribes to aggregate request, manifest, owner, or alias
   topics.
 - Timer wake applies only a power intent matching the active epoch and lease.
@@ -913,7 +1062,7 @@ mode and must not count as available capacity.
 - Stale, missing, and malformed power intents cannot wake an old lease or
   change roster membership.
 - Sleeping state includes exact boot, epoch, lease, sequence, intent, and
-  absolute wake deadline.
+  boot-scoped time epoch and absolute tick deadline.
 - Firmware never enters deep sleep until the server acknowledges the exact
   retained sleeping sequence; missing and mismatched acknowledgements keep it
   awake.
@@ -930,6 +1079,13 @@ mode and must not count as available capacity.
 - Observe repeated 20-second timer wakes and verify device-scoped sleep status.
 - Restart the server while a cube sleeps and verify retained provenance and
   deadline reconstruct `SLEEPING`.
+- Cold-boot the Pi and cubes on an isolated LAN with no Internet; verify the
+  Pi boot-scoped time exchange allows normal sleep/wake cycles.
+- Drift the device clock across repeated maintenance wakes and verify each
+  nonce-bound sample corrects acceptable drift while rollback and out-of-bound
+  correction keep the device awake.
+- Reboot the Pi while cubes sleep and verify the new boot ID invalidates old
+  deadlines until each cube wakes and resynchronizes.
 - Resume matching live heartbeats while a stale retained sleeping record is
   delivered and verify health immediately becomes awake.
 - Expire a sleep deadline, change its lease, and remove the device in a
@@ -940,6 +1096,9 @@ mode and must not count as available capacity.
   enter deep sleep; accept the exact acknowledgement and verify it does.
 - Start a rebuild while cubes sleep; verify all enroll by the 30-second window
   or remain explicitly missing without partial commit.
+- Keep a former holder offline from before `REBUILDING` through successor
+  `ACTIVE`, then wake it; verify it clears the old assignment, publishes
+  lease-less `AWAKE`, and remains `AVAILABLE`.
 - Drop the administrative reboot broadcast entirely and verify every cube
   observes retained control, reboots exactly once, and enrolls.
 - Restart the server after enrollment heartbeats and verify periodic replay
@@ -950,6 +1109,8 @@ mode and must not count as available capacity.
   intents, and verify all selected cubes wake on their next timer cycle without
   a rebuild or physical action.
 - Deliver old-epoch and wrong-lease power intents and verify they are ignored.
+- Deliver a retained power intent from the previous Pi boot and verify it is
+  ignored until the server republishes for the current time epoch.
 - Replace one cube in six-cube and twelve-cube profiles.
 - Reconnect the old holder after commit and verify it remains available.
 - Interrupt rebuild after every preparation step and verify no partial roster
