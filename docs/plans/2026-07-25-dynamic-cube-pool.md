@@ -324,16 +324,46 @@ cube/device/{device_id}/sleep-state-ack
   "boot_id": "random-per-full-boot",
   "epoch": "active-epoch",
   "lease_id": "active-lease",
-  "sequence": 12
+  "sequence": 12,
+  "time_epoch_id": "pi-linux-boot-id",
+  "wake_deadline_tick_ms": 123456789,
+  "ack_server_tick_ms": 123436900
 }
 ```
 
 The server sends this non-retained acknowledgement only after receiving and
-validating the state against current presence and membership. Firmware calls
-`esp_deep_sleep_start()` only after receiving the exact acknowledgement; if it
-times out, the cube stays awake and retries. Each maintenance wake refreshes
-the absolute deadline, increments the sequence, republishes retained sleeping
-state, and again waits for acknowledgement before returning to sleep.
+validating the state against current presence and membership. The
+acknowledgement echoes the exact time epoch and accepted deadline and includes
+the server tick at acknowledgement creation. Firmware rejects an
+acknowledgement if any echoed provenance differs from the retained state.
+
+The advertised deadline is bound to the actual hardware wake timer. After
+receiving a valid acknowledgement, firmware computes a conservative remaining
+interval:
+
+```text
+remaining_ms =
+  wake_deadline_tick_ms
+  - ack_server_tick_ms
+  - measured_publish_to_ack_ms
+  - SLEEP_ENTRY_GUARD_MS
+```
+
+`SLEEP_ENTRY_GUARD_MS` is initially 100 ms and must be confirmed by hardware
+measurement. Subtracting the entire measured publish-to-ack interval, rather
+than assuming symmetric network latency, can only schedule an early wake.
+Firmware passes this `remaining_ms`—not the original 20-second interval—to
+`esp_sleep_enable_timer_wakeup()`, then immediately calls
+`esp_deep_sleep_start()`.
+
+If the acknowledgement times out, the cube stays awake and retries. If an
+acknowledgement arrives after the deadline has aged so that `remaining_ms` is
+less than the one-second minimum useful sleep interval, firmware does not
+sleep. It obtains a fresh time sample, increments the sleep-state sequence,
+creates a new absolute deadline, republishes it, and waits for a new matching
+acknowledgement. Each maintenance wake follows the same procedure. Thus
+acknowledgement and retry latency shorten or refresh the programmed sleep
+interval; they are never added to the accepted wake deadline.
 
 The active lease remains valid while the device sleeps. The server reports the
 device as `SLEEPING`, not failed or available.
@@ -934,6 +964,8 @@ mode and must not count as available capacity.
   intent, and NVS last-slot preference.
 - Add retained sleep/awake state with absolute deadlines, application
   acknowledgement, and lease-revocation clearing.
+- Bind the deep-sleep hardware timer to the acknowledged absolute deadline by
+  programming only the guarded remaining interval.
 - Synchronize both client paths to the Pi boot-scoped time authority and reject
   missing, regressing, or changed time epochs.
 - Read retained device roster state on maintenance wake and quarantine any
@@ -1066,6 +1098,11 @@ mode and must not count as available capacity.
 - Firmware never enters deep sleep until the server acknowledges the exact
   retained sleeping sequence; missing and mismatched acknowledgements keep it
   awake.
+- A valid acknowledgement binds the exact time epoch and deadline; firmware
+  programs only the conservative remaining interval after acknowledgement.
+- An acknowledgement leaving less than one second before the guarded deadline
+  refreshes the time sample, sequence, deadline, and acknowledgement instead
+  of entering deep sleep.
 - Full wake publishes presence followed by retained `AWAKE`; reconnect retries
   it until acknowledged.
 - Available and quarantined devices cannot use logical command topics.
@@ -1094,6 +1131,10 @@ mode and must not count as available capacity.
   it without acknowledgement.
 - Drop and mismatch sleep-state acknowledgements and verify firmware does not
   enter deep sleep; accept the exact acknowledgement and verify it does.
+- Delay and drop acknowledgements through the retry window using a fake clock;
+  verify the programmed timer uses only the remaining interval, near-expired
+  deadlines are refreshed, and actual timer wake never exceeds the accepted
+  deadline plus the two-second server grace.
 - Start a rebuild while cubes sleep; verify all enroll by the 30-second window
   or remain explicitly missing without partial commit.
 - Keep a former holder offline from before `REBUILDING` through successor
