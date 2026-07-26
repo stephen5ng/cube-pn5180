@@ -139,8 +139,14 @@ that may replace either side use `preferred_set: either`.
 
 ### Rebuild barrier
 
-The server first publishes a retained `REBUILDING` control record containing a
-new rebuild ID, desired profile, previous epoch, exclusions, and start time.
+The server first normalizes the requested slot/class profile, exclusions, and
+effective enrollment deadline into an immutable retained rebuild-request
+record. It then publishes a compact retained `REBUILDING` control record
+containing a new rebuild ID and the request record's SHA-256 digest. The
+request is server-only; firmware receives the bounded control record. The
+server publishes the request at QoS 1 and verifies its retained canonical bytes
+and digest before publishing the barrier, so control never intentionally
+references an unconfirmed request.
 
 Every device subscribes to roster control regardless of whether it is active
 or available. Firmware persists `last_enrolled_rebuild_id` and
@@ -208,16 +214,19 @@ roster.
 
 The server creates a complete immutable epoch:
 
-1. publish the epoch manifest;
-2. publish owner, assignment, tag-alias, and lease records for every selected
-   device;
-3. verify the manifest and all records reached the broker at QoS 1;
-4. publish roster control with `state: "ACTIVE"` and the new epoch as the
-   single global commit.
+1. publish the server-only epoch manifest;
+2. publish server-side owner and tag-alias records plus one bounded membership
+   record for every selected device;
+3. verify the manifest digest, memberships, and all server-side records reached
+   the broker at QoS 1;
+4. publish compact roster control with `state: "ACTIVE"`, the new epoch, and
+   the manifest digest as the single global commit.
 
 Before step 4, all devices remain `ENROLLING`. At step 4, a selected device
-activates only if its manifest, owner, assignment, own tag alias, lease, rebuild
-ID, and control epoch all agree. Unselected devices become `AVAILABLE`.
+activates only if its bounded membership record matches its device identity,
+observed tag and hardware class, rebuild ID, control epoch, and committed
+manifest digest. Firmware never downloads the aggregate manifest. Unselected
+devices become `AVAILABLE`.
 
 The previous epoch remains immutable and non-authoritative. It may be
 garbage-collected after the new roster and topology are confirmed.
@@ -250,7 +259,7 @@ proof before accepting sensor snapshots.
 ## Sleep lifecycle
 
 Roster membership is independent of liveness after commit. Heartbeat expiry
-updates health status but never changes owner, assignment, alias, lease, or
+updates health status but never changes membership, owner, alias, lease, or
 manifest records.
 
 Before an active cube enters deep sleep, it publishes device-scoped sleep
@@ -313,7 +322,48 @@ another full rebuild.
 ## MQTT protocol
 
 All JSON records are versioned. Device IDs are uppercase MAC addresses without
-colons.
+colons. Wire encodings are bounded: device IDs are 12 hex characters;
+rebuild, epoch, lease, and intent IDs are 32 hex characters; SHA-256 digests
+are 64 hex characters; NFC tag IDs are at most 32 hex characters; and hardware
+class names are an enumerated maximum of 16 printable ASCII characters. These
+limits, not the shorter descriptive placeholders in examples, determine packet
+tests.
+
+### Immutable rebuild request
+
+Topic:
+
+```text
+cube/roster/rebuild/{rebuild_id}/request
+```
+
+This retained, server-only record contains the complete normalized request:
+
+```json
+{
+  "protocol": 1,
+  "rebuild_id": "server-generated-rebuild",
+  "previous_epoch": "previous-active-epoch",
+  "slots": [
+    {"logical_slot": 1, "hardware_class": "small", "player_set": 0}
+  ],
+  "excluded_device_ids": [],
+  "started_at_ms": 0,
+  "enrollment_deadline_ms": 30000
+}
+```
+
+The real `slots` array contains exactly 6 or 12 entries. The effective deadline
+is resolved before publication, so recovery never depends on a default or
+timeout override that exists only in process memory. The server computes
+SHA-256 over canonical JSON and stores the digest with its persisted rebuild
+state. A record is accepted only when its topic rebuild ID, payload rebuild ID,
+and digest all agree. It is immutable for the lifetime of the rebuild.
+
+Firmware does not subscribe to rebuild-request topics. After a restart, the
+server reloads the request named by compact roster control, verifies its digest,
+and uses the exact slots, classes, exclusions, and deadline to resume
+enrollment or validate a prepared successor.
 
 ### Roster control
 
@@ -329,11 +379,8 @@ Retained rebuilding payload:
 {
   "protocol": 1,
   "state": "rebuilding",
-  "rebuild_id": "server-generated-rebuild",
-  "previous_epoch": "previous-active-epoch",
-  "cube_count": 6,
-  "excluded_device_ids": [],
-  "started_at_ms": 0
+  "rebuild_id": "16-byte-hex-id",
+  "request_digest": "32-byte-hex-sha256"
 }
 ```
 
@@ -343,14 +390,15 @@ Retained active payload:
 {
   "protocol": 1,
   "state": "active",
-  "rebuild_id": "server-generated-rebuild",
-  "epoch": "new-active-epoch",
-  "cube_count": 6
+  "rebuild_id": "16-byte-hex-id",
+  "epoch": "16-byte-hex-id",
+  "manifest_digest": "32-byte-hex-sha256"
 }
 ```
 
 This record is the rebuild barrier and final global commit. A server process
-restart alone never changes it.
+restart alone never changes it. Wire JSON is minified. IDs have fixed encoded
+lengths, and the serialized control payload is capped at 384 bytes.
 
 ### Administrative reboot request
 
@@ -401,22 +449,46 @@ Only a live, newer sequence matching current presence and rebuild establishes
 enrollment freshness. An enrolling device publishes immediately after boot,
 after each MQTT reconnect, and every two seconds. `sequence` is a monotonic
 per-boot heartbeat sequence and is independent from acknowledgement and sensor
-sequences.
+sequences. The same heartbeat continues every two seconds while a device is
+fully awake in `ACTIVE` or `AVAILABLE`, so heartbeat expiry has an actual
+producer and is a health signal in those states. A device that has published
+matching sleep state is instead monitored against its declared next-wake
+deadline plus grace; missing awake heartbeats never changes roster membership.
 
-### Epoch manifest and lease records
+### Server manifest and bounded device membership
 
 ```text
 cube/roster/{epoch}/manifest
 cube/roster/{epoch}/slot/{logical_slot}/owner
-cube/roster/{epoch}/device/{device_id}/assignment
 cube/roster/{epoch}/tag-alias/{tag_id}
-cube/roster/{epoch}/lease/{lease_id}
+cube/roster/{epoch}/device/{device_id}/membership
 ```
 
 The immutable manifest lists selected devices, tags, slots, hardware classes,
-player sets, and lease IDs. Owner, assignment, alias, and lease records must
-match it exactly. These prepared records have no effect while control remains
-`REBUILDING`; the active control record is the final commit.
+player sets, and lease IDs. It and the owner/alias indexes are server-only and
+may exceed the firmware packet budget. Their canonical JSON must match the
+`manifest_digest`.
+
+Each selected firmware client subscribes only to its own retained membership:
+
+```json
+{
+  "protocol": 1,
+  "device_id": "AABBCCDDEEFF",
+  "rebuild_id": "16-byte-hex-id",
+  "epoch": "16-byte-hex-id",
+  "manifest_digest": "32-byte-hex-sha256",
+  "logical_slot": 4,
+  "hardware_class": "small",
+  "tag_id": "16-byte-hex-tag",
+  "lease_id": "16-byte-hex-id"
+}
+```
+
+The membership is the firmware's complete activation input and is capped at
+384 bytes of minified JSON. It must agree with the server-only manifest and
+indexes. Prepared records have no effect while control remains `REBUILDING`;
+active control naming the same epoch and manifest digest is the final commit.
 
 ### Assignment acknowledgement
 
@@ -440,12 +512,30 @@ Non-retained payload:
 ```
 
 The server accepts only a live acknowledgement matching current presence,
-control, manifest, and lease. An active device publishes immediately on
-activation, after each MQTT reconnect, and every two seconds while fully
-awake. `sequence` is a monotonic per-boot acknowledgement sequence, independent
-from heartbeat and sensor sequences. This replay makes activation proof
-recoverable if the server restarts after commit but before installing
+control, manifest, membership, and lease. An active device publishes
+immediately on activation, after each MQTT reconnect, and every two seconds
+while fully awake. `sequence` is a monotonic per-boot acknowledgement sequence,
+independent from heartbeat and sensor sequences. This replay makes activation
+proof recoverable if the server restarts after commit but before installing
 topology.
+
+### Firmware MQTT packet budget
+
+The checked-in PubSubClient defaults to a 256-byte packet buffer, which is not
+large enough for the bounded protocol records once MQTT topic and fixed-header
+bytes are included. Both the full firmware client and timer-wake maintenance
+client must call `EspMQTTClient::setMaxPacketSize(512)` before connecting and
+fail closed if allocation fails.
+
+Firmware-consumed topics are capped at 80 UTF-8 bytes and minified payloads at
+384 bytes. Including the MQTT PUBLISH fixed header and two-byte topic length,
+every supported inbound packet must fit within 512 bytes. Aggregate rebuild
+requests, manifests, and server indexes are published on topics firmware never
+subscribes to. CI serializes worst-case 12-cube data with maximum-width IDs,
+classes, and timestamps, asserts the firmware-bound packet sizes, and exercises
+both clients under heap instrumentation. Hardware acceptance verifies the
+512-byte allocation leaves the agreed minimum free-heap margin during Wi-Fi,
+TLS-free MQTT, NFC polling, rendering, and timer-wake operation.
 
 ### Device power intent
 
@@ -533,9 +623,9 @@ AVAILABLE
   -> not selected; wait for a future rebuild
 
 ACTIVE
-  -> require active control + matching manifest/owner/assignment/alias/lease
+  -> require active control + matching bounded device membership
   -> apply slot-specific rotation and subscribe to cube/{slot}/...
-  -> replay assignment acknowledgement and device-scoped sensor snapshots
+  -> replay heartbeat, assignment acknowledgement, and sensor snapshots
   -> obey only matching retained device power intent
 
 SLEEPING
@@ -585,12 +675,16 @@ publishes a fresh snapshot for the startup topology barrier.
 
 ### Rebuild recovery
 
-If the server restarts while `REBUILDING`, it reads the rebuild ID and previous
-epoch from control:
+If the server restarts while `REBUILDING`, it reads the rebuild ID and request
+digest from control, loads the immutable request, verifies the digest, and
+recovers the previous epoch, normalized profile, exclusions, and effective
+deadline from that request:
 
 - if a complete prepared successor exists, finish the active commit;
 - if preparation is incomplete, resume enrollment/preparation for the same
   rebuild ID;
+- if the request is missing or its digest does not match, stay paused and
+  require explicit administrative recovery rather than guessing a profile;
 - an explicit admin abort may restore active control to the unchanged previous
   epoch only if its required devices are healthy;
 - never infer a new rebuild from server startup alone.
@@ -627,10 +721,12 @@ mode and must not count as available capacity.
   offline last will.
 - Implement retained rebuild-control handling and persisted exactly-once
   per-rebuild reboot state in full boot and timer-wake paths.
+- Set and verify a 512-byte MQTT buffer in both full and timer-wake clients;
+  refuse pooled operation if allocation fails.
 - Migrate maintenance sleep/wake topics and client IDs from logical slot to
   device ID.
-- Add assignment validation, replayed acknowledgement, retained power intent,
-  and NVS last-slot preference.
+- Add bounded membership validation, replayed acknowledgement, retained power
+  intent, and NVS last-slot preference.
 - Gate logical commands behind the committed lease.
 - Publish raw device-scoped sensor snapshots with full provenance.
 - Disable logical `cube/right` publication and compiled tag fallback in pooled
@@ -645,8 +741,10 @@ mode and must not count as available capacity.
   clock and persisted rebuild state.
 - Make cube count, hardware classes, exclusions, and enrollment timeout
   explicit inputs.
+- Persist the normalized immutable rebuild request and canonical digest.
 - Never mutate roster membership from heartbeat expiry.
-- Build and validate one immutable epoch per rebuild.
+- Build and validate one server-only immutable manifest plus bounded device
+  memberships per rebuild.
 - Implement the startup topology barrier and bulk graph installation without
   invoking normal per-edge gameplay callbacks.
 - Validate device-scoped sensor provenance and map raw tags through the active
@@ -674,6 +772,9 @@ mode and must not count as available capacity.
 - Sleeping status never makes a slot available.
 - A server restart never starts a rebuild.
 - Only an explicit rebuild ID opens enrollment.
+- Restart recovery rejects a missing or digest-mismatched immutable request.
+- A mixed-size 12-cube request recovers the exact per-slot classes, exclusions,
+  and effective deadline after a server restart.
 - Restarted server receives periodic enrollment proof without rebooting cubes.
 - Retained presence without a live boot/rebuild-matched heartbeat is
   ineligible.
@@ -684,6 +785,7 @@ mode and must not count as available capacity.
 - Incomplete capacity never commits a partial manifest.
 - Prepared records cannot activate while control is `REBUILDING`.
 - Active control cannot reference an incomplete or inconsistent epoch.
+- Active control and every membership bind to the same manifest digest.
 - Restart before and after commit recovers the correct rebuild state.
 - Restart after active commit but before topology installation recovers
   periodic acknowledgements and completes the topology barrier.
@@ -698,7 +800,8 @@ mode and must not count as available capacity.
 - A new retained rebuild ID persists before causing exactly one full reboot.
 - Duplicate retained delivery, reconnect, and reboot broadcast do not cause a
   second reboot for the same rebuild ID.
-- Active control and all assignment records must agree before activation.
+- Active control and the bounded device membership must agree before
+  activation.
 - A last-slot NVS value is preference, never authority.
 - Timer wake uses device-scoped client and topics.
 - Timer wake under unchanged active control returns to sleep without changing
@@ -706,8 +809,16 @@ mode and must not count as available capacity.
 - Timer wake under a new rebuild barrier stays awake and enrolls.
 - Enrolling heartbeat replays on reconnect and periodically with a monotonic
   per-boot sequence.
+- Fully awake `ACTIVE` and `AVAILABLE` devices continue heartbeat replay every
+  two seconds; sleep state switches health monitoring to the wake deadline.
 - Active assignment acknowledgement replays on reconnect and periodically
   with a monotonic per-boot sequence.
+- Both firmware clients successfully allocate a 512-byte MQTT buffer before
+  connecting and fail closed when allocation is rejected.
+- Worst-case control, membership, power-intent, and command PUBLISH packets
+  remain within 512 bytes including topic and MQTT headers.
+- Firmware never subscribes to aggregate request, manifest, owner, or alias
+  topics.
 - Timer wake applies only a power intent matching the active epoch and lease.
 - An `awake` intent starts the full client; `sleep_allowed` permits the normal
   inactivity timer.
@@ -740,6 +851,10 @@ mode and must not count as available capacity.
 - Interrupt rebuild after every preparation step and verify no partial roster
   or topology becomes active.
 - Restart broker and server independently during active and rebuilding states.
+- Restart during a mixed-size rebuild and verify recovery uses the original
+  slot/class profile, exclusions, and effective deadline.
+- Run a maximum-width 12-cube rebuild and verify both full and maintenance
+  clients receive every subscribed record without truncation or disconnect.
 - Deliver retained presence and delayed old sensor messages; verify neither
   changes selection or topology.
 - Keep a passive tag physically present while its device is omitted from the
@@ -757,6 +872,8 @@ mode and must not count as available capacity.
 - Form words with the replacement on both left and right edges.
 - Exercise MQTT-triggered and physical all-cube reboot procedures.
 - Exercise rebuild while cubes are awake and while they are sleeping.
+- Measure minimum free heap with a 512-byte MQTT buffer during full-client and
+  timer-wake operation; enforce the agreed safety margin.
 - Acceptance target: complete roster and topology ready within 45 seconds of
   starting the administrative rebuild.
 
