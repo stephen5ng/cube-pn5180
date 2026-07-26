@@ -17,11 +17,18 @@ show_inventory() {
 get_mac_from_arp() {
     local cube_id=$1
     local ip="192.168.8.$((cube_id + 20))"
-    ping -c 1 -t 1 "$ip" >/dev/null 2>&1
-    # macOS arp elides leading zeros (e.g. "5c:1:3b:..."); zero-pad each octet.
-    arp -a | grep "$ip" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' \
-        | awk -F: 'BEGIN{OFS=":"} {for(i=1;i<=NF;i++) if(length($i)==1) $i="0"$i; print}' \
-        | tr 'a-f' 'A-F'
+    if command -v ip >/dev/null 2>&1; then
+        # Raspberry Pi / Linux: iproute2 is part of the base system.
+        ping -c 1 -W 1 "$ip" >/dev/null 2>&1 || true
+        ip neigh show to "$ip" \
+            | awk -v target="$ip" '$1 == target && $5 ~ /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/ {print toupper($5); exit}'
+    else
+        # macOS fallback: arp elides leading zeros (e.g. "5c:1:3b:...").
+        ping -c 1 -t 1 "$ip" >/dev/null 2>&1 || true
+        arp -a | grep "$ip" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' \
+            | awk -F: 'BEGIN{OFS=":"} {for(i=1;i<=NF;i++) if(length($i)==1) $i="0"$i; print}' \
+            | tr 'a-f' 'A-F'
+    fi
 }
 
 get_version_by_mac() {
