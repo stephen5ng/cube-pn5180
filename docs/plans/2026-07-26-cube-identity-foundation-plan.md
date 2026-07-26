@@ -2,19 +2,28 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give every physical cube a unique static IP and a unique MQTT client ID, both derived from its MAC and independent of its logical slot — the foundation the dynamic cube pool needs so a returning cube and its replacement never collide.
+**Goal:** Give every physical cube a unique static IP octet and a unique MQTT client ID, both derived from its MAC and independent of its logical slot — the foundation the dynamic cube pool needs so a returning cube and its replacement never collide — and guard the address table so a typo can't silently reintroduce a collision.
 
-**Architecture:** Add an `ip_octet` field to the compiled `CubeMacEntry` table (today the IP is `cube_id + 20`, and backups deliberately share a `cube_id` with their primary, so two physical cubes compute the same address). Derive the static IP from that field instead. Separately, derive both the full and the maintenance MQTT client IDs from the MAC rather than the logical slot, so an old holder and its replacement do not evict each other at the broker. This is Rollout Step 1 of the design in [docs/plans/2026-07-25-dynamic-cube-pool.md](2026-07-25-dynamic-cube-pool.md); it is behavior-preserving for the currently-deployed primaries and touches no server code.
+**Architecture:** Add an `ip_octet` field to the compiled `CubeMacEntry` table (today the IP is `cube_id + 20`, and backups deliberately share a `cube_id` with their primary, so two physical cubes compute the same address). Derive the static IP from that field, fail closed on an unknown MAC instead of sharing `.20`, and add a host-side validator (CI) that asserts the production table's MACs and octets are globally unique. Separately, derive both MQTT client IDs from the MAC so an old holder and its replacement do not evict each other at the broker. This is Rollout Step 1 of the design in [docs/plans/2026-07-25-dynamic-cube-pool.md](2026-07-25-dynamic-cube-pool.md); it touches no server code.
 
-**Tech Stack:** C++ (Arduino/PlatformIO, ESP32), Unity native unit tests, EspMQTTClient (full client), PubSubClient (maintenance/keepalive client).
+**Tech Stack:** C++ (Arduino/PlatformIO, ESP32), Unity native unit tests, Python 3 (host-side table validator), EspMQTTClient (full client), PubSubClient (maintenance/keepalive client).
 
 ## Global Constraints
 
 - Static IPs are kept by design (fast power-bounce reconnect, no DHCP dependency). Do not introduce DHCP.
-- Primaries keep their current address (`cube_id + 20`, i.e. `.21`–`.26` and `.31`–`.36`) so this change is behavior-preserving for deployed hardware.
+- Primaries keep their current address (`cube_id + 20`, i.e. `.21`–`.26` and `.31`–`.36`), so this change is address-preserving for currently-deployed hardware. Only the six backups get new octets (`.41`–`.46`), which are inert until a backup is physically deployed (see Deferred prerequisites).
 - The native test MAC table (`#ifdef NATIVE_TESTING`) uses stable synthetic values that must never be changed to match hardware; only add the new field to its existing rows.
 - Any change to the `CubeMacEntry` struct must update BOTH table initializers (test and production) or the build breaks.
-- Native tests: `~/.platformio/penv/bin/platformio test -e native`. Hardware compile: `~/.platformio/penv/bin/platformio run -e esp32dev`. Run tests before compile (per repo CLAUDE.md).
+- Commands: native tests `~/.platformio/penv/bin/platformio test -e native`; hardware compile `~/.platformio/penv/bin/platformio run -e v1 -e v6 -e v6_with_hall -e v6_with_hall_analog` (the real environments in `platformio.ini`; `esp32dev` is the `board` value, not an environment). Table validator `python3 tools/validate_mac_table.py`. Run native tests and the validator before the hardware compile.
+
+## Deferred prerequisites (NOT part of this plan; gate backup deployment)
+
+The six backup octets `.41`–`.46` are written into the table here but MUST NOT be relied on in the field until, as part of the later pool-commissioning rollout step:
+
+- **DHCP reservation:** confirm `.41`–`.46` are outside the field router's DHCP pool (or reserved), so a backup booting on a new address cannot collide with a DHCP-leased host.
+- **Inventory-aware tooling:** the OTA/monitoring tools derive IP as `20 + cube_id` and would not reach a backup on `.41`–`.46`: `tools/check_cubes.py:49`, `tools/update_cubes.py:57`, `tools/update.sh:9` and `:11`, plus the `cubes`-repo monitoring scripts. These must be made inventory/`ip_octet`-aware then.
+
+Until both are done, do not power a backup on its new address. Primaries are unaffected (their addresses and the tooling that reaches them are unchanged).
 
 ---
 
@@ -159,46 +168,139 @@ git commit -m "feat: add unique per-MAC ip_octet to CubeMacEntry"
 
 ---
 
-### Task 2: Derive the firmware static IP from `ip_octet`
+### Task 2: Validate the production table globally (CI guard)
+
+The native suite only compiles the synthetic `#ifdef NATIVE_TESTING` table, so a duplicate MAC or octet typo in the production `#else` rows would compile and pass every test — recreating the exact field IP conflict this plan removes. Add a host-side validator that parses the production block and asserts global uniqueness and a legal octet range, and run it in CI / before any flash.
 
 **Files:**
-- Modify: `src/main.cpp` (`getCubeIpOctet`, ~`src/main.cpp:819-834`)
+- Create: `tools/validate_mac_table.py`
+- Modify: CI config if present (see Step 4).
+
+**Interfaces:**
+- Consumes: `src/cube_utilities.cpp` (the `#else` production `CUBE_MAC_TABLE`).
+- Produces: exit code 0 (valid) / 1 (violation printed); no code symbols.
+
+- [ ] **Step 1: Write the validator**
+
+Create `tools/validate_mac_table.py`:
+
+```python
+#!/usr/bin/env python3
+"""Validate the production CUBE_MAC_TABLE: unique MACs, unique ip_octets,
+octets in the allowed host range. Guards against typos the native tests
+(which compile the synthetic table) cannot catch."""
+import re
+import sys
+from pathlib import Path
+
+SRC = Path(__file__).resolve().parent.parent / "src" / "cube_utilities.cpp"
+ALLOWED_MIN, ALLOWED_MAX = 21, 199  # .1 gateway, .20 unknown-sentinel, .247 broker excluded
+
+def production_rows(text):
+    # The production table is the `#else` branch of the NATIVE_TESTING guard.
+    body = text.split("#else", 1)[1].split("#endif", 1)[0]
+    row = re.compile(r'\{\s*"([0-9A-Fa-f:]+)"\s*,\s*\d+\s*,\s*\w+\s*,\s*(\d+)\s*\}')
+    return [(m.group(1), int(m.group(2))) for m in row.finditer(body)]
+
+def main():
+    rows = production_rows(SRC.read_text())
+    errors = []
+    if not rows:
+        errors.append("no production rows parsed")
+    macs, octets = {}, {}
+    for mac, octet in rows:
+        if mac in macs:
+            errors.append(f"duplicate MAC {mac}")
+        macs[mac] = True
+        if octet in octets:
+            errors.append(f"duplicate ip_octet {octet} (MACs {octets[octet]} and {mac})")
+        octets[octet] = mac
+        if not ALLOWED_MIN <= octet <= ALLOWED_MAX:
+            errors.append(f"ip_octet {octet} for {mac} outside {ALLOWED_MIN}-{ALLOWED_MAX}")
+    if errors:
+        print(f"MAC table INVALID ({len(rows)} rows):")
+        for e in errors:
+            print(f"  - {e}")
+        return 1
+    print(f"MAC table OK: {len(rows)} rows, all MACs and octets unique.")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- [ ] **Step 2: Run it against the current table — expect PASS**
+
+Run: `python3 tools/validate_mac_table.py`
+Expected: `MAC table OK: 18 rows, all MACs and octets unique.` (exit 0).
+
+- [ ] **Step 3: Prove it catches a collision**
+
+Temporarily change one backup octet to duplicate a primary (e.g. set the `80:F3:DA:54:53:B8` row's octet from `41` to `21`), then:
+
+Run: `python3 tools/validate_mac_table.py`
+Expected: exit 1 with `duplicate ip_octet 21 ...`. Revert the edit and re-run to confirm PASS.
+
+- [ ] **Step 4: Wire into CI / pre-flash**
+
+If a CI workflow exists (`.github/workflows/*.yml` or similar), add a step running `python3 tools/validate_mac_table.py` before the build. If none exists, add a note at the top of `tools/flash_cubes.sh` to run it first, and document it in the repo `CLAUDE.md` "After Major Feature Additions" checklist.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/validate_mac_table.py
+git commit -m "feat: CI validator for unique MACs/ip_octets in production table"
+```
+
+---
+
+### Task 3: Derive the firmware static IP from `ip_octet`; fail closed on unknown MAC
+
+Currently an unknown MAC returns `.20` and the cube proceeds as logical cube 0 — two uncommissioned/mistyped devices would collide, defeating the uniqueness guarantee. The design requires every usable cube to be pre-commissioned in this table, so a missing entry becomes a boot-blocking diagnostic before Wi-Fi/MQTT rather than a shared address. (Bench/dev boards must therefore be commissioned into the table, or built with a bypass flag.)
+
+**Files:**
+- Modify: `src/main.cpp` (`getCubeIpOctet`, ~`src/main.cpp:819-834`, and its boot caller)
 
 **Interfaces:**
 - Consumes: `findCubeIpOctet(const char*)` from Task 1.
-- Produces: no new symbols; `getCubeIpOctet()` now returns the per-MAC octet.
+- Produces: no new public symbols; `getCubeIpOctet()` now returns the per-MAC octet, and boot halts with a diagnostic for an unknown MAC.
 
-- [ ] **Step 1: Change the octet source**
+- [ ] **Step 1: Change the octet source and fail closed**
 
-In `src/main.cpp`, in `getCubeIpOctet()`, keep the existing side effects (setting `current_rgb_order`, `cube_identifier`, and calling `configurePins`) but replace the returned value. Change the final `return cube_id + 20;` to use the per-MAC octet, preserving the unknown-MAC fallback of `.20`:
+In `src/main.cpp`, in `getCubeIpOctet()`, keep the existing side effects (setting `current_rgb_order`, `cube_identifier`, and calling `configurePins`) but replace the returned value and handle the unknown MAC. Where it currently does `int cube_id = entry ? entry->cube_id : 0; ... return cube_id + 20;`, make the unknown case halt with a visible diagnostic instead of returning `.20`:
 
 ```cpp
-  int octet = entry ? entry->ip_octet : 20;
-  return octet;
+  if (!entry) {
+    Serial.print("FATAL: MAC not in cube table: ");
+    Serial.println(mac_address);
+    if (display_manager) display_manager->displayDebugMessage("BAD MAC");
+    while (true) { delay(1000); }  // fail closed before Wi-Fi/MQTT
+  }
+  return entry->ip_octet;
 ```
 
-(Leave the lines that compute `cube_id`, set `current_rgb_order`, `cube_identifier`, and call `configurePins(cube_id)` unchanged — only the returned octet changes.)
+(Use the `entry` already fetched at the top of the function; keep the `current_rgb_order`, `cube_identifier`, and `configurePins(cube_id)` lines for the known-MAC path.)
 
 - [ ] **Step 2: Verify the native suite still passes**
 
 Run: `~/.platformio/penv/bin/platformio test -e native`
-Expected: PASS (no native code depends on `getCubeIpOctet`, but confirm nothing regressed).
+Expected: PASS (native code does not call `getCubeIpOctet`; confirm no regression).
 
 - [ ] **Step 3: Compile for hardware**
 
-Run: `~/.platformio/penv/bin/platformio run -e esp32dev`
-Expected: SUCCESS — compiles and links, memory within limits.
+Run: `~/.platformio/penv/bin/platformio run -e v1 -e v6 -e v6_with_hall -e v6_with_hall_analog`
+Expected: SUCCESS on all four environments; memory within limits.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add src/main.cpp
-git commit -m "feat: derive cube static IP from per-MAC ip_octet"
+git commit -m "feat: derive cube IP from ip_octet; fail closed on unknown MAC"
 ```
 
 ---
 
-### Task 3: MAC-derive both MQTT client IDs
+### Task 4: MAC-derive both MQTT client IDs
 
 **Files:**
 - Modify: `src/cube_utilities.h` (declare helper)
@@ -295,8 +397,8 @@ In `src/main.cpp` at ~`995`, replace:
 
 - [ ] **Step 7: Compile for hardware**
 
-Run: `~/.platformio/penv/bin/platformio run -e esp32dev`
-Expected: SUCCESS.
+Run: `~/.platformio/penv/bin/platformio run -e v1 -e v6 -e v6_with_hall -e v6_with_hall_analog`
+Expected: SUCCESS on all four environments.
 
 - [ ] **Step 8: Commit**
 
@@ -313,5 +415,5 @@ This plan delivers only Rollout Step 1 (physical identity foundation). It does *
 
 2. `cubes` server: persisted `MAC → {slot, generation}` map, `MAC → tag` inventory, retained `cube/assign/{MAC}` publishes (authority marker off; behavior-preserving).
 3. `cube-pn5180`: read slot from the assignment (compiled fallback until authority latches), NVS `{slot, generation}`, MAC-scoped presence, liveness-challenge response, MAC-scoped keepalive topics, `state: sleeping` before deep sleep.
-4. `cubes` + console: assign/swap action, MAC-verified + liveness-gated game-start gate, publish `cube/roster/authoritative`.
+4. `cubes` + console + tooling: assign/swap action, MAC-verified + liveness-gated game-start gate, publish `cube/roster/authoritative`, DHCP reservation of `.41`–`.46`, and inventory-aware OTA/monitoring tooling (the Deferred prerequisites above).
 5. `cubes`: server-side NFC tag resolution with sender-MAC/generation provenance; retire `cube/right/{id}`.
