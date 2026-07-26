@@ -267,19 +267,20 @@ Currently an unknown MAC returns `.20` and the cube proceeds as logical cube 0 �
 
 - [ ] **Step 1: Change the octet source and fail closed**
 
-In `src/main.cpp`, in `getCubeIpOctet()`, keep the existing side effects (setting `current_rgb_order`, `cube_identifier`, and calling `configurePins`) but replace the returned value and handle the unknown MAC. Where it currently does `int cube_id = entry ? entry->cube_id : 0; ... return cube_id + 20;`, make the unknown case halt with a visible diagnostic instead of returning `.20`:
+In `src/main.cpp`, in `getCubeIpOctet()`, keep the existing side effects (setting `current_rgb_order`, `cube_identifier`, and calling `configurePins`) but replace the returned value and handle the unknown MAC. Where it currently does `int cube_id = entry ? entry->cube_id : 0; ... return cube_id + 20;`, make the unknown case halt instead of returning `.20`:
 
 ```cpp
   if (!entry) {
     Serial.print("FATAL: MAC not in cube table: ");
     Serial.println(mac_address);
-    if (display_manager) display_manager->displayDebugMessage("BAD MAC");
     while (true) { delay(1000); }  // fail closed before Wi-Fi/MQTT
   }
   return entry->ip_octet;
 ```
 
-(Use the `entry` already fetched at the top of the function; keep the `current_rgb_order`, `cube_identifier`, and `configurePins(cube_id)` lines for the known-MAC path.)
+Use the `entry` already fetched at the top of the function; keep the `current_rgb_order`, `cube_identifier`, and `configurePins(cube_id)` lines for the known-MAC path.
+
+**Note — no display diagnostic here:** `getCubeIpOctet()` runs at `src/main.cpp:874`, before `display_manager` is constructed (`src/main.cpp:1469`), so it is null at this point and cannot render text. The fail-closed signal is therefore the Serial log plus a cube that stays dark and never joins Wi-Fi/MQTT — a clear "not working" state for a field tech. Do not call `display_manager` here.
 
 - [ ] **Step 2: Verify the native suite still passes**
 
