@@ -321,6 +321,7 @@ cube/device/{device_id}/sleep-state-ack
 ```json
 {
   "protocol": 1,
+  "state": "sleeping",
   "boot_id": "random-per-full-boot",
   "epoch": "active-epoch",
   "lease_id": "active-lease",
@@ -331,11 +332,24 @@ cube/device/{device_id}/sleep-state-ack
 }
 ```
 
-The server sends this non-retained acknowledgement only after receiving and
-validating the state against current presence and membership. The
-acknowledgement echoes the exact time epoch and accepted deadline and includes
-the server tick at acknowledgement creation. Firmware rejects an
-acknowledgement if any echoed provenance differs from the retained state.
+This is a state-aware acknowledgement schema: `state` is `sleeping` or
+`awake`, while `lease_id` and `wake_deadline_tick_ms` are nullable. The server
+sends it only after receiving and validating the retained state:
+
+- `sleeping` requires current presence plus active control, membership,
+  roster-state, epoch, and lease; its deadline must be numeric and valid in the
+  current time epoch;
+- active `awake` requires current presence plus matching active membership and
+  roster-state; its lease is non-null and its deadline is null;
+- available `awake` requires current presence plus retained `available`
+  roster-state matching the current active control epoch; its lease and
+  deadline are null.
+
+No `awake` acknowledgement is issued for a quarantined device without a
+current authoritative roster state. The acknowledgement echoes the exact
+state, nullable provenance, time epoch, and accepted deadline and includes the
+server tick at acknowledgement creation. Firmware rejects an acknowledgement
+if any echoed field differs from the retained state.
 
 The advertised deadline is bound to the actual hardware wake timer. After
 receiving a valid acknowledgement, firmware computes a conservative remaining
@@ -394,7 +408,7 @@ then replaces the retained sleep record before relying on heartbeat health:
   "protocol": 1,
   "state": "awake",
   "boot_id": "new-random-per-full-boot",
-  "epoch": "active-epoch-or-null",
+  "epoch": "current-active-epoch",
   "lease_id": "active-lease-or-null",
   "sequence": 1,
   "applied_intent_id": "server-generated-intent-or-null",
@@ -403,15 +417,20 @@ then replaces the retained sleep record before relying on heartbeat health:
 }
 ```
 
-It republishes `AWAKE` after MQTT reconnect until acknowledged by the same
-application handshake. A live heartbeat whose boot ID matches current retained
-presence takes immediate precedence over an older retained `SLEEPING` record,
-so stale broker delivery cannot hide an awake device while the replacement
-publish is retried. The server accepts retained `SLEEPING` after restart only
-when its epoch and lease are active, its boot ID matches current presence, its
-sequence is newer than any processed state for that boot, and its absolute
-wake deadline has not expired beyond grace. Otherwise health is
-`UNKNOWN`/`OFFLINE`, never `SLEEPING`.
+For an active full wake, `lease_id` remains the active lease. For an
+`AVAILABLE` transition, `epoch` identifies current active control while
+`lease_id`, `applied_intent_id`, and the deadline are null. Firmware
+republishes `AWAKE` after MQTT reconnect until it receives the exact
+state-aware acknowledgement.
+
+A live heartbeat whose boot ID matches current retained presence takes
+immediate precedence over an older retained `SLEEPING` record, so stale broker
+delivery cannot hide an awake device while the replacement publish is retried.
+The server accepts retained `SLEEPING` after restart only when its epoch and
+lease are active, its boot ID matches current presence, its sequence is newer
+than any processed state for that boot, and its absolute wake deadline has not
+expired beyond grace. Otherwise health is `UNKNOWN`/`OFFLINE`, never
+`SLEEPING`.
 
 When a successor epoch removes a device or changes its lease, the server
 ignores the old record by provenance and clears that device's retained
@@ -759,11 +778,11 @@ Firmware-consumed topics are capped at 80 UTF-8 bytes and minified payloads at
 every supported inbound packet must fit within 512 bytes. Aggregate rebuild
 requests, manifests, and server indexes are published on topics firmware never
 subscribes to. CI serializes worst-case control, membership, roster-state,
-time-response, power-intent, and command records with maximum-width IDs,
-classes, and ticks, asserts the firmware-bound packet sizes, and exercises both
-clients under heap instrumentation. Hardware acceptance verifies the 512-byte
-allocation leaves the agreed minimum free-heap margin during Wi-Fi, TLS-free
-MQTT, NFC polling, rendering, and timer-wake operation.
+time-response, state-acknowledgement, power-intent, and command records with
+maximum-width IDs, classes, and ticks, asserts the firmware-bound packet sizes,
+and exercises both clients under heap instrumentation. Hardware acceptance
+verifies the 512-byte allocation leaves the agreed minimum free-heap margin
+during Wi-Fi, TLS-free MQTT, NFC polling, rendering, and timer-wake operation.
 
 ### Device power intent
 
@@ -964,6 +983,8 @@ mode and must not count as available capacity.
   intent, and NVS last-slot preference.
 - Add retained sleep/awake state with absolute deadlines, application
   acknowledgement, and lease-revocation clearing.
+- Implement state-aware acknowledgement validation for sleeping, active awake,
+  and lease-less available awake records.
 - Bind the deep-sleep hardware timer to the acknowledged absolute deadline by
   programming only the guarded remaining interval.
 - Synchronize both client paths to the Pi boot-scoped time authority and reject
@@ -999,6 +1020,8 @@ mode and must not count as available capacity.
 - Serve nonce-bound `CLOCK_BOOTTIME` samples identified by the Pi Linux boot ID.
 - Validate and acknowledge sleep-state transitions, give matching live
   heartbeats precedence, and clear revoked retained sleep state.
+- Validate active `AWAKE` against membership and available `AWAKE` against
+  current retained roster state before acknowledging.
 - Publish retained active/available roster state for every enrolled and
   previous-roster device at commit.
 - Expose active, enrolling, sleeping, available, missing, incompatible, and
@@ -1083,9 +1106,9 @@ mode and must not count as available capacity.
 - The full client checks `setMaxPacketSize(512)`; the maintenance client checks
   `keepalive_mqtt.setBufferSize(512)` and `getBufferSize()`, and both fail
   closed when allocation is rejected.
-- Worst-case control, membership, roster-state, time-response, power-intent,
-  and command PUBLISH packets remain within 512 bytes including topic and MQTT
-  headers.
+- Worst-case control, membership, roster-state, time-response,
+  state-acknowledgement, power-intent, and command PUBLISH packets remain
+  within 512 bytes including topic and MQTT headers.
 - Firmware never subscribes to aggregate request, manifest, owner, or alias
   topics.
 - Timer wake applies only a power intent matching the active epoch and lease.
@@ -1098,6 +1121,13 @@ mode and must not count as available capacity.
 - Firmware never enters deep sleep until the server acknowledges the exact
   retained sleeping sequence; missing and mismatched acknowledgements keep it
   awake.
+- Active full wake receives an `awake` acknowledgement only when presence,
+  membership, roster state, epoch, and lease all match.
+- Quarantine-to-available receives an `awake` acknowledgement with the current
+  epoch and null lease/deadline only when retained roster state is
+  `available`.
+- State, boot, sequence, epoch, lease, time epoch, or deadline mismatch causes
+  firmware to reject an acknowledgement and continue retrying.
 - A valid acknowledgement binds the exact time epoch and deadline; firmware
   programs only the conservative remaining interval after acknowledgement.
 - An acknowledgement leaving less than one second before the guarded deadline
@@ -1131,6 +1161,11 @@ mode and must not count as available capacity.
   it without acknowledgement.
 - Drop and mismatch sleep-state acknowledgements and verify firmware does not
   enter deep sleep; accept the exact acknowledgement and verify it does.
+- Exercise active full wake and verify the state-aware `awake`
+  acknowledgement carries the active lease and null deadline.
+- Exercise quarantine-to-available and verify lease-less retained `AWAKE` is
+  acknowledged against the current `available` roster state without retrying
+  indefinitely.
 - Delay and drop acknowledgements through the retry window using a fake clock;
   verify the programmed timer uses only the remaining interval, near-expired
   deadlines are refreshed, and actual timer wake never exceeds the accepted
