@@ -143,10 +143,26 @@ The server first publishes a retained `REBUILDING` control record containing a
 new rebuild ID, desired profile, previous epoch, exclusions, and start time.
 
 Every device subscribes to roster control regardless of whether it is active
-or available. An awake device immediately enters `ENROLLING` and honors a
-non-retained broadcast reboot request. A sleeping cube sees the retained
-barrier on its next timer wake and performs a full boot instead of returning
-to sleep.
+or available. Firmware persists `last_enrolled_rebuild_id` and
+`pending_reboot_rebuild_id` in NVS. When any full or maintenance client
+observes `REBUILDING` with an ID different from
+`last_enrolled_rebuild_id`, it persists that ID as the pending reboot target
+and triggers a full reboot without entering `ENROLLING`.
+
+On the next boot, firmware reads roster control before completing enrollment.
+If retained control matches `pending_reboot_rebuild_id`, that boot satisfies
+the barrier: firmware generates the new `boot_id`, atomically promotes the
+pending ID to `last_enrolled_rebuild_id`, clears the pending field, and enters
+`ENROLLING`. A power loss after persisting the pending ID also supplies the
+required full boot. Repeated retained deliveries or reconnects after promotion
+enter `ENROLLING` without rebooting again. Firmware never enrolls from the
+pre-barrier runtime.
+
+An awake device therefore does not depend on receiving the non-retained
+broadcast reboot request. A sleeping cube sees the retained barrier on its next
+timer wake and takes the same persisted, exactly-once reboot path instead of
+returning to sleep. The broadcast only reduces the time before awake devices
+process the barrier.
 
 The enrollment window must exceed the existing timer-wake interval plus
 network startup margin. The default is 30 seconds. A physical all-cube power
@@ -166,7 +182,10 @@ After reboot, each device:
 
 A device is eligible only after the server receives a live heartbeat for the
 current rebuild ID and matching `boot_id`. Retained `online: true` presence is
-never enrollment proof.
+never enrollment proof. While `ENROLLING`, firmware republishes the heartbeat
+immediately after every MQTT reconnect and every two seconds. Its heartbeat
+sequence is monotonic within the boot, allowing a restarted server to obtain
+fresh enrollment proof without rebooting devices or starting a new rebuild.
 
 ### Deterministic selection
 
@@ -222,7 +241,11 @@ guesses, scoring, or ABC transitions.
 
 If required acknowledgements or snapshots time out, gameplay stays paused and
 the admin UI identifies the missing devices. The server never exposes a
-partially rebuilt graph.
+partially rebuilt graph. Selected active devices republish assignment
+acknowledgements immediately after every MQTT reconnect and every two seconds
+until the startup topology barrier closes. They continue periodic
+acknowledgements while awake so a restarted server can reconstruct activation
+proof before accepting sensor snapshots.
 
 ## Sleep lifecycle
 
@@ -243,6 +266,7 @@ cube/device/{device_id}/sleep-state
   "state": "sleeping",
   "epoch": "active-epoch",
   "lease_id": "active-lease",
+  "applied_intent_id": "server-generated-intent",
   "next_wake_ms": 20000
 }
 ```
@@ -254,16 +278,23 @@ On timer wake, the minimal maintenance client:
 
 - uses the stable device ID rather than the logical slot as its MQTT client and
   topic identity;
-- reads retained roster control;
-- if control is still `ACTIVE` for its epoch, publishes updated device-scoped
-  sleep status and may return to sleep;
+- reads retained roster control and its retained device power intent;
+- if control is still `ACTIVE` for its epoch and a matching intent requires
+  `AWAKE`, starts the full client and remains awake;
+- if control is still `ACTIVE` for its epoch and a matching intent allows
+  sleep, publishes updated device-scoped sleep status and may return to sleep;
 - if control is `REBUILDING` with a new rebuild ID, stays awake, performs the
   full enrollment boot, and does not return to sleep;
 - never publishes the legacy logical `/status` keep-alive.
 
-Device-scoped wake and sleep commands replace logical auto-sleep flags for the
-maintenance path. Logical game commands remain lease-gated while the cube is
-fully awake.
+Device-scoped retained power intents replace logical auto-sleep flags for the
+maintenance path. The server publishes `AWAKE` for every selected device
+before starting or resuming a game and waits for fresh presence,
+acknowledgement, and sensor state. A sleeping device observes that intent on
+its next timer wake, so waking an unchanged roster requires neither a rebuild
+nor physical access. `SLEEP_ALLOWED` permits the normal inactivity timer; it
+does not force immediate sleep. Logical game commands remain lease-gated while
+the cube is fully awake.
 
 An actually failed cube and an intentionally sleeping cube may both lack
 heartbeats, but neither causes reassignment. Replacement requires the explicit
@@ -339,8 +370,10 @@ Non-retained payload:
 ```
 
 The retained control record, not delivery of this best-effort request, is
-authoritative. Sleeping devices enroll when they observe the control record on
-timer wake.
+authoritative. Processing a new retained rebuild ID persists the ID and causes
+exactly one full reboot even if this request is dropped. Duplicate broadcasts,
+retained redelivery, and MQTT reconnects cannot cause additional reboots for
+the same rebuild ID.
 
 ### Presence and heartbeat
 
@@ -365,7 +398,10 @@ Heartbeat is non-retained and contains:
 ```
 
 Only a live, newer sequence matching current presence and rebuild establishes
-enrollment freshness.
+enrollment freshness. An enrolling device publishes immediately after boot,
+after each MQTT reconnect, and every two seconds. `sequence` is a monotonic
+per-boot heartbeat sequence and is independent from acknowledgement and sensor
+sequences.
 
 ### Epoch manifest and lease records
 
@@ -404,7 +440,48 @@ Non-retained payload:
 ```
 
 The server accepts only a live acknowledgement matching current presence,
-control, manifest, and lease.
+control, manifest, and lease. An active device publishes immediately on
+activation, after each MQTT reconnect, and every two seconds while fully
+awake. `sequence` is a monotonic per-boot acknowledgement sequence, independent
+from heartbeat and sensor sequences. This replay makes activation proof
+recoverable if the server restarts after commit but before installing
+topology.
+
+### Device power intent
+
+```text
+cube/device/{device_id}/power-intent
+```
+
+Retained payload:
+
+```json
+{
+  "protocol": 1,
+  "intent_id": "server-generated-intent",
+  "desired_state": "awake",
+  "epoch": "active-epoch",
+  "lease_id": "active-lease",
+  "issued_at_ms": 0
+}
+```
+
+`desired_state` is `awake` or `sleep_allowed`. A device applies an intent only
+when its `epoch` and `lease_id` exactly match the current active control and
+assignment. It ignores an intent from an old epoch or lease. During
+`REBUILDING`, the rebuild barrier takes precedence over every power intent.
+When a new epoch commits, the server publishes a new intent for each selected
+device; retained intents for devices omitted from the roster are harmless
+because their leases no longer match and may be cleared during garbage
+collection.
+
+Both the full and maintenance clients subscribe using device identity. A
+sleeping device checks the retained intent on every timer wake. It echoes the
+applied `intent_id` in sleep state, and after an `awake` intent it starts the
+full client and publishes fresh presence, assignment acknowledgement, and
+sensor state. If a matching intent is missing, malformed, or stale, the device
+uses `sleep_allowed` while `ACTIVE`; it never treats that condition as
+authority to change roster membership.
 
 ### Device-scoped sensor state
 
@@ -449,6 +526,7 @@ BOOT
 
 ENROLLING
   -> publish fresh boot/rebuild heartbeat
+  -> replay heartbeat on reconnect and every two seconds
   -> no logical commands or game-authoritative sensors
 
 AVAILABLE
@@ -457,11 +535,12 @@ AVAILABLE
 ACTIVE
   -> require active control + matching manifest/owner/assignment/alias/lease
   -> apply slot-specific rotation and subscribe to cube/{slot}/...
-  -> publish assignment acknowledgement and device-scoped sensor snapshots
+  -> replay assignment acknowledgement and device-scoped sensor snapshots
+  -> obey only matching retained device power intent
 
 SLEEPING
-  -> keep assignment; publish device-scoped sleep intent
-  -> timer wake reads roster control
+  -> keep assignment; publish device-scoped sleep state
+  -> timer wake reads roster control and device power intent
 
 QUARANTINED
   -> stop logical subscriptions and active-provenance sensor publication
@@ -499,6 +578,10 @@ publishes a fresh snapshot for the startup topology barrier.
 | Crash after active commit | Reconstruct complete new epoch and topology barrier |
 | Delayed old sensor message arrives | Reject by device/boot/rebuild/epoch/lease |
 | Sleeping cube sees rebuild barrier | Stay awake and enroll |
+| Awake cube misses reboot broadcast | Retained rebuild barrier causes its one reboot |
+| Server restarts during enrollment | Periodic heartbeats restore enrollment proof |
+| Server restarts after active commit | Periodic acknowledgements restore activation proof |
+| Sleeping active roster must start a game | Matching retained awake intent wakes it |
 
 ### Rebuild recovery
 
@@ -542,11 +625,12 @@ mode and must not count as available capacity.
 - Replace MAC-to-logical-ID boot identity with stable device identity.
 - Add unique device MQTT identity, presence, fresh enrollment heartbeat, and
   offline last will.
-- Implement retained rebuild-control handling in full boot and timer-wake
-  paths.
+- Implement retained rebuild-control handling and persisted exactly-once
+  per-rebuild reboot state in full boot and timer-wake paths.
 - Migrate maintenance sleep/wake topics and client IDs from logical slot to
   device ID.
-- Add assignment validation, acknowledgement, and NVS last-slot preference.
+- Add assignment validation, replayed acknowledgement, retained power intent,
+  and NVS last-slot preference.
 - Gate logical commands behind the committed lease.
 - Publish raw device-scoped sensor snapshots with full provenance.
 - Disable logical `cube/right` publication and compiled tag fallback in pooled
@@ -569,6 +653,8 @@ mode and must not count as available capacity.
   alias registry.
 - Remove `cube/right/#` as game-authoritative input.
 - Rehydrate non-retained display state after acknowledgement.
+- Publish epoch- and lease-scoped retained power intents and wait for selected
+  devices to wake before enabling gameplay.
 - Expose active, enrolling, sleeping, available, missing, incompatible, and
   excluded devices in logs/admin UI.
 
@@ -588,6 +674,7 @@ mode and must not count as available capacity.
 - Sleeping status never makes a slot available.
 - A server restart never starts a rebuild.
 - Only an explicit rebuild ID opens enrollment.
+- Restarted server receives periodic enrollment proof without rebooting cubes.
 - Retained presence without a live boot/rebuild-matched heartbeat is
   ineligible.
 - Six-cube rebuild selects exactly six from seven compatible devices.
@@ -598,6 +685,8 @@ mode and must not count as available capacity.
 - Prepared records cannot activate while control is `REBUILDING`.
 - Active control cannot reference an incomplete or inconsistent epoch.
 - Restart before and after commit recovers the correct rebuild state.
+- Restart after active commit but before topology installation recovers
+  periodic acknowledgements and completes the topology barrier.
 - Delayed sensor snapshots with wrong provenance are ignored.
 - Legacy retained `cube/right/{slot}` input is ignored.
 - Topology snapshots are staged without per-edge callbacks.
@@ -606,12 +695,24 @@ mode and must not count as available capacity.
 ### Firmware-native tests
 
 - Full boot uses fresh device and rebuild identity.
+- A new retained rebuild ID persists before causing exactly one full reboot.
+- Duplicate retained delivery, reconnect, and reboot broadcast do not cause a
+  second reboot for the same rebuild ID.
 - Active control and all assignment records must agree before activation.
 - A last-slot NVS value is preference, never authority.
 - Timer wake uses device-scoped client and topics.
 - Timer wake under unchanged active control returns to sleep without changing
   assignment.
 - Timer wake under a new rebuild barrier stays awake and enrolls.
+- Enrolling heartbeat replays on reconnect and periodically with a monotonic
+  per-boot sequence.
+- Active assignment acknowledgement replays on reconnect and periodically
+  with a monotonic per-boot sequence.
+- Timer wake applies only a power intent matching the active epoch and lease.
+- An `awake` intent starts the full client; `sleep_allowed` permits the normal
+  inactivity timer.
+- Stale, missing, and malformed power intents cannot wake an old lease or
+  change roster membership.
 - Sleeping intent includes exact epoch, lease, and next wake.
 - Available and quarantined devices cannot use logical command topics.
 - Sensor snapshots contain exact boot, rebuild, epoch, lease, and sequence.
@@ -624,6 +725,16 @@ mode and must not count as available capacity.
 - Observe repeated 20-second timer wakes and verify device-scoped sleep status.
 - Start a rebuild while cubes sleep; verify all enroll by the 30-second window
   or remain explicitly missing without partial commit.
+- Drop the administrative reboot broadcast entirely and verify every cube
+  observes retained control, reboots exactly once, and enrolls.
+- Restart the server after enrollment heartbeats and verify periodic replay
+  completes selection without another cube reboot.
+- Restart the server after active commit but before topology installation and
+  verify acknowledgement and sensor replay complete the barrier.
+- Put the unchanged active roster to sleep, publish matching retained `awake`
+  intents, and verify all selected cubes wake on their next timer cycle without
+  a rebuild or physical action.
+- Deliver old-epoch and wrong-lease power intents and verify they are ignored.
 - Replace one cube in six-cube and twelve-cube profiles.
 - Reconnect the old holder after commit and verify it remains available.
 - Interrupt rebuild after every preparation step and verify no partial roster
