@@ -1,397 +1,309 @@
-# Dynamic Cube Pool and Automatic Replacement
+# Dynamic Cube Pool with Boot-Time Replacement
 
 **Status:** Proposed design; no implementation
-**Date:** 2026-07-25
+**Date:** 2026-07-26
 **Owners:** `cube-pn5180` firmware, `cubes` game server, and `pi-deploy`
 
 ## Decision
 
-Treat every cube as a member of a hardware-compatible device pool. There is no
-permanent `primary` or `standby` role and no explicit release operation.
+Treat every cube as a member of a hardware-compatible device pool, with no
+permanent `primary` or `standby` role. Roster membership changes only during an
+administrator-triggered rebuild that reboots all cubes and interrupts the
+game.
 
-For a six-cube game, the server selects six compatible online cubes. For a
-twelve-cube game, it selects twelve. Extra compatible cubes remain idle. If an
-active cube disappears, the server assigns an idle cube of the same hardware
-class to the vacated logical slot. If the old cube later returns, it remains
-idle while the replacement keeps its lease.
+For a six-cube game, the rebuild selects six compatible cubes. For a
+twelve-cube game, it selects twelve. Extra compatible cubes remain available.
+If an active cube fails during play, the server reports the failure but does
+not change the roster. An administrator powers on a compatible extra, powers
+off or excludes the failed cube, and starts a full roster rebuild.
 
-This is conceptually “take the first six cubes,” with two safety refinements:
+This deliberately trades hot replacement for a much smaller and safer first
+version:
 
-1. selection happens after a short discovery window rather than literal MQTT
-   arrival order;
-2. assignments are sticky, so a late or returning cube never reshuffles a
-   healthy running roster.
+- intentional deep sleep can never trigger replacement;
+- gameplay is not running while neighbor topology changes;
+- one immutable roster is committed at boot;
+- returning and delayed devices cannot alter the roster;
+- no explicit spare release operation is needed.
+
+## Field workflow
+
+1. Stop the game after a cube failure.
+2. Power off or remove the failed cube. If it is intermittently online, record
+   its device ID in the rebuild exclusion list.
+3. Put a compatible extra cube in its place and power it on.
+4. Run the administrative `rebuild-cube-roster` action for 6 or 12 cubes.
+5. The action publishes a retained rebuild barrier and requests every cube to
+   reboot.
+6. The server waits for newly booted devices, selects a complete compatible
+   roster, and commits one new roster epoch.
+7. The server gathers a complete sensor snapshot, installs the neighbor graph
+   atomically, and only then enables ABC/gameplay.
+
+No flashing, per-cube ID selection, or release command is required in the
+field. The replacement does require a full game interruption and cube reboot.
 
 ## Constraints
 
 - A game uses 6 cubes for single-player or 12 cubes for two-player.
 - Small and large cubes are not physically interchangeable.
-- A device may replace only a slot requiring the same hardware compatibility
+- A device may fill only a slot requiring the same hardware compatibility
   class.
-- Full replacement coverage requires at least one extra small cube and one
-  extra large cube when both sizes are deployed.
-- The current firmware derives logical identity from both ESP32 MAC address
-  and enclosure NFC tag. Both must become runtime assignments.
+- Full coverage requires at least one extra small cube and one extra large
+  cube when both sizes are deployed.
+- The desired cube count and slot hardware classes must be explicit rebuild
+  inputs; online-device count alone is ambiguous.
+- Current firmware derives logical identity from both ESP32 MAC address and
+  enclosure NFC tag. Both become roster-time assignments.
+- Current firmware auto-sleeps after 10 minutes of MQTT inactivity and briefly
+  wakes about every 20 seconds. The pooled lifecycle must preserve this
+  battery behavior.
 
 ## Goals
 
 - All cubes run the same role-free firmware for their hardware build.
-- Powering on a compatible extra cube is sufficient to make it available.
-- The server automatically maintains a roster of 6 or 12 active cubes.
-- A replacement adopts the failed cube's exact logical slot, MQTT topics,
-  player grouping, display rotation, and current retained display state.
-- A returning cube cannot evict a healthy replacement during a game.
-- Normal restarts preserve stable assignments when the same cubes return.
-- The system fails closed when there are too few compatible cubes or an
-  ambiguous/conflicting assignment.
-- No `cube/standby/release` topic or field maintenance release is required.
+- An administrator can replace a failed cube by powering a compatible extra
+  and rebuilding the roster.
+- A rebuild deterministically selects exactly 6 or 12 compatible devices.
+- The committed roster is immutable until another administrative rebuild.
+- Sleeping, offline, returning, and extra devices never cause automatic
+  reassignment.
+- A selected device adopts its assigned MQTT command topics, player grouping,
+  display rotation, and retained display state.
+- Logical neighbor state is derived from device-scoped, lease-provenanced
+  physical observations.
+- ABC, guessing, and scoring remain disabled until the complete new topology
+  is installed atomically.
+- Server and broker restarts reconstruct the same active roster unless a
+  rebuild was already in progress.
+- No `cube/standby/release` operation is required.
 
 ## Non-goals
 
+- Replacing a cube without interrupting the current game.
+- Changing roster membership because of a heartbeat timeout.
 - Using a small cube to replace a large cube or vice versa.
-- Continuing normally when the compatible pool has fewer than 6 or 12 devices
-  required by the selected game mode.
-- Replacing multiple failed cubes when the pool does not contain enough
-  compatible extras.
+- Continuing a rebuild with fewer than the configured 6 or 12 compatible
+  devices.
 - Preserving formula-based IP addresses for dynamically assigned devices.
 - Replacing the existing MQTT broker security model.
 
 ## Identity model
 
-Separate stable physical identity from session-facing logical identity:
+Stable physical identity is separate from roster identity:
 
 | Identifier | Example | Lifetime |
 |---|---|---|
 | Device ID | `80F3DA5453B8` | ESP32 lifetime; derived from MAC |
 | NFC tag ID | 16 hex characters | Enclosure lifetime |
 | Hardware class | `small` or `large` | Immutable commissioning metadata |
-| Logical slot | `1-6` or `11-16` | Server-managed sticky lease |
-| Session epoch | Server-generated ID | One roster generation |
+| Preferred set | `0`, `1`, or `either` | Commissioning preference |
+| Logical slot | `1-6` or `11-16` | One committed roster epoch |
+| Lease ID | Server-generated ID | One device assignment in one epoch |
+| Rebuild ID | Server-generated ID | One administrative rebuild attempt |
 
-No device is intrinsically cube 4 or intrinsically a standby. “Cube 4” means
-the online device currently holding logical slot 4.
+No device is intrinsically cube 4 or intrinsically a spare. “Cube 4” means the
+device assigned logical slot 4 in the active roster.
 
-Hardware class should be extensible beyond size if later hardware differences
-also prevent substitution. For example, a future value might encode size,
-display electrical profile, and enclosure generation rather than only
-`small`/`large`.
+Hardware class should remain extensible if later electrical or enclosure
+differences also prevent substitution.
 
-## Session configuration
-
-The assignment manager must know the desired roster before selecting devices:
+## Session profiles
 
 ```text
 Single-player slots: 1, 2, 3, 4, 5, 6
 Two-player slots:    1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16
 ```
 
-The game configuration must provide:
+The rebuild request supplies:
 
 - `cube_count`: `6` or `12`;
-- the hardware class required for each slot, or a single class when all slots
-  use the same size.
+- required hardware class for each slot, or one class for the whole profile;
+- optional `excluded_device_ids`;
+- optional timeout override.
 
-Explicit configuration is preferable to counting online devices. With seven
-cubes online, presence alone cannot determine whether the operator intends a
-six-cube game plus one extra or is still booting a twelve-cube game.
+For a twelve-cube game, slots `1-6` remain one physical player set and slots
+`11-16` remain the other. Current IDs seed last-slot preferences during
+migration. Commissioned `preferred_set` metadata prevents a completely new
+roster from scattering the two logical sets across physical play areas. Extras
+that may replace either side use `preferred_set: either`.
 
-For migration, current logical IDs seed each device's last-known slot. That
-preserves the existing player grouping in normal operation while removing the
-permanent primary/standby distinction. New or replacement devices have no
-initial slot preference.
+## Administrative roster rebuild
 
-## Discovery and roster selection
+### Preconditions
 
-### Discovery
+- Gameplay, ABC detection, guessing, and scoring are paused.
+- The compatible extra is powered.
+- The failed or unwanted device is powered off or explicitly excluded.
+- The requested profile identifies 6 or 12 slots and their hardware classes.
 
-Every powered cube:
+### Rebuild barrier
 
-1. connects using DHCP;
-2. uses an MQTT client ID derived from its stable device ID;
-3. publishes retained device metadata, installs a retained offline last will,
-   and starts a non-retained heartbeat containing its per-boot nonce;
-4. waits for a server assignment before using logical cube topics;
-5. displays `AVAILABLE` while online but not selected.
+The server first publishes a retained `REBUILDING` control record containing a
+new rebuild ID, desired profile, previous epoch, exclusions, and start time.
 
-The server waits for a five-second discovery window on cold startup. It then
-builds a roster from devices whose hardware classes satisfy the configured
-slot requirements.
+Every device subscribes to roster control regardless of whether it is active
+or available. An awake device immediately enters `ENROLLING` and honors a
+non-retained broadcast reboot request. A sleeping cube sees the retained
+barrier on its next timer wake and performs a full boot instead of returning
+to sleep.
 
-Retained `online: true` presence is descriptive state, not proof that a device
-is currently reachable. A device becomes eligible only after the server
-receives a non-retained heartbeat after subscribing, with a `boot_id` matching
-the device's current presence record. Heartbeats include a monotonically
-increasing `sequence`; a duplicate or older sequence for the same boot is
-ignored. This prevents stale retained presence from entering a roster during
-the five-second discovery window after a server restart.
+The enrollment window must exceed the existing timer-wake interval plus
+network startup margin. The default is 30 seconds. A physical all-cube power
+cycle may be used instead of waiting for timer wakes.
+
+### Fresh enrollment
+
+After reboot, each device:
+
+1. connects using DHCP and a device-derived MQTT client ID;
+2. reads the retained rebuild control;
+3. generates a new `boot_id`;
+4. publishes retained device metadata;
+5. publishes a non-retained heartbeat containing the rebuild and boot IDs;
+6. remains `ENROLLING` without subscribing to logical commands or publishing
+   game-authoritative sensor state.
+
+A device is eligible only after the server receives a live heartbeat for the
+current rebuild ID and matching `boot_id`. Retained `online: true` presence is
+never enrollment proof.
 
 ### Deterministic selection
 
-The server does not use raw MQTT arrival order. It ranks eligible devices:
+After the enrollment window, the server ranks compatible, non-excluded
+devices:
 
-1. online devices already holding a valid lease for this roster;
-2. online devices requesting a unique last-known slot;
+1. devices from the previous roster requesting a unique compatible last slot;
+2. other devices requesting a unique compatible last slot;
 3. remaining compatible devices ordered by stable device ID.
 
-It assigns exactly the configured 6 or 12 slots. Compatible devices beyond
-that count stay `AVAILABLE`.
+It selects exactly the required 6 or 12 devices. Extras stay `AVAILABLE`.
+Selection never changes after the roster becomes active.
 
-Sticky leases matter more than the initial ranking: after a roster is active,
-a newly appearing device cannot evict an active lease holder.
+If capacity or player-set constraints cannot produce a complete roster, the
+server leaves control in `REBUILDING`, keeps gameplay paused, and reports the
+missing hardware classes or player-set capacity. It never commits a partial
+roster.
 
-### Player grouping
+### Prepare and commit
 
-For a twelve-cube game, slots `1-6` remain one physical cube set and slots
-`11-16` remain the other. Persisted last-known slots keep today's grouping
-stable across normal restarts.
+The server creates a complete immutable epoch:
 
-If the server must build a completely new twelve-cube roster without any slot
-history, it needs an explicit grouping method. The first version should use
-commissioned `preferred_set` metadata (`0`, `1`, or `either`) and require six
-compatible devices per set. Arbitrarily splitting twelve devices by boot order
-could scatter player-0 and player-1 assignments across two physical play
-areas.
+1. publish the epoch manifest;
+2. publish owner, assignment, tag-alias, and lease records for every selected
+   device;
+3. verify the manifest and all records reached the broker at QoS 1;
+4. publish roster control with `state: "ACTIVE"` and the new epoch as the
+   single global commit.
 
-An extra intended to replace either player set uses `preferred_set: either`.
-This is a placement preference, not a primary/standby role.
+Before step 4, all devices remain `ENROLLING`. At step 4, a selected device
+activates only if its manifest, owner, assignment, own tag alias, lease, rebuild
+ID, and control epoch all agree. Unselected devices become `AVAILABLE`.
 
-## Automatic replacement
+The previous epoch remains immutable and non-authoritative. It may be
+garbage-collected after the new roster and topology are confirmed.
 
-An active device is considered unavailable after:
+### Startup topology barrier
 
-- an MQTT offline last will, or
-- six seconds without a valid live heartbeat.
+Committing the roster does not immediately enable gameplay. The server opens a
+startup topology barrier:
 
-The server then waits a short stability interval so a transient reconnect does
-not churn the roster. If the device remains unavailable:
+1. selected devices acknowledge the exact boot, rebuild, epoch, slot, and
+   lease;
+2. every selected device publishes a fresh raw sensor snapshot under that
+   provenance;
+3. the server validates all snapshots and builds a staged neighbor graph;
+4. the server replaces the coordination graph in one bulk operation;
+5. only after the bulk install does it enable ABC detection and gameplay.
 
-1. leave the current epoch immutable so its healthy devices continue normally;
-2. select the highest-ranked idle device matching the slot's hardware class
-   and permitted player set;
-3. construct a complete successor epoch containing every healthy current
-   holder in its existing slot and the replacement in the failed slot;
-4. issue new epoch-bound lease IDs for every selected device;
-5. prepare and atomically commit the successor using the roster-transition
-   protocol below;
-6. wait for live acknowledgements from the complete new roster;
-7. replay any non-retained state the replacement needs.
+Per-device snapshots never call normal neighbor-change handlers while the
+barrier is active. No intermediate `-` edges can trigger word evaluation,
+guesses, scoring, or ABC transitions.
 
-The current manifest and its records are never edited in place. The successor
-manifest therefore agrees with the replacement owner, assignment, tag alias,
-and lease after any server restart. A crash before the epoch flip leaves the
-old roster authoritative; a crash after it exposes a complete successor.
+If required acknowledgements or snapshots time out, gameplay stays paused and
+the admin UI identifies the missing devices. The server never exposes a
+partially rebuilt graph.
 
-The replacement receives the exact vacated slot rather than causing the other
-five or eleven cubes to be renumbered.
+## Sleep lifecycle
 
-If no compatible idle device exists, the slot remains unavailable and the
-server reports the required hardware class. It must not assign an incompatible
-cube.
+Roster membership is independent of liveness after commit. Heartbeat expiry
+updates health status but never changes owner, assignment, alias, lease, or
+manifest records.
+
+Before an active cube enters deep sleep, it publishes device-scoped sleep
+state:
+
+```text
+cube/device/{device_id}/sleep-state
+```
+
+```json
+{
+  "protocol": 1,
+  "state": "sleeping",
+  "epoch": "active-epoch",
+  "lease_id": "active-lease",
+  "next_wake_ms": 20000
+}
+```
+
+The active lease remains valid while the device sleeps. The server reports the
+device as `SLEEPING`, not failed or available.
+
+On timer wake, the minimal maintenance client:
+
+- uses the stable device ID rather than the logical slot as its MQTT client and
+  topic identity;
+- reads retained roster control;
+- if control is still `ACTIVE` for its epoch, publishes updated device-scoped
+  sleep status and may return to sleep;
+- if control is `REBUILDING` with a new rebuild ID, stays awake, performs the
+  full enrollment boot, and does not return to sleep;
+- never publishes the legacy logical `/status` keep-alive.
+
+Device-scoped wake and sleep commands replace logical auto-sleep flags for the
+maintenance path. Logical game commands remain lease-gated while the cube is
+fully awake.
+
+An actually failed cube and an intentionally sleeping cube may both lack
+heartbeats, but neither causes reassignment. Replacement requires the explicit
+administrative rebuild.
 
 ## Returning and surplus cubes
 
-A device that comes online after its old slot has been reassigned publishes
-presence normally but receives no active assignment. It displays `AVAILABLE`
-and does not subscribe or publish through logical cube topics.
+A device that appears after the enrollment window cannot join the active
+roster. It publishes device presence, displays `AVAILABLE`, and waits for a
+future rebuild.
 
-The successor epoch omits the former holder and its tag alias. At the epoch
-flip, the server withdraws derived neighbor edges that depended on the old
-alias before accepting new sensor state. Pooled game logic never falls back to
-the compiled tag table: an alias in the current immutable roster is required.
-This prevents an unassigned cube placed near another cube from appearing as
-its former logical slot.
-
-There is no automatic “original wins” behavior. Reclaiming the slot would
-interrupt the replacement and could corrupt neighbor state during a live game.
-
-There is also no explicit release:
-
-- if the replacement stays online, it keeps the slot;
-- if the replacement later powers off and the former device is available, the
-  former device can automatically fill the open slot;
-- on a cold roster rebuild, sticky history and deterministic ranking select
-  the active 6 or 12 devices;
-- an optional administrative “rebuild roster” command may exist for
-  diagnostics, but normal field operation does not require it.
+A former holder returning after replacement also remains `AVAILABLE`; there is
+no “original wins” behavior. If it should be selected again, the admin starts
+another full rebuild.
 
 ## MQTT protocol
 
-All JSON examples are illustrative; final field names should be versioned.
-Device IDs are uppercase MAC addresses without colons.
+All JSON records are versioned. Device IDs are uppercase MAC addresses without
+colons.
 
-### Presence metadata
+### Roster control
 
 Topic:
 
 ```text
-cube/device/{device_id}/presence
+cube/roster/control
 ```
 
-Retained online payload:
+Retained rebuilding payload:
 
 ```json
 {
   "protocol": 1,
-  "online": true,
-  "tag": "BD291466080104E0",
-  "hardware_class": "small",
-  "preferred_set": "either",
-  "last_slot": 4,
-  "firmware": "git-version",
-  "boot_id": "random-per-boot"
+  "state": "rebuilding",
+  "rebuild_id": "server-generated-rebuild",
+  "previous_epoch": "previous-active-epoch",
+  "cube_count": 6,
+  "excluded_device_ids": [],
+  "started_at_ms": 0
 }
-```
-
-Firmware updates this retained record on connection and installs a retained
-`online: false` last will. The server never uses a retained replay of this
-record as liveness proof.
-
-### Live heartbeat
-
-Topic:
-
-```text
-cube/device/{device_id}/heartbeat
-```
-
-Non-retained payload:
-
-```json
-{
-  "protocol": 1,
-  "boot_id": "random-per-boot",
-  "sequence": 42
-}
-```
-
-Firmware publishes immediately after connecting and every two seconds. Only a
-heartbeat received live after the server subscribed, with a `boot_id` matching
-current presence and a newer sequence, establishes or refreshes eligibility.
-
-### Current roster epoch
-
-Topic:
-
-```text
-cube/roster/current
-```
-
-Retained payload:
-
-```json
-{
-  "protocol": 1,
-  "epoch": "server-roster-epoch",
-  "cube_count": 6
-}
-```
-
-Firmware accepts only leases belonging to this epoch. Every roster mutation,
-including a one-cube replacement, prepares a complete new epoch and publishes
-this record last as the global commit.
-
-### Roster manifest
-
-Topic:
-
-```text
-cube/roster/{epoch}/manifest
-```
-
-The retained manifest declares the configured cube count, selected devices,
-slots, tags, hardware classes, and lease IDs for that epoch. Once its epoch is
-current, it is immutable. Any holder or lease change creates a successor epoch.
-This lets the server validate that a prepared roster is complete before
-committing it and reconstruct an exact roster after restart.
-
-### Slot ownership
-
-Topic:
-
-```text
-cube/roster/{epoch}/slot/{logical_slot}/owner
-```
-
-Retained prepared payload:
-
-```json
-{
-  "protocol": 1,
-  "device_id": "80F3DA5453B8",
-  "epoch": "server-roster-epoch",
-  "lease_id": "server-generated-lease",
-  "state": "prepared"
-}
-```
-
-### Device assignment
-
-Topic:
-
-```text
-cube/roster/{epoch}/device/{device_id}/assignment
-```
-
-Retained prepared payload:
-
-```json
-{
-  "protocol": 1,
-  "logical_slot": 4,
-  "epoch": "server-roster-epoch",
-  "lease_id": "same-as-owner",
-  "state": "prepared"
-}
-```
-
-An inactive retained tombstone means the device is unassigned. Firmware
-persists the last slot for startup preference, but owner and assignment
-agreement alone does not activate it.
-
-### NFC alias
-
-Topic:
-
-```text
-cube/roster/{epoch}/tag-alias/{tag_id}
-```
-
-Retained prepared payload:
-
-```json
-{
-  "protocol": 1,
-  "logical_slot": 4,
-  "epoch": "server-roster-epoch",
-  "lease_id": "same-as-owner",
-  "state": "prepared"
-}
-```
-
-Every selected device's tag receives a lease-bound alias. The server resolves
-raw observed tags only through aliases in the current epoch whose leases have
-active commits. Old aliases are ignored as soon as the current epoch changes
-and may then be replaced with retained tombstones during garbage collection:
-
-```json
-{
-  "protocol": 1,
-  "state": "inactive"
-}
-```
-
-Pooled game logic treats the current epoch alias registry as authoritative for
-every commissioned pooled tag. Firmware publishes raw observed tag IDs rather
-than a logical neighbor ID. The compiled `KNOWN_TAGS` table may be used only
-during the observe-only migration phase; after pooling is enabled, there is no
-static fallback for a missing or inactive alias.
-
-### Lease activation commit
-
-Topic:
-
-```text
-cube/roster/{epoch}/lease/{lease_id}/commit
 ```
 
 Retained active payload:
@@ -400,25 +312,77 @@ Retained active payload:
 {
   "protocol": 1,
   "state": "active",
-  "device_id": "80F3DA5453B8",
-  "logical_slot": 4,
-  "epoch": "server-roster-epoch"
+  "rebuild_id": "server-generated-rebuild",
+  "epoch": "new-active-epoch",
+  "cube_count": 6
 }
 ```
 
-The server publishes this only after the matching owner, assignment, and alias
-records are prepared. Devices and server-side tag lookup require exact
-agreement across all four records. A lease commit is necessary but does not
-activate a prepared future epoch; `cube/roster/current` is the final global
-activation signal. No new lease is ever added to the current epoch.
+This record is the rebuild barrier and final global commit. A server process
+restart alone never changes it.
 
-All retained roster records are scoped beneath their epoch. Preparing a new
-6- or 12-cube profile therefore cannot overwrite owner, assignment, alias, or
-lease records used by the current epoch.
-
-### Assignment acknowledgement
+### Administrative reboot request
 
 Topic:
+
+```text
+cube/device/all/reboot
+```
+
+Non-retained payload:
+
+```json
+{
+  "protocol": 1,
+  "rebuild_id": "server-generated-rebuild"
+}
+```
+
+The retained control record, not delivery of this best-effort request, is
+authoritative. Sleeping devices enroll when they observe the control record on
+timer wake.
+
+### Presence and heartbeat
+
+```text
+cube/device/{device_id}/presence
+cube/device/{device_id}/heartbeat
+```
+
+Presence is retained metadata with `online`, tag, hardware class, preferred
+set, firmware, last slot, and current `boot_id`. It has a retained offline last
+will.
+
+Heartbeat is non-retained and contains:
+
+```json
+{
+  "protocol": 1,
+  "boot_id": "random-per-boot",
+  "rebuild_id": "current-rebuild-or-null",
+  "sequence": 42
+}
+```
+
+Only a live, newer sequence matching current presence and rebuild establishes
+enrollment freshness.
+
+### Epoch manifest and lease records
+
+```text
+cube/roster/{epoch}/manifest
+cube/roster/{epoch}/slot/{logical_slot}/owner
+cube/roster/{epoch}/device/{device_id}/assignment
+cube/roster/{epoch}/tag-alias/{tag_id}
+cube/roster/{epoch}/lease/{lease_id}
+```
+
+The immutable manifest lists selected devices, tags, slots, hardware classes,
+player sets, and lease IDs. Owner, assignment, alias, and lease records must
+match it exactly. These prepared records have no effect while control remains
+`REBUILDING`; the active control record is the final commit.
+
+### Assignment acknowledgement
 
 ```text
 cube/device/{device_id}/assignment-ack
@@ -431,25 +395,18 @@ Non-retained payload:
   "protocol": 1,
   "state": "active",
   "boot_id": "random-per-boot",
+  "rebuild_id": "server-generated-rebuild",
   "logical_slot": 4,
-  "epoch": "server-roster-epoch",
-  "lease_id": "server-generated-lease",
+  "epoch": "active-epoch",
+  "lease_id": "active-lease",
   "sequence": 7
 }
 ```
 
-Firmware publishes an acknowledgement immediately after entering `ACTIVE`,
-after every MQTT reconnect, and every two seconds while active. The server
-accepts only a live acknowledgement matching the current presence `boot_id`
-and exact current lease. Hydration begins only after this proof. On revocation,
-firmware publishes the same shape with `state: "available"` and null slot and
-lease fields.
+The server accepts only a live acknowledgement matching current presence,
+control, manifest, and lease.
 
 ### Device-scoped sensor state
-
-Physical cubes never publish game-authoritative sensor state directly on
-logical topics such as `cube/right/{slot}`. They publish raw physical
-observations on a stable device topic:
 
 ```text
 cube/device/{device_id}/sensor-state
@@ -461,153 +418,103 @@ Non-retained payload:
 {
   "protocol": 1,
   "boot_id": "random-per-boot",
+  "rebuild_id": "server-generated-rebuild",
   "sequence": 93,
-  "epoch": "server-roster-epoch",
-  "lease_id": "server-generated-lease",
+  "epoch": "active-epoch",
+  "lease_id": "active-lease",
   "observed_tag": "A9121466080104E0",
   "hall_present": true
 }
 ```
 
-Firmware publishes on physical-state changes, immediately after activating a
-new epoch or lease, after MQTT reconnect, and every two seconds while active.
-The server accepts a snapshot only when:
+Firmware publishes immediately after activation, on physical-state changes,
+after MQTT reconnect, and every two seconds while fully awake.
 
-- the topic device has a valid live heartbeat for the payload `boot_id`;
-- the device owns a slot in the current epoch;
-- payload epoch and lease exactly match the current assignment and commit;
-- its sequence is newer for that device boot and lease.
+The server accepts a snapshot only when device, boot, rebuild, epoch, lease,
+and sequence match the active roster. It maps the sender through its current
+assignment and maps `observed_tag` through the active epoch alias registry.
+The resulting logical topology exists inside game coordination, not as
+game-authoritative retained `cube/right/{slot}` traffic.
 
-The server maps the sender device to its current logical slot and maps
-`observed_tag` through the current epoch's alias registry. It then feeds the
-derived right-neighbor update directly into game coordination. If a
-broker-visible derived topic remains useful for diagnostics, it must be
-epoch/lease-scoped; no unprovenanced retained `cube/right/{slot}` message is
-game-authoritative.
+Legacy retained `cube/right/#` values are cleared during rollout and ignored
+by pooled game coordination. The compiled `KNOWN_TAGS` mapping is not used for
+pooled logical neighbor identity.
 
-At every epoch flip, the server first withdraws derived neighbor edges whose
-sender lease or tag alias is no longer valid, emitting the logical equivalent
-of `-`. It does this even when the passive tag remains physically present.
-Firmware simultaneously re-evaluates its currently observed raw tag and emits
-an immediate snapshot under its new epoch and lease. The new observation can
-restore an edge only if both devices and the tag alias belong to the current
-roster.
-
-This rejects in-flight snapshots from the former holder, retained legacy
-neighbor values, and delayed snapshots from a carried device's previous epoch.
-
-## Atomic roster transitions
-
-Every roster change creates a new epoch: cold selection, automatic
-replacement, administrative rebuild, `6 -> 12`, and `12 -> 6`. The server
-never edits the current epoch or its manifest in place:
-
-1. choose the complete target roster and new epoch;
-2. publish the new epoch manifest;
-3. prepare owner, assignment, alias, and active lease-commit records under the
-   new epoch for every selected device, including carried-over devices, using
-   new lease IDs for all of them;
-4. verify the manifest and all prepared records have reached the broker;
-5. publish `cube/roster/current` with the new epoch as the global commit;
-6. immediately withdraw every derived neighbor edge whose sender lease or
-   observed-tag alias is not valid in the new epoch;
-7. wait for live acknowledgements and fresh sensor snapshots from every
-   selected device;
-8. garbage-collect or tombstone records left behind in the old epoch.
-
-Before step 5, firmware continues using the old roster. At step 5, any device
-without a complete matching lease in the new epoch immediately quarantines.
-Thus a one-cube replacement cannot leave a stale current manifest, and a
-`12 -> 6` transition deactivates slots `11-16` even if their old retained
-records remain during cleanup. A `6 -> 12` transition activates only the fully
-prepared twelve-device roster. A crash before step 5 leaves the old roster
-authoritative; a crash after it leaves a complete new roster that can be
-reconstructed from retained state.
-
-Roster control records use retained QoS 1 publishes from one authoritative
-server connection. The server waits for each publish acknowledgement before
-publishing the per-lease or global commit. Consumers still validate the full
-record set; ordering alone is never treated as authority.
-
-## Firmware behavior
+## Firmware state machine
 
 ```text
 BOOT
-  -> DHCP + unique MQTT client ID
-  -> publish presence and live heartbeat
-  -> wait for current epoch and a complete committed lease
+  -> DHCP + unique device MQTT identity
+  -> read roster control
+
+ENROLLING
+  -> publish fresh boot/rebuild heartbeat
+  -> no logical commands or game-authoritative sensors
 
 AVAILABLE
-  -> display "AVAILABLE"
-  -> no logical cube subscriptions or sensor publishes
+  -> not selected; wait for a future rebuild
 
 ACTIVE
-  -> require current epoch + matching owner, assignment, alias, and commit
-  -> apply slot-specific player rotation
-  -> subscribe to cube/{slot}/...
-  -> publish raw sensor snapshots on cube/device/{device_id}/sensor-state
-  -> publish live assignment acknowledgement
+  -> require active control + matching manifest/owner/assignment/alias/lease
+  -> apply slot-specific rotation and subscribe to cube/{slot}/...
+  -> publish assignment acknowledgement and device-scoped sensor snapshots
+
+SLEEPING
+  -> keep assignment; publish device-scoped sleep intent
+  -> timer wake reads roster control
 
 QUARANTINED
-  -> stop logical publishes immediately on epoch/owner/assignment/alias/commit mismatch
-  -> discard cached aliases and lease records from a superseded epoch
-  -> stop emitting sensor snapshots under the revoked provenance
-  -> return to AVAILABLE
+  -> stop logical subscriptions and active-provenance sensor publication
+  -> enter ENROLLING only for an explicit rebuild
 ```
-
-Logical command gating and sensor provenance are mandatory. Without them, a
-returning device or delayed publish could overwrite the replacement's
-neighbor state. Logical neighbor identity is derived by the server, never
-asserted by firmware.
-
-All pooled devices use DHCP. Static IP `192.168.8.{20+slot}` cannot safely
-follow a runtime lease because a returning device may temporarily believe the
-same last-known slot. Maintenance and OTA tooling should use mDNS plus device
-ID.
 
 ## State hydration
 
-Most display commands already use retained `cube/{slot}/...` topics. The
-replacement should receive those immediately after activating its slot.
+Most display commands already use retained `cube/{slot}/...` topics, so a
+selected cube receives them when it activates.
 
-Implementation must inventory every required state field:
+Implementation must inventory letter, borders, highlight, lock, brightness,
+sleep interval, and transient display modes. Anything not retained is replayed
+after the exact assignment acknowledgement.
 
-- letter;
-- borders and highlight;
-- lock;
-- brightness;
-- sleep state and interval;
-- any game-specific transient display mode.
+Sensor state is never inherited from the prior holder. The committed device
+publishes a fresh snapshot for the startup topology barrier.
 
-Anything not retained must be replayed by the game server after a live
-assignment acknowledgement for the exact committed lease. The replacement
-must publish a fresh device-scoped sensor snapshot under its new epoch and
-lease rather than inheriting retained logical state from the failed device.
-
-## Failure behavior
+## Failure and recovery behavior
 
 | Situation | Result |
 |---|---|
-| 6 required, 7 compatible online | 6 active, 1 available |
-| 12 required, 13 compatible online | 12 active, 1 available |
-| Active cube fails and compatible extra exists | Extra takes exact slot |
-| Failed cube returns after replacement | Returning cube stays available |
-| Wrong-size extra is online | It remains available; no assignment |
-| Too few compatible cubes | Missing slot remains unfilled |
-| Broker/server unavailable | Existing complete leases continue; no new assignments |
-| Duplicate/conflicting lease | Both claimants quarantine until resolved |
-| Transient heartbeat loss | Stability interval prevents immediate churn |
-| Retained online presence without a live heartbeat | Device is ineligible |
-| Server crashes before a lease commit | Prepared device stays quarantined |
-| Server crashes before a new epoch commit | Old roster remains authoritative |
-| 12-cube profile changes to 6 | Slots `11-16` quarantine at epoch commit |
-| Delayed sensor snapshot from an old epoch/lease | Server rejects it |
-| Alias removed while its passive tag remains present | Derived edge is withdrawn at epoch flip |
+| Active cube misses heartbeat | Health reports offline; roster does not change |
+| Active cube intentionally sleeps | Lease remains assigned; status is sleeping |
+| Active cube fails mid-game | Game is degraded/stopped until admin rebuild |
+| Extra powers on during a game | It remains available |
+| Former holder returns | It remains available |
+| Admin rebuilds with 7 compatible devices for 6 slots | 6 selected, 1 available |
+| Admin rebuilds with 13 compatible devices for 12 slots | 12 selected, 1 available |
+| Wrong-size extra is online | It is ineligible for the missing slot |
+| Too few compatible devices enroll | Rebuild stays paused and uncommitted |
+| Server restarts while control is active | Reconstruct same roster; no selection |
+| Server restarts while rebuilding | Resume or safely abort the same rebuild ID |
+| Crash before active commit | Previous epoch remains recorded; gameplay stays paused |
+| Crash after active commit | Reconstruct complete new epoch and topology barrier |
+| Delayed old sensor message arrives | Reject by device/boot/rebuild/epoch/lease |
+| Sleeping cube sees rebuild barrier | Stay awake and enroll |
+
+### Rebuild recovery
+
+If the server restarts while `REBUILDING`, it reads the rebuild ID and previous
+epoch from control:
+
+- if a complete prepared successor exists, finish the active commit;
+- if preparation is incomplete, resume enrollment/preparation for the same
+  rebuild ID;
+- an explicit admin abort may restore active control to the unchanged previous
+  epoch only if its required devices are healthy;
+- never infer a new rebuild from server startup alone.
 
 ## Inventory and commissioning
 
-The authoritative inventory records physical facts and preferences, not
-primary/standby roles:
+The authoritative inventory records:
 
 ```text
 device_id
@@ -620,200 +527,157 @@ preferred_set: 0 | 1 | either
 last_commissioned_firmware
 ```
 
-The inventory must validate:
+It validates unique device IDs and tags, known hardware classes, compatible
+firmware builds, enough capacity for supported profiles, and at least one
+extra of each size when replacement coverage is promised.
 
-- unique device IDs and NFC tags;
-- known hardware classes;
-- compatible firmware build and board metadata;
-- enough eligible devices for each supported 6- or 12-cube configuration;
-- at least one extra of each size when automatic replacement coverage is
-  promised.
-
-Current candidate `80:F3:DA:54:53:B8` still needs its size, board profile, and
-attached NFC tag verified. `CC:DB:A7:99:0F:E0` is recorded as unable to enter
-download mode and should not count as available capacity.
+Candidate `80:F3:DA:54:53:B8` still needs its size, board profile, and attached
+NFC tag verified. `CC:DB:A7:99:0F:E0` is recorded as unable to enter download
+mode and must not count as available capacity.
 
 ## Implementation areas
 
 ### `cube-pn5180`
 
 - Replace MAC-to-logical-ID boot identity with stable device identity.
-- Add current-epoch, assignment, owner, alias, and lease-commit validation plus
-  NVS last-slot preference.
-- Add unique MQTT client IDs, non-retained live heartbeat, retained presence,
-  and last will.
-- Publish lease-specific activation acknowledgements.
-- Gate every logical subscription and publish behind the active lease.
-- Validate the device's own lease-bound tag alias before activation.
-- Publish raw, device-scoped sensor snapshots with boot, epoch, lease, and
-  sequence provenance; re-emit immediately after an epoch change.
-- Disable logical neighbor publication and compiled tag fallback in pooled
+- Add unique device MQTT identity, presence, fresh enrollment heartbeat, and
+  offline last will.
+- Implement retained rebuild-control handling in full boot and timer-wake
+  paths.
+- Migrate maintenance sleep/wake topics and client IDs from logical slot to
+  device ID.
+- Add assignment validation, acknowledgement, and NVS last-slot preference.
+- Gate logical commands behind the committed lease.
+- Publish raw device-scoped sensor snapshots with full provenance.
+- Disable logical `cube/right` publication and compiled tag fallback in pooled
   mode.
-- Move pooled networking to DHCP and add mDNS device naming.
-- Add `AVAILABLE`, active slot, and quarantine diagnostics.
+- Use DHCP and mDNS for pooled devices.
+- Display `ENROLLING`, `AVAILABLE`, active slot, `SLEEPING`, and quarantine
+  diagnostics.
 
 ### `cubes`
 
-- Add a persistent roster/lease manager with an injectable clock.
-- Make desired cube count and slot hardware classes explicit game config.
-- Load and validate device inventory and preferred player sets.
-- Publish prepared owner, assignment, and tag-alias state followed by explicit
-  lease or roster-epoch commits.
-- Treat current manifests as immutable and create a complete successor epoch
-  for every roster change, including one-cube replacement.
-- Validate an epoch manifest before making it current.
-- Require live boot-matched heartbeats for eligibility and exact live
-  acknowledgements before hydration.
-- Validate device-scoped sensor provenance and map raw tag observations through
-  current-epoch aliases into in-process logical neighbor events.
-- Remove `cube/right/#` as a game-authoritative input and clear its legacy
-  retained values during cutover.
-- Withdraw invalid derived neighbor edges synchronously at every epoch flip.
-- Implement epoch transitions and cleanup for replacement, `6 -> 12`, and
-  `12 -> 6`.
-- Rehydrate non-retained cube state after replacement.
-- Expose active, available, missing, and incompatible devices in logs/admin UI.
+- Add an administrator-triggered roster rebuild manager with an injectable
+  clock and persisted rebuild state.
+- Make cube count, hardware classes, exclusions, and enrollment timeout
+  explicit inputs.
+- Never mutate roster membership from heartbeat expiry.
+- Build and validate one immutable epoch per rebuild.
+- Implement the startup topology barrier and bulk graph installation without
+  invoking normal per-edge gameplay callbacks.
+- Validate device-scoped sensor provenance and map raw tags through the active
+  alias registry.
+- Remove `cube/right/#` as game-authoritative input.
+- Rehydrate non-retained display state after acknowledgement.
+- Expose active, enrolling, sleeping, available, missing, incompatible, and
+  excluded devices in logs/admin UI.
 
 ### `pi-deploy`
 
-- Install the authoritative inventory and persist roster state.
-- Configure the desired 6- or 12-cube session profile.
-- Update monitoring and OTA tools to locate devices by mDNS/device ID.
-- Preserve MQTT retained ownership and assignment topics across service
-  restarts, including roster epochs, lease commits, and alias tombstones.
+- Install inventory and persist roster/rebuild state.
+- Add `rebuild-cube-roster` with 6/12 profile, exclusions, and progress output.
+- Update monitoring and OTA tools for device ID and mDNS.
+- Clear legacy retained logical neighbor topics during cutover.
+- Preserve retained control and epoch records across broker restarts.
 
 ## Test plan
 
 ### Server unit tests
 
-- Six-cube mode selects exactly six from seven compatible devices.
-- Twelve-cube mode selects exactly twelve from thirteen.
-- MQTT arrival order does not affect deterministic cold selection.
-- An active roster does not change when another device comes online.
-- A failed slot receives a matching-class idle device after timeout.
-- A wrong-size device never receives the slot.
-- A returning former holder does not evict its replacement.
-- Replacement power-off allows another compatible available device, including
-  the former holder, to fill the slot.
-- Sticky last-slot preferences preserve player grouping.
-- Duplicate slot preferences resolve deterministically and safely.
-- Too few devices leave explicit missing slots.
-- Retained `online: true` presence without a post-subscription, boot-matched
-  heartbeat never establishes freshness.
-- Stale, malformed, duplicated, and out-of-order heartbeat sequences are
-  ignored safely.
-- Prepared owner/assignment/alias records cannot activate without the exact
-  lease commit.
-- An incomplete or internally inconsistent epoch manifest cannot become
-  current.
-- Acknowledgements with the wrong boot, slot, epoch, lease, or sequence do not
-  trigger hydration.
-- A replacement produces a complete successor manifest with the new holder and
-  new lease IDs; the old current manifest remains unchanged.
-- Restart reconstruction never observes a manifest that disagrees with a
-  replacement lease.
-- Epoch commit withdraws a derived edge when its observed tag remains present
-  but its alias is absent from the successor.
-- Sensor snapshots with the wrong device boot, epoch, lease, or sequence are
-  rejected.
-- Delayed snapshots from the former holder and from a carried device's prior
-  epoch cannot overwrite current logical state.
-- `6 -> 12` and `12 -> 6` build complete new epochs and quarantine devices
-  removed from the new profile.
-- A crash before an epoch commit preserves the old roster; a crash after the
-  commit reconstructs the complete new roster.
-- Server restart reconstructs persisted or retained leases.
+- Heartbeat timeout never changes an active roster.
+- Sleeping status never makes a slot available.
+- A server restart never starts a rebuild.
+- Only an explicit rebuild ID opens enrollment.
+- Retained presence without a live boot/rebuild-matched heartbeat is
+  ineligible.
+- Six-cube rebuild selects exactly six from seven compatible devices.
+- Twelve-cube rebuild selects exactly twelve from thirteen.
+- Wrong-size and excluded devices are never selected.
+- Deterministic ranking preserves compatible prior slot preferences.
+- Incomplete capacity never commits a partial manifest.
+- Prepared records cannot activate while control is `REBUILDING`.
+- Active control cannot reference an incomplete or inconsistent epoch.
+- Restart before and after commit recovers the correct rebuild state.
+- Delayed sensor snapshots with wrong provenance are ignored.
+- Legacy retained `cube/right/{slot}` input is ignored.
+- Topology snapshots are staged without per-edge callbacks.
+- Bulk graph installation produces no guesses, scoring, or ABC transitions.
 
 ### Firmware-native tests
 
-- Assignment, owner, alias, commit, and current roster must match device, slot,
-  epoch, and lease.
-- Lease loss immediately disables logical topics.
-- Last-slot NVS state is a preference, never authority.
-- Pooled commissioned tags never fall back to legacy static mappings.
-- Inactive alias tombstones and revoked commits both prevent tag resolution.
-- A returning unassigned cube's physical tag cannot resolve to its last slot.
-- Firmware remains quarantined after prepared records and activates only after
-  the final commit.
-- Assignment acknowledgement contains the exact boot, slot, epoch, and lease.
-- Active firmware publishes sensor snapshots with the exact boot, epoch,
-  lease, and monotonically increasing sequence.
-- Epoch change re-evaluates and immediately republishes the currently observed
-  raw tag, even when the passive tag has not moved.
-- Hardware class cannot be changed by an assignment.
-- Slot `1-6` and `11-16` select correct display rotation.
+- Full boot uses fresh device and rebuild identity.
+- Active control and all assignment records must agree before activation.
+- A last-slot NVS value is preference, never authority.
+- Timer wake uses device-scoped client and topics.
+- Timer wake under unchanged active control returns to sleep without changing
+  assignment.
+- Timer wake under a new rebuild barrier stays awake and enrolls.
+- Sleeping intent includes exact epoch, lease, and next wake.
+- Available and quarantined devices cannot use logical command topics.
+- Sensor snapshots contain exact boot, rebuild, epoch, lease, and sequence.
+- Activation and physical-state changes immediately republish sensor state.
 
 ### Broker integration tests
 
-- Start 7 devices in six-cube mode and verify one remains available.
-- Kill one active device and verify the available device adopts its exact
-  logical MQTT topics.
-- Reconnect the old device and verify it cannot publish slot state.
-- Repeat with 13 devices in twelve-cube mode.
-- Repeat replacement with matching and mismatched size pools.
-- Restart the broker, game server, and individual devices independently.
-- Restart the server with stale retained `online: true` presence and verify no
-  device is eligible until a fresh matching heartbeat arrives.
-- Interrupt replacement after every preparation step and verify the candidate
-  remains quarantined until the commit exists.
-- Restart after replacement and verify the current immutable manifest names
-  the replacement and its exact lease.
-- Deliver delayed sensor snapshots from the former holder and from the prior
-  epoch after the flip; verify both are ignored.
-- Publish a delayed or retained legacy `cube/right/{slot}` value and verify
-  game coordination ignores it.
-- Commit a successor epoch that omits an observed tag while the passive tag
-  remains physically present; verify the logical edge immediately becomes `-`
-  and stays withdrawn.
-- Transition `6 -> 12` and `12 -> 6`; verify removed devices stop logical
-  traffic and aliases at the epoch flip.
-- Interrupt profile transition before and after the epoch commit and verify
-  recovery selects the old or new complete roster, never a partial mix.
-- Reconnect firmware with `cube/roster/current` delivered before the new
-  epoch's records and verify it stays quarantined until the complete lease
-  arrives.
-- Verify retained display hydration and fresh neighbor-state publication.
+- Leave active cubes idle beyond the 10-minute sleep threshold and verify no
+  roster change.
+- Observe repeated 20-second timer wakes and verify device-scoped sleep status.
+- Start a rebuild while cubes sleep; verify all enroll by the 30-second window
+  or remain explicitly missing without partial commit.
+- Replace one cube in six-cube and twelve-cube profiles.
+- Reconnect the old holder after commit and verify it remains available.
+- Interrupt rebuild after every preparation step and verify no partial roster
+  or topology becomes active.
+- Restart broker and server independently during active and rebuilding states.
+- Deliver retained presence and delayed old sensor messages; verify neither
+  changes selection or topology.
+- Keep a passive tag physically present while its device is omitted from the
+  new roster; verify the staged topology excludes it.
+- Prove a rebuild cannot trigger guesses, scoring, or ABC transitions from
+  intermediate topology states.
 
 ### Hardware acceptance
 
-- Run six-cube single-player with a compatible extra powered on.
-- Run twelve-cube two-player with compatible extras.
-- Replace representative slots in both player sets.
+- Rebuild six-cube single-player with a compatible extra.
+- Rebuild twelve-cube two-player with compatible extras.
 - Test small-to-small and large-to-large replacement.
-- Confirm small-to-large and large-to-small assignment are impossible.
+- Confirm cross-size assignment is impossible.
+- Verify player grouping and rotation after cold rebuild.
 - Form words with the replacement on both left and right edges.
-- Power the old cube back on elsewhere on the LAN during a game.
-- Verify player grouping and rotation after full cold startup.
-- Acceptance target: replacement ready within 15 seconds of confirmed failure.
+- Exercise MQTT-triggered and physical all-cube reboot procedures.
+- Exercise rebuild while cubes are awake and while they are sleeping.
+- Acceptance target: complete roster and topology ready within 45 seconds of
+  starting the administrative rebuild.
 
 ## Rollout
 
-1. Create and validate authoritative device inventory.
-2. Deploy unique device identity and presence in observe-only mode.
-3. Add roster selection while retaining current static logical behavior.
-4. Deploy runtime ownership gating and raw device-scoped sensor publication to
-   every field cube.
+1. Create and validate authoritative inventory.
+2. Deploy device identity, presence, and sleep status in observe-only mode.
+3. Deploy retained roster-control handling to full boot and timer-wake paths.
+4. Deploy assignment gating and device-scoped sensor publication to every
+   field cube.
 5. Seed last-slot preferences from current IDs.
-6. Switch game coordination away from `cube/right/#` and clear its retained
-   legacy values.
-7. Switch pooled cubes to DHCP and update maintenance tooling.
-8. Enable dynamic selection for six-cube sessions.
-9. Verify sticky player grouping, then enable twelve-cube sessions.
-10. Commission at least one compatible extra per deployed size.
+6. Add the server-side rebuild manager and startup topology barrier.
+7. Stop consuming `cube/right/#` and clear its retained legacy values.
+8. Switch pooled cubes to DHCP and update maintenance tooling.
+9. Enable six-cube administrative rebuilds.
+10. Verify player grouping, then enable twelve-cube rebuilds.
+11. Commission at least one compatible extra per deployed size.
 
-Mixed old/new firmware is unsafe once dynamic assignment starts. An old cube
-does not understand lease gating and could publish through a slot owned by
-another device.
+Mixed old/new firmware is unsafe once pooled assignment starts. An old cube
+does not understand the rebuild barrier, lease gating, or device-scoped sensor
+protocol.
 
 ## Open decisions before implementation
 
-1. Where should the authoritative device inventory and persisted roster live?
-2. How is `cube_count` selected for each event or game launch?
-3. Are slot hardware classes uniform per session, uniform per player set, or
-   mixed? Record the actual small/large layout.
-4. Confirm the `preferred_set` values needed to preserve physical two-player
-   grouping.
-5. Confirm DHCP capacity and mDNS support on the field router.
-6. Inventory which logical state topics are not currently retained.
-7. Confirm the size, board profile, RGB order, Hall profile, and NFC tag of
-   each extra cube candidate.
+1. Where should inventory and persisted roster/rebuild state live?
+2. How will the admin select cube count, hardware profile, and excluded device
+   IDs?
+3. Confirm actual small/large layout and `preferred_set` values.
+4. Confirm whether 30 seconds covers timer wake plus Wi-Fi/MQTT startup on
+   field batteries.
+5. Define admin abort behavior when the previous roster is no longer healthy.
+6. Inventory non-retained display state requiring replay.
+7. Confirm DHCP capacity and mDNS support on the field router.
+8. Verify size, board profile, RGB order, Hall profile, and NFC tag of each
+   extra candidate.
