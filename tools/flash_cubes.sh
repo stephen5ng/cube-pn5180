@@ -4,7 +4,8 @@
 
 CUBE_VERSIONS_FILE="$(dirname "$0")/../cube_board_versions.txt"
 FW_DIR="$(dirname "$0")/.."
-PIO="$HOME/.platformio/penv/bin/pio"
+PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
+PYTHON="${PYTHON:-python3}"
 
 show_inventory() {
     echo "MAC-to-Board-Version Inventory:"
@@ -103,7 +104,7 @@ flash_cube() {
     # Version format: "<sha>+<env>" when clean, "<sha>-<src_hash>+<env>" when dirty.
     # See scripts/compute_version.py.
     local current_version=$(get_cube_version "$cube_id")
-    local target_version=$(python3 "$FW_DIR/scripts/compute_version.py" "$version" "$FW_DIR")
+    local target_version=$("$PYTHON" "$FW_DIR/scripts/compute_version.py" "$version" "$FW_DIR")
     if [[ "$current_version" == "$target_version" ]]; then
         echo "✅ Cube $cube_id already running current firmware ($current_version, skipping)"
         return 0
@@ -170,10 +171,12 @@ if [ "$1" = "all" ]; then
         fi
     fi
 
-    for cube_id in 1 2 3 4 5 6; do
-        flash_cube "$cube_id"
+    failed=0
+    for cube_id in 1 2 3 4 5 6 11 12 13 14 15 16; do
+        flash_cube "$cube_id" || failed=1
         echo ""
     done
+    exit "$failed"
 else
     cube_id=$1
     version=$2
