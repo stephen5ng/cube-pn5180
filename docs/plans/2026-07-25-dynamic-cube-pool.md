@@ -1,1252 +1,265 @@
-# Dynamic Cube Pool with Boot-Time Replacement
+# Dynamic Cube Pool with Console Reassignment
 
 **Status:** Proposed design; no implementation
 **Date:** 2026-07-26
-**Owners:** `cube-pn5180` firmware, `cubes` game server, and `pi-deploy`
+**Owners:** `cube-pn5180` firmware, `cubes` game server, `pi-deploy`
 
 ## Decision
 
-Treat every cube as a member of a hardware-compatible device pool, with no
-permanent `primary` or `standby` role. Roster membership changes only during an
-administrator-triggered rebuild that reboots all cubes and interrupts the
-game.
+Make a cube's **logical slot** a runtime value the server assigns, instead of a
+value compiled into firmware. A pre-commissioned spare takes over a failed
+cube's slot through one admin-console action and a reboot — no reflashing.
 
-For a six-cube game, the rebuild selects six compatible cubes. For a
-twelve-cube game, it selects twelve. Extra compatible cubes remain available.
-If an active cube fails during play, the server reports the failure but does
-not change the roster. An administrator powers on a compatible extra, powers
-off or excludes the failed cube, and starts a full roster rebuild.
+Nothing else changes. Static IPs, the `cube/{slot}/...` topic protocol,
+sleep/wake, NFC, and display all stay as they are today. There are no epochs,
+leases, manifests, digests, quarantine states, power intents, custom time
+authority, or DHCP migration.
 
-This deliberately trades hot replacement for a much smaller and safer first
-version:
+## The one idea
 
-- intentional deep sleep can never trigger replacement;
-- gameplay is not running while neighbor topology changes;
-- one immutable roster is committed at boot;
-- returning and delayed devices cannot alter the roster;
-- no explicit spare release operation is needed.
+Today a cube's identity comes from a compile-time MAC→`cube_id` table
+(`getCubeIpOctet`, `src/main.cpp`). That single `cube_id` is overloaded to drive
+the IP octet (`cube_id + 20`), the MQTT topics (`cube/{id}/...`), the display
+rotation, and it is bundled with genuine hardware traits (RGB order, board
+pins). To make a physical cube "become cube 4" you edit that table and reflash.
+
+We un-bundle two things that were tangled together:
+
+| Property | Keyed by | Source | Changes on replacement? |
+|---|---|---|---|
+| IP octet, RGB order, board pins | physical cube (MAC) | compiled MAC table, unchanged | No — permanent per cube |
+| Logical slot (topics + rotation) | server assignment | retained `cube/assign/{MAC}` | Yes — the only dynamic value |
+| NFC tag → slot | server maps `MAC→tag` × `slot→MAC` | commissioning + assignment | Follows the assignment |
+
+The physical facts stay compiled and keyed to the MAC. Only the logical slot
+moves to the server.
+
+## Why IP stays fixed per physical cube
+
+The static-IP scheme exists for fast reconnect after a mid-game power bounce and
+to keep the router's DHCP server off the critical path. We keep it.
+
+If IP instead followed the slot, a returning "dead" cube and its replacement
+would both claim the same address and fight on the network — an ambiguous IP
+conflict. Fixing IP to the physical cube removes that failure entirely: the old
+cube returns on its own address, finds it holds no slot assignment, and sits
+idle. It also removes any boot-time chicken-and-egg — a cube derives its IP from
+its own MAC before it needs the network, exactly as today, so it can then read
+its slot assignment over that connection with no DHCP and no self-reboot.
 
 ## Field workflow
 
-1. Stop the game after a cube failure.
-2. Power off or remove the failed cube. If it is intermittently online, record
-   its device ID in the rebuild exclusion list.
-3. Put a compatible extra cube in its place and power it on.
-4. Run the administrative `rebuild-cube-roster` action for 6 or 12 cubes.
-5. The action publishes a retained rebuild barrier and requests every cube to
-   reboot.
-6. The server waits for newly booted devices, selects a complete compatible
-   roster, and commits one new roster epoch.
-7. The server gathers a complete sensor snapshot, installs the neighbor graph
-   atomically, and only then enables ABC/gameplay.
+1. Stop the game after a cube fails.
+2. Power off or remove the failed cube.
+3. Put a compatible, pre-commissioned spare in its place and power it on.
+4. On the admin console, assign the failed cube's slot to the spare's MAC.
+5. Reboot the cubes.
+6. Each cube reads its assignment at boot and takes its slot. The server does
+   not start a round until every assigned slot has a present cube.
 
-No flashing, per-cube ID selection, or release command is required in the
-field. The replacement does require a full game interruption and cube reboot.
+No flashing, no per-cube IP surgery, no release command.
 
-## Constraints
+## Server (`cubes` + admin console)
 
-- A game uses 6 cubes for single-player or 12 cubes for two-player.
-- Small and large cubes are not physically interchangeable.
-- A device may fill only a slot requiring the same hardware compatibility
-  class.
-- Full coverage requires at least one extra small cube and one extra large
-  cube when both sizes are deployed.
-- The desired cube count and slot hardware classes must be explicit rebuild
-  inputs; online-device count alone is ambiguous.
-- Current firmware derives logical identity from both ESP32 MAC address and
-  enclosure NFC tag. Both become roster-time assignments.
-- Current firmware auto-sleeps after 10 minutes of MQTT inactivity and briefly
-  wakes about every 20 seconds. The pooled lifecycle must preserve this
-  battery behavior.
+- Keep a persisted, mutable `slot → MAC` map on the Pi, seeded from today's
+  assignments. It is a plain dict, not an epoch history.
+- Console shows every known cube: MAC, present/absent, and current slot (or
+  `unassigned`). One action — **assign slot N → MAC** — atomically clears slot N
+  from whoever held it, so one slot maps to exactly one MAC. A returning cube can
+  never re-grab a slot that has been reassigned.
+- Publish each cube's slot as a retained `cube/assign/{MAC}` record. Removing a
+  cube from all slots publishes an explicit `unassigned`.
+- **Game-start presence gate:** do not start a round until all 6 (single-player)
+  or 12 (two-player) assigned slots report a present cube. Because the game is
+  stopped during a swap, this is all the safety the topology needs — no partial
+  neighbor graph can reach scoring when no round is running. This replaces the
+  previous design's atomic startup topology barrier.
+- Resolve NFC neighbor identity server-side (see below).
+- Everything else in the `cube/{slot}/...` protocol is unchanged.
 
-## Goals
+### Assignment record
 
-- All cubes run the same role-free firmware for their hardware build.
-- An administrator can replace a failed cube by powering a compatible extra
-  and rebuilding the roster.
-- A rebuild deterministically selects exactly 6 or 12 compatible devices.
-- The committed roster is immutable until another administrative rebuild.
-- Sleeping, offline, returning, and extra devices never cause automatic
-  reassignment.
-- A selected device adopts its assigned MQTT command topics, player grouping,
-  display rotation, and retained display state.
-- Logical neighbor state is derived from device-scoped, lease-provenanced
-  physical observations.
-- ABC, guessing, and scoring remain disabled until the complete new topology
-  is installed atomically.
-- Server and broker restarts reconstruct the same active roster unless a
-  rebuild was already in progress.
-- No `cube/standby/release` operation is required.
-
-## Non-goals
-
-- Replacing a cube without interrupting the current game.
-- Changing roster membership because of a heartbeat timeout.
-- Using a small cube to replace a large cube or vice versa.
-- Continuing a rebuild with fewer than the configured 6 or 12 compatible
-  devices.
-- Preserving formula-based IP addresses for dynamically assigned devices.
-- Replacing the existing MQTT broker security model.
-
-## Identity model
-
-Stable physical identity is separate from roster identity:
-
-| Identifier | Example | Lifetime |
-|---|---|---|
-| Device ID | `80F3DA5453B8` | ESP32 lifetime; derived from MAC |
-| NFC tag ID | 16 hex characters | Enclosure lifetime |
-| Hardware class | `small` or `large` | Immutable commissioning metadata |
-| Preferred set | `0`, `1`, or `either` | Commissioning preference |
-| Logical slot | `1-6` or `11-16` | One committed roster epoch |
-| Lease ID | Server-generated ID | One device assignment in one epoch |
-| Rebuild ID | Server-generated ID | One administrative rebuild attempt |
-
-No device is intrinsically cube 4 or intrinsically a spare. “Cube 4” means the
-device assigned logical slot 4 in the active roster.
-
-Hardware class should remain extensible if later electrical or enclosure
-differences also prevent substitution.
-
-## Session profiles
-
-```text
-Single-player slots: 1, 2, 3, 4, 5, 6
-Two-player slots:    1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16
-```
-
-The rebuild request supplies:
-
-- `cube_count`: `6` or `12`;
-- required hardware class for each slot, or one class for the whole profile;
-- optional `excluded_device_ids`;
-- optional timeout override.
-
-For a twelve-cube game, slots `1-6` remain one physical player set and slots
-`11-16` remain the other. Current IDs seed last-slot preferences during
-migration. Commissioned `preferred_set` metadata prevents a completely new
-roster from scattering the two logical sets across physical play areas. Extras
-that may replace either side use `preferred_set: either`.
-
-## Administrative roster rebuild
-
-### Preconditions
-
-- Gameplay, ABC detection, guessing, and scoring are paused.
-- The compatible extra is powered.
-- The failed or unwanted device is powered off or explicitly excluded.
-- The requested profile identifies 6 or 12 slots and their hardware classes.
-
-### Rebuild barrier
-
-The server first normalizes the requested slot/class profile, exclusions, and
-effective enrollment deadline into an immutable retained rebuild-request
-record. It then publishes a compact retained `REBUILDING` control record
-containing a new rebuild ID and the request record's SHA-256 digest. The
-request is server-only; firmware receives the bounded control record. The
-server publishes the request at QoS 1 and verifies its retained canonical bytes
-and digest before publishing the barrier, so control never intentionally
-references an unconfirmed request.
-
-Every device subscribes to roster control regardless of whether it is active
-or available. Firmware persists `last_enrolled_rebuild_id` and
-`pending_reboot_rebuild_id` in NVS. When any full or maintenance client
-observes `REBUILDING` with an ID different from
-`last_enrolled_rebuild_id`, it persists that ID as the pending reboot target
-and triggers a full reboot without entering `ENROLLING`.
-
-On the next boot, firmware reads roster control before completing enrollment.
-If retained control matches `pending_reboot_rebuild_id`, that boot satisfies
-the barrier: firmware generates the new `boot_id`, atomically promotes the
-pending ID to `last_enrolled_rebuild_id`, clears the pending field, and enters
-`ENROLLING`. A power loss after persisting the pending ID also supplies the
-required full boot. Repeated retained deliveries or reconnects after promotion
-enter `ENROLLING` without rebooting again. Firmware never enrolls from the
-pre-barrier runtime.
-
-An awake device therefore does not depend on receiving the non-retained
-broadcast reboot request. A sleeping cube sees the retained barrier on its next
-timer wake and takes the same persisted, exactly-once reboot path instead of
-returning to sleep. The broadcast only reduces the time before awake devices
-process the barrier.
-
-The enrollment window must exceed the existing timer-wake interval plus
-network startup margin. The default is 30 seconds. A physical all-cube power
-cycle may be used instead of waiting for timer wakes.
-
-### Fresh enrollment
-
-After reboot, each device:
-
-1. connects using DHCP and a device-derived MQTT client ID;
-2. reads the retained rebuild control;
-3. generates a new `boot_id`;
-4. publishes retained device metadata;
-5. publishes a non-retained heartbeat containing the rebuild and boot IDs;
-6. remains `ENROLLING` without subscribing to logical commands or publishing
-   game-authoritative sensor state.
-
-A device is eligible only after the server receives a live heartbeat for the
-current rebuild ID and matching `boot_id`. Retained `online: true` presence is
-never enrollment proof. While `ENROLLING`, firmware republishes the heartbeat
-immediately after every MQTT reconnect and every two seconds. Its heartbeat
-sequence is monotonic within the boot, allowing a restarted server to obtain
-fresh enrollment proof without rebooting devices or starting a new rebuild.
-
-### Deterministic selection
-
-After the enrollment window, the server ranks compatible, non-excluded
-devices:
-
-1. devices from the previous roster requesting a unique compatible last slot;
-2. other devices requesting a unique compatible last slot;
-3. remaining compatible devices ordered by stable device ID.
-
-It selects exactly the required 6 or 12 devices. Extras stay `AVAILABLE`.
-Selection never changes after the roster becomes active.
-
-If capacity or player-set constraints cannot produce a complete roster, the
-server leaves control in `REBUILDING`, keeps gameplay paused, and reports the
-missing hardware classes or player-set capacity. It never commits a partial
-roster.
-
-### Prepare and commit
-
-The server creates a complete immutable epoch:
-
-1. publish the server-only epoch manifest;
-2. publish server-side owner and tag-alias records plus one bounded membership
-   record for every selected device;
-3. publish a stable device-scoped roster-state record for every selected,
-   unselected, and previous-roster device;
-4. verify the manifest digest, memberships, roster states, and all server-side
-   records reached the broker at QoS 1;
-5. publish compact roster control with `state: "ACTIVE"`, the new epoch, and
-   the manifest digest as the single global commit.
-
-Before step 5, all devices remain `ENROLLING`. At step 5, a selected device
-activates only if its bounded membership record matches its device identity,
-observed tag and hardware class, rebuild ID, control epoch, and committed
-manifest digest. Firmware never downloads the aggregate manifest. Unselected
-devices become `AVAILABLE`.
-
-The previous epoch remains immutable and non-authoritative. It may be
-garbage-collected after the new roster and topology are confirmed.
-
-### Startup topology barrier
-
-Committing the roster does not immediately enable gameplay. The server opens a
-startup topology barrier:
-
-1. selected devices acknowledge the exact boot, rebuild, epoch, slot, and
-   lease;
-2. every selected device publishes a fresh raw sensor snapshot under that
-   provenance;
-3. the server validates all snapshots and builds a staged neighbor graph;
-4. the server replaces the coordination graph in one bulk operation;
-5. only after the bulk install does it enable ABC detection and gameplay.
-
-Per-device snapshots never call normal neighbor-change handlers while the
-barrier is active. No intermediate `-` edges can trigger word evaluation,
-guesses, scoring, or ABC transitions.
-
-If required acknowledgements or snapshots time out, gameplay stays paused and
-the admin UI identifies the missing devices. The server never exposes a
-partially rebuilt graph. Selected active devices republish assignment
-acknowledgements immediately after every MQTT reconnect and every two seconds
-until the startup topology barrier closes. They continue periodic
-acknowledgements while awake so a restarted server can reconstruct activation
-proof before accepting sensor snapshots.
-
-## Sleep lifecycle
-
-Roster membership is independent of liveness after commit. Heartbeat expiry
-updates health status but never changes membership, owner, alias, lease, or
-manifest records.
-
-Before an active cube enters deep sleep, it publishes device-scoped sleep
-state as a retained record:
-
-```text
-cube/device/{device_id}/sleep-state
-```
+Topic (retained): `cube/assign/{MAC}`
 
 ```json
-{
-  "protocol": 1,
-  "state": "sleeping",
-  "boot_id": "random-per-full-boot",
-  "epoch": "active-epoch",
-  "lease_id": "active-lease",
-  "sequence": 12,
-  "applied_intent_id": "server-generated-intent",
-  "time_epoch_id": "pi-linux-boot-id",
-  "wake_deadline_tick_ms": 123456789
-}
+{ "protocol": 1, "slot": 4 }
 ```
 
-`wake_deadline_tick_ms` is an absolute deadline in the Pi's Linux
-`CLOCK_BOOTTIME` timeline, scoped by `time_epoch_id`; it is not Unix time and
-does not require Internet access or a battery-backed RTC. The sleep-state
-sequence is monotonic within the full-client boot and is persisted across timer
-wakes.
-
-On every full boot and maintenance wake, firmware requests a fresh time sample
-from the Pi game server using a random nonce. The server returns its Linux boot
-ID and current `CLOCK_BOOTTIME` milliseconds. A response is valid only when the
-nonce matches, round-trip time is at most one second, the tick does not regress
-within the same boot ID, and—after the first sample establishes a
-baseline—the server-tick advance differs from the device RTC elapsed time by no
-more than 500 ms. An out-of-tolerance sample requires two consecutive fresh
-samples to establish a new baseline while the device remains awake. Firmware
-resynchronizes on every maintenance wake, so oscillator drift does not
-accumulate across sleep cycles. The server allows two seconds of deadline
-grace.
-
-If the Pi reboots, its Linux boot ID changes and all prior sleep deadlines
-become invalid. If the time response is missing, stale, regresses, or exceeds
-tolerance, the full or maintenance client remains awake and retries; it never
-returns to sleep using an uncertain deadline. A server process restart on the
-same Pi boot preserves the time epoch because `CLOCK_BOOTTIME` and the Linux
-boot ID continue. This authority works on a cold field LAN with no public NTP.
-
-The current EspMQTTClient and PubSubClient publish APIs send QoS 0 only, so
-firmware cannot wait for an MQTT PUBACK. Instead it repeatedly publishes the
-retained state and waits for a matching application acknowledgement:
-
-```text
-cube/device/{device_id}/sleep-state-ack
-```
+or, when the cube holds no slot:
 
 ```json
-{
-  "protocol": 1,
-  "state": "sleeping",
-  "boot_id": "random-per-full-boot",
-  "epoch": "active-epoch",
-  "lease_id": "active-lease",
-  "sequence": 12,
-  "time_epoch_id": "pi-linux-boot-id",
-  "wake_deadline_tick_ms": 123456789,
-  "ack_server_tick_ms": 123436900
-}
+{ "protocol": 1, "slot": null }
 ```
 
-This is a state-aware acknowledgement schema: `state` is `sleeping` or
-`awake`, while `lease_id` and `wake_deadline_tick_ms` are nullable. The server
-sends it only after receiving and validating the retained state:
-
-- `sleeping` requires current presence plus active control, membership,
-  roster-state, epoch, and lease; its deadline must be numeric and valid in the
-  current time epoch;
-- active `awake` requires current presence plus matching active membership and
-  roster-state; its lease is non-null and its deadline is null;
-- available `awake` requires current presence plus retained `available`
-  roster-state matching the current active control epoch; its lease and
-  deadline are null.
-
-No `awake` acknowledgement is issued for a quarantined device without a
-current authoritative roster state. The acknowledgement echoes the exact
-state, nullable provenance, time epoch, and accepted deadline and includes the
-server tick at acknowledgement creation. Firmware rejects an acknowledgement
-if any echoed field differs from the retained state.
-
-The advertised deadline is bound to the actual hardware wake timer. After
-receiving a valid acknowledgement, firmware computes a conservative remaining
-interval:
-
-```text
-remaining_ms =
-  wake_deadline_tick_ms
-  - ack_server_tick_ms
-  - measured_publish_to_ack_ms
-  - SLEEP_ENTRY_GUARD_MS
-```
-
-`SLEEP_ENTRY_GUARD_MS` is initially 100 ms and must be confirmed by hardware
-measurement. Subtracting the entire measured publish-to-ack interval, rather
-than assuming symmetric network latency, can only schedule an early wake.
-Firmware passes this `remaining_ms`—not the original 20-second interval—to
-`esp_sleep_enable_timer_wakeup()`, then immediately calls
-`esp_deep_sleep_start()`.
-
-If the acknowledgement times out, the cube stays awake and retries. If an
-acknowledgement arrives after the deadline has aged so that `remaining_ms` is
-less than the one-second minimum useful sleep interval, firmware does not
-sleep. It obtains a fresh time sample, increments the sleep-state sequence,
-creates a new absolute deadline, republishes it, and waits for a new matching
-acknowledgement. Each maintenance wake follows the same procedure. Thus
-acknowledgement and retry latency shorten or refresh the programmed sleep
-interval; they are never added to the accepted wake deadline.
-
-The active lease remains valid while the device sleeps. The server reports the
-device as `SLEEPING`, not failed or available.
-
-On timer wake, the minimal maintenance client:
-
-- uses the stable device ID rather than the logical slot as its MQTT client and
-  topic identity;
-- reads retained roster control and its retained device power intent;
-- if control is still `ACTIVE` for its epoch and a matching intent requires
-  `AWAKE`, starts the full client, replaces retained sleep state with `AWAKE`,
-  and remains awake;
-- if control is still `ACTIVE` for its epoch and a matching intent allows
-  sleep, publishes updated device-scoped sleep status and may return to sleep;
-- if control is `ACTIVE` but the current retained roster state is absent,
-  malformed, marks the device unavailable, or does not match the saved
-  epoch/lease, starts the full client in `QUARANTINED` and never returns
-  directly to sleep;
-- if control is `REBUILDING` with a new rebuild ID, stays awake, performs the
-  full enrollment boot, and does not return to sleep;
-- never publishes the legacy logical `/status` keep-alive.
-
-On every full-client start, firmware first publishes current retained presence,
-then replaces the retained sleep record before relying on heartbeat health:
-
-```json
-{
-  "protocol": 1,
-  "state": "awake",
-  "boot_id": "new-random-per-full-boot",
-  "epoch": "current-active-epoch",
-  "lease_id": "active-lease-or-null",
-  "sequence": 1,
-  "applied_intent_id": "server-generated-intent-or-null",
-  "time_epoch_id": "pi-linux-boot-id",
-  "wake_deadline_tick_ms": null
-}
-```
-
-For an active full wake, `lease_id` remains the active lease. For an
-`AVAILABLE` transition, `epoch` identifies current active control while
-`lease_id`, `applied_intent_id`, and the deadline are null. Firmware
-republishes `AWAKE` after MQTT reconnect until it receives the exact
-state-aware acknowledgement.
-
-A live heartbeat whose boot ID matches current retained presence takes
-immediate precedence over an older retained `SLEEPING` record, so stale broker
-delivery cannot hide an awake device while the replacement publish is retried.
-The server accepts retained `SLEEPING` after restart only when its epoch and
-lease are active, its boot ID matches current presence, its sequence is newer
-than any processed state for that boot, and its absolute wake deadline has not
-expired beyond grace. Otherwise health is `UNKNOWN`/`OFFLINE`, never
-`SLEEPING`.
-
-When a successor epoch removes a device or changes its lease, the server
-ignores the old record by provenance and clears that device's retained
-sleep-state topic with an empty retained publish after the new active commit.
-The device also replaces it with lease-less `AWAKE` when it becomes
-`AVAILABLE`. If an old holder later republishes retained state for a revoked
-lease, the server does not acknowledge it and clears the topic again. These
-rules prevent a stale sleeping record from surviving activation, lease
-revocation, or a server restart.
-
-A device that slept through the entire `REBUILDING` interval therefore cannot
-continue its saved lease after waking into a successor `ACTIVE` epoch. It
-clears the saved logical slot and lease from NVS, keeps all logical
-subscriptions and sensor publication disabled, starts the full client in
-`QUARANTINED`, and reads its authoritative retained roster state. If that state
-is `AVAILABLE` for the current control epoch, it publishes new presence and
-lease-less retained `AWAKE`, then enters `AVAILABLE`. If it names a new active
-membership, the device performs normal membership validation and activation.
-A missing or inconsistent roster state leaves it awake in `QUARANTINED` for
-operator diagnosis; absence is never treated as permission to resume the old
-assignment.
-
-Device-scoped retained power intents replace logical auto-sleep flags for the
-maintenance path. The server publishes `AWAKE` for every selected device
-before starting or resuming a game and waits for fresh presence,
-acknowledgement, and sensor state. A sleeping device observes that intent on
-its next timer wake, so waking an unchanged roster requires neither a rebuild
-nor physical access. `SLEEP_ALLOWED` permits the normal inactivity timer; it
-does not force immediate sleep. Logical game commands remain lease-gated while
-the cube is fully awake.
-
-An actually failed cube and an intentionally sleeping cube may both lack
-heartbeats, but neither causes reassignment. Replacement requires the explicit
-administrative rebuild.
-
-## Returning and surplus cubes
-
-A device that appears after the enrollment window cannot join the active
-roster. It publishes device presence, displays `AVAILABLE`, and waits for a
-future rebuild.
-
-A former holder returning after replacement also remains `AVAILABLE`; there is
-no “original wins” behavior. If it should be selected again, the admin starts
-another full rebuild.
-
-## MQTT protocol
-
-All JSON records are versioned. Device IDs are uppercase MAC addresses without
-colons. Wire encodings are bounded: device IDs are 12 hex characters;
-rebuild, epoch, lease, and intent IDs are 32 hex characters; SHA-256 digests
-are 64 hex characters; NFC tag IDs are at most 32 hex characters; and hardware
-class names are an enumerated maximum of 16 printable ASCII characters. These
-limits, not the shorter descriptive placeholders in examples, determine packet
-tests.
-
-### Immutable rebuild request
-
-Topic:
-
-```text
-cube/roster/rebuild/{rebuild_id}/request
-```
-
-This retained, server-only record contains the complete normalized request:
-
-```json
-{
-  "protocol": 1,
-  "rebuild_id": "server-generated-rebuild",
-  "previous_epoch": "previous-active-epoch",
-  "slots": [
-    {"logical_slot": 1, "hardware_class": "small", "player_set": 0}
-  ],
-  "excluded_device_ids": [],
-  "started_at_ms": 0,
-  "enrollment_deadline_ms": 30000
-}
-```
-
-The real `slots` array contains exactly 6 or 12 entries. The effective deadline
-is resolved before publication, so recovery never depends on a default or
-timeout override that exists only in process memory. The server computes
-SHA-256 over canonical JSON and stores the digest with its persisted rebuild
-state. A record is accepted only when its topic rebuild ID, payload rebuild ID,
-and digest all agree. It is immutable for the lifetime of the rebuild.
-
-Firmware does not subscribe to rebuild-request topics. After a restart, the
-server reloads the request named by compact roster control, verifies its digest,
-and uses the exact slots, classes, exclusions, and deadline to resume
-enrollment or validate a prepared successor.
-
-### Roster control
-
-Topic:
-
-```text
-cube/roster/control
-```
-
-Retained rebuilding payload:
-
-```json
-{
-  "protocol": 1,
-  "state": "rebuilding",
-  "rebuild_id": "16-byte-hex-id",
-  "request_digest": "32-byte-hex-sha256"
-}
-```
-
-Retained active payload:
-
-```json
-{
-  "protocol": 1,
-  "state": "active",
-  "rebuild_id": "16-byte-hex-id",
-  "epoch": "16-byte-hex-id",
-  "manifest_digest": "32-byte-hex-sha256"
-}
-```
-
-This record is the rebuild barrier and final global commit. A server process
-restart alone never changes it. Wire JSON is minified. IDs have fixed encoded
-lengths, and the serialized control payload is capped at 384 bytes.
-
-### Administrative reboot request
-
-Topic:
-
-```text
-cube/device/all/reboot
-```
-
-Non-retained payload:
-
-```json
-{
-  "protocol": 1,
-  "rebuild_id": "server-generated-rebuild"
-}
-```
-
-The retained control record, not delivery of this best-effort request, is
-authoritative. Processing a new retained rebuild ID persists the ID and causes
-exactly one full reboot even if this request is dropped. Duplicate broadcasts,
-retained redelivery, and MQTT reconnects cannot cause additional reboots for
-the same rebuild ID.
-
-### Presence and heartbeat
-
-```text
-cube/device/{device_id}/presence
-cube/device/{device_id}/heartbeat
-```
-
-Presence is retained metadata with `online`, tag, hardware class, preferred
-set, firmware, last slot, and current `boot_id`. It has a retained offline last
-will.
-
-Heartbeat is non-retained and contains:
-
-```json
-{
-  "protocol": 1,
-  "boot_id": "random-per-boot",
-  "rebuild_id": "current-rebuild-or-null",
-  "sequence": 42
-}
-```
-
-Only a live, newer sequence matching current presence and rebuild establishes
-enrollment freshness. An enrolling device publishes immediately after boot,
-after each MQTT reconnect, and every two seconds. `sequence` is a monotonic
-per-boot heartbeat sequence and is independent from acknowledgement and sensor
-sequences. The same heartbeat continues every two seconds while a device is
-fully awake in `ACTIVE` or `AVAILABLE`, so heartbeat expiry has an actual
-producer and is a health signal in those states. A device that has published
-matching sleep state is instead monitored against its declared next-wake
-deadline plus grace; missing awake heartbeats never changes roster membership.
-
-### Pi boot-scoped time authority
-
-```text
-cube/device/{device_id}/time-request
-cube/device/{device_id}/time-response
-```
-
-The device publishes a non-retained request containing a random 64-bit nonce,
-its local monotonic send tick, and current known `time_epoch_id`. The game
-server replies non-retained:
-
-```json
-{
-  "protocol": 1,
-  "nonce": "random-request-nonce",
-  "time_epoch_id": "pi-linux-boot-id",
-  "server_tick_ms": 123456789
-}
-```
-
-`time_epoch_id` is the Pi's `/proc/sys/kernel/random/boot_id`;
-`server_tick_ms` is Linux `CLOCK_BOOTTIME`. The service is available whenever
-the local game server and MQTT broker are available and has no public-network
-dependency. Firmware derives an offset from the nonce-matched response and its
-local send/receive ticks. It accepts only the freshness, round-trip, rollback,
-and correction bounds defined in the sleep lifecycle.
-
-Devices persist the last accepted epoch and server tick across maintenance
-sleep. The nonce prevents response replay, while the prior tick detects
-same-epoch rollback. A Pi boot-ID change invalidates saved deadlines and forces
-resynchronization; a same-boot server-process restart does not reset the
-timeline.
-
-### Server manifest and bounded device membership
-
-```text
-cube/roster/{epoch}/manifest
-cube/roster/{epoch}/slot/{logical_slot}/owner
-cube/roster/{epoch}/tag-alias/{tag_id}
-cube/roster/{epoch}/device/{device_id}/membership
-```
-
-The immutable manifest lists selected devices, tags, slots, hardware classes,
-player sets, and lease IDs. It and the owner/alias indexes are server-only and
-may exceed the firmware packet budget. Their canonical JSON must match the
-`manifest_digest`.
-
-Each selected firmware client subscribes only to its own retained membership:
-
-```json
-{
-  "protocol": 1,
-  "device_id": "AABBCCDDEEFF",
-  "rebuild_id": "16-byte-hex-id",
-  "epoch": "16-byte-hex-id",
-  "manifest_digest": "32-byte-hex-sha256",
-  "logical_slot": 4,
-  "hardware_class": "small",
-  "tag_id": "16-byte-hex-tag",
-  "lease_id": "16-byte-hex-id"
-}
-```
-
-The membership is the firmware's complete activation input and is capped at
-384 bytes of minified JSON. It must agree with the server-only manifest and
-indexes. Prepared records have no effect while control remains `REBUILDING`;
-active control naming the same epoch and manifest digest is the final commit.
-
-### Device roster state
-
-```text
-cube/device/{device_id}/roster-state
-```
-
-This retained bounded record gives the maintenance client an authoritative
-answer even when a per-epoch membership is intentionally absent. For a
-selected device:
-
-```json
-{
-  "protocol": 1,
-  "state": "active",
-  "rebuild_id": "16-byte-hex-id",
-  "epoch": "16-byte-hex-id",
-  "lease_id": "16-byte-hex-id",
-  "manifest_digest": "32-byte-hex-sha256"
-}
-```
-
-For an unselected or removed device:
-
-```json
-{
-  "protocol": 1,
-  "state": "available",
-  "rebuild_id": "16-byte-hex-id",
-  "epoch": "16-byte-hex-id",
-  "lease_id": null
-}
-```
-
-The server prepares this record for every device that enrolled in the rebuild
-and every device named by the previous manifest, including devices that were
-offline for the whole enrollment window. Firmware applies it only when its
-rebuild and epoch match retained `ACTIVE` control. `active` must also match the
-device's bounded membership; `available` is explicit revocation of any saved
-slot and lease. Missing, malformed, or mismatched state means
-`QUARANTINED`, not active or available.
-
-If a commissioned inventory device outside both sets appears while control is
-already `ACTIVE`, the server may publish `available` for the current epoch
-after validating its presence. This does not reopen selection or change the
-active manifest; it only gives the surplus device an authoritative safe state.
-
-### Assignment acknowledgement
-
-```text
-cube/device/{device_id}/assignment-ack
-```
-
-Non-retained payload:
-
-```json
-{
-  "protocol": 1,
-  "state": "active",
-  "boot_id": "random-per-boot",
-  "rebuild_id": "server-generated-rebuild",
-  "logical_slot": 4,
-  "epoch": "active-epoch",
-  "lease_id": "active-lease",
-  "sequence": 7
-}
-```
-
-The server accepts only a live acknowledgement matching current presence,
-control, manifest, membership, and lease. An active device publishes
-immediately on activation, after each MQTT reconnect, and every two seconds
-while fully awake. `sequence` is a monotonic per-boot acknowledgement sequence,
-independent from heartbeat and sensor sequences. This replay makes activation
-proof recoverable if the server restarts after commit but before installing
-topology.
-
-### Firmware MQTT packet budget
-
-The checked-in PubSubClient defaults to a 256-byte packet buffer, which is not
-large enough for the bounded protocol records once MQTT topic and fixed-header
-bytes are included. The two firmware paths use different client types and must
-call their actual APIs before the first connection:
-
-- the full `EspMQTTClient` calls `setMaxPacketSize(512)` and checks that it
-  returns `true`;
-- the timer-wake path's direct `PubSubClient keepalive_mqtt` calls
-  `keepalive_mqtt.setBufferSize(512)`, checks that it returns `true`, and
-  verifies `keepalive_mqtt.getBufferSize() == 512`.
-
-Either path fails closed without connecting or entering pooled operation if
-allocation or verification fails. The maintenance path must not call
-`EspMQTTClient::setMaxPacketSize`, which is unavailable on its direct
-`PubSubClient`.
-
-Firmware-consumed topics are capped at 80 UTF-8 bytes and minified payloads at
-384 bytes. Including the MQTT PUBLISH fixed header and two-byte topic length,
-every supported inbound packet must fit within 512 bytes. Aggregate rebuild
-requests, manifests, and server indexes are published on topics firmware never
-subscribes to. CI serializes worst-case control, membership, roster-state,
-time-response, state-acknowledgement, power-intent, and command records with
-maximum-width IDs, classes, and ticks, asserts the firmware-bound packet sizes,
-and exercises both clients under heap instrumentation. Hardware acceptance
-verifies the 512-byte allocation leaves the agreed minimum free-heap margin
-during Wi-Fi, TLS-free MQTT, NFC polling, rendering, and timer-wake operation.
-
-### Device power intent
-
-```text
-cube/device/{device_id}/power-intent
-```
-
-Retained payload:
-
-```json
-{
-  "protocol": 1,
-  "intent_id": "server-generated-intent",
-  "desired_state": "awake",
-  "epoch": "active-epoch",
-  "lease_id": "active-lease",
-  "time_epoch_id": "pi-linux-boot-id",
-  "issued_tick_ms": 123456789
-}
-```
-
-`desired_state` is `awake` or `sleep_allowed`. A device applies an intent only
-when its `epoch`, `lease_id`, and `time_epoch_id` exactly match current active
-control, membership, and the accepted Pi time epoch. It ignores an intent from
-an old roster or Pi boot. During `REBUILDING`, the rebuild barrier takes
-precedence over every power intent. When a new epoch commits or the Pi reboots,
-the server publishes a new intent for each selected device; retained intents
-for devices omitted from the roster are harmless because their leases no
-longer match and may be cleared during garbage collection.
-
-Both the full and maintenance clients subscribe using device identity. A
-sleeping device checks the retained intent on every timer wake. It echoes the
-applied `intent_id` in sleep state, and after an `awake` intent it starts the
-full client and publishes fresh presence, assignment acknowledgement, and
-sensor state. If a matching intent is missing, malformed, or stale, the device
-uses `sleep_allowed` while `ACTIVE`; it never treats that condition as
-authority to change roster membership.
-
-### Device-scoped sensor state
-
-```text
-cube/device/{device_id}/sensor-state
-```
-
-Non-retained payload:
-
-```json
-{
-  "protocol": 1,
-  "boot_id": "random-per-boot",
-  "rebuild_id": "server-generated-rebuild",
-  "sequence": 93,
-  "epoch": "active-epoch",
-  "lease_id": "active-lease",
-  "observed_tag": "A9121466080104E0",
-  "hall_present": true
-}
-```
-
-Firmware publishes immediately after activation, on physical-state changes,
-after MQTT reconnect, and every two seconds while fully awake.
-
-The server accepts a snapshot only when device, boot, rebuild, epoch, lease,
-and sequence match the active roster. It maps the sender through its current
-assignment and maps `observed_tag` through the active epoch alias registry.
-The resulting logical topology exists inside game coordination, not as
-game-authoritative retained `cube/right/{slot}` traffic.
-
-Legacy retained `cube/right/#` values are cleared during rollout and ignored
-by pooled game coordination. The compiled `KNOWN_TAGS` mapping is not used for
-pooled logical neighbor identity.
-
-## Firmware state machine
-
-```text
-BOOT
-  -> DHCP + unique device MQTT identity
-  -> read roster control
-
-ENROLLING
-  -> publish fresh boot/rebuild heartbeat
-  -> replay heartbeat on reconnect and every two seconds
-  -> no logical commands or game-authoritative sensors
-
-AVAILABLE
-  -> not selected; wait for a future rebuild
-
-ACTIVE
-  -> require active control + matching bounded device membership
-  -> apply slot-specific rotation and subscribe to cube/{slot}/...
-  -> replay heartbeat, assignment acknowledgement, and sensor snapshots
-  -> obey only matching retained device power intent
-
-SLEEPING
-  -> keep assignment; publish device-scoped sleep state
-  -> timer wake synchronizes Pi boot-scoped time
-  -> read roster control, device roster state, and power intent
-  -> epoch/lease mismatch enters QUARANTINED; never resume stale assignment
-
-QUARANTINED
-  -> stop logical subscriptions and active-provenance sensor publication
-  -> clear saved assignment after authoritative mismatch
-  -> current available roster state publishes lease-less AWAKE and enters AVAILABLE
-  -> enter ENROLLING only for an explicit rebuild
-```
-
-## State hydration
-
-Most display commands already use retained `cube/{slot}/...` topics, so a
-selected cube receives them when it activates.
-
-Implementation must inventory letter, borders, highlight, lock, brightness,
-sleep interval, and transient display modes. Anything not retained is replayed
-after the exact assignment acknowledgement.
-
-Sensor state is never inherited from the prior holder. The committed device
-publishes a fresh snapshot for the startup topology barrier.
+`MAC` is the uppercase MAC without colons. The record is small and bounded;
+firmware subscribes only to its own `cube/assign/{own_MAC}`.
+
+## Firmware (`cube-pn5180`)
+
+Boot order works with no chicken-and-egg because IP no longer depends on slot:
+
+1. Look up own MAC in the compiled table → IP octet + hardware traits →
+   configure static IP → connect to MQTT. **Unchanged from today.**
+2. Read retained `cube/assign/{own_MAC}`.
+3. Act on the record:
+   - **`{slot: N}`** — set the topic base to `cube/N/...` and rotation from N
+     (`N <= 6 ? 2 : 0`, as today), then run normally.
+   - **`{slot: null}`** (explicit unassigned) — display `UNASSIGNED`, subscribe
+     to no slot topics, publish no neighbor/sensor state. This is the
+     returned-old-cube state.
+   - **No record at all** — fall back to the compiled `cube_id` as the slot (see
+     transitional fallback below).
+
+The slot that used to be a compiled constant is now a value read once at boot.
+Applied at boot only — the admin reboots during a swap anyway — so there is no
+live IP or topic reconfiguration.
+
+**Transitional fallback:** the "no record at all" case exists only during
+rollout, before the server publishes assignments. Falling back to the compiled
+`cube_id` lets the assignment-aware firmware ship before the server side is
+authoritative without changing behavior. Once the server is authoritative every
+cube has a record — an explicit `{slot: null}` is idle, and absence no longer
+occurs in the field.
+
+## NFC neighbor identity
+
+A cube reads the tag of its **right neighbor** and publishes it. Today it also
+resolves that tag to a cube number on-device via the compiled
+`lookupCubeNumberByTag` and publishes `cube/right/{id}`.
+
+In the pool model the tag→slot mapping is dynamic, so resolution moves to the
+server:
+
+- The cube keeps publishing the raw neighbor tag on `cube/nfc/{id}` (it already
+  does). On-device tag→number resolution and `cube/right/{id}` publication are
+  retired for pooled identity.
+- The server resolves raw tag → slot using two facts it already holds: a
+  `MAC → tag` value recorded once at commissioning, and the live `slot → MAC`
+  assignment. Because a spare brings its own tag, its tag must be recorded on the
+  console before it is assigned — one data-entry field, not a reflash.
+
+## What this drops from the previous design
+
+Epochs, leases, manifests, SHA-256 digests, quarantine states, power intents,
+the Pi-boot-scoped time authority, absolute wake deadlines, the exactly-once
+reboot NVS state machine, the atomic startup topology barrier, and the
+DHCP/mDNS migration. Sleep/wake is untouched.
+
+## Constraints and non-goals
+
+Constraints:
+
+- A game uses 6 cubes (single-player) or 12 (two-player).
+- Small and large cubes are not interchangeable; a spare may only take a slot of
+  its own hardware class. The console enforces this on assignment.
+- A pre-commissioned spare already runs current firmware and is present in the
+  compiled MAC table (for its IP octet and hardware traits) and in the server's
+  `MAC → tag` inventory.
+
+Non-goals:
+
+- Replacing a cube without stopping the game.
+- Changing a slot assignment from a heartbeat timeout or from sleep. Only an
+  explicit console action reassigns.
+- Commissioning a brand-new cube without a reflash. Adding a new MAC to the
+  compiled table is a planned commissioning event, not field replacement.
+- Reworking sleep, the time model, or the network addressing scheme.
 
 ## Failure and recovery behavior
 
 | Situation | Result |
 |---|---|
-| Active cube misses heartbeat | Health reports offline; roster does not change |
-| Active cube intentionally sleeps | Lease remains assigned; status is sleeping |
-| Active cube fails mid-game | Game is degraded/stopped until admin rebuild |
-| Extra powers on during a game | It remains available |
-| Former holder returns | It remains available |
-| Admin rebuilds with 7 compatible devices for 6 slots | 6 selected, 1 available |
-| Admin rebuilds with 13 compatible devices for 12 slots | 12 selected, 1 available |
-| Wrong-size extra is online | It is ineligible for the missing slot |
-| Too few compatible devices enroll | Rebuild stays paused and uncommitted |
-| Server restarts while control is active | Reconstruct same roster; no selection |
-| Server restarts while rebuilding | Resume or safely abort the same rebuild ID |
-| Crash before active commit | Previous epoch remains recorded; gameplay stays paused |
-| Crash after active commit | Reconstruct complete new epoch and topology barrier |
-| Delayed old sensor message arrives | Reject by device/boot/rebuild/epoch/lease |
-| Sleeping cube sees rebuild barrier | Stay awake and enroll |
-| Awake cube misses reboot broadcast | Retained rebuild barrier causes its one reboot |
-| Server restarts during enrollment | Periodic heartbeats restore enrollment proof |
-| Server restarts after active commit | Periodic acknowledgements restore activation proof |
-| Sleeping active roster must start a game | Matching retained awake intent wakes it |
-| Pi reboots while cubes sleep | New time epoch invalidates deadlines; timer wake resynchronizes |
-| Former holder sleeps through rebuild and commit | Epoch mismatch forces quarantine, then available |
-
-### Rebuild recovery
-
-If the server restarts while `REBUILDING`, it reads the rebuild ID and request
-digest from control, loads the immutable request, verifies the digest, and
-recovers the previous epoch, normalized profile, exclusions, and effective
-deadline from that request:
-
-- if a complete prepared successor exists, finish the active commit;
-- if preparation is incomplete, resume enrollment/preparation for the same
-  rebuild ID;
-- if the request is missing or its digest does not match, stay paused and
-  require explicit administrative recovery rather than guessing a profile;
-- an explicit admin abort may restore active control to the unchanged previous
-  epoch only if its required devices are healthy;
-- never infer a new rebuild from server startup alone.
-
-## Inventory and commissioning
-
-The authoritative inventory records:
-
-```text
-device_id
-nfc_tag
-hardware_class
-board_version
-rgb_order
-hall_sensor_profile
-preferred_set: 0 | 1 | either
-last_commissioned_firmware
-```
-
-It validates unique device IDs and tags, known hardware classes, compatible
-firmware builds, enough capacity for supported profiles, and at least one
-extra of each size when replacement coverage is promised.
-
-Candidate `80:F3:DA:54:53:B8` still needs its size, board profile, and attached
-NFC tag verified. `CC:DB:A7:99:0F:E0` is recorded as unable to enter download
-mode and must not count as available capacity.
+| Active cube misses heartbeat | Health reports offline; slot assignment unchanged |
+| Active cube sleeps | Unchanged sleep behavior; slot assignment unchanged |
+| Active cube fails mid-game | Game stops until admin reassigns and reboots |
+| Failed cube returns after reassignment | It reads `unassigned`, sits idle; no IP conflict |
+| Spare assigned to a taken slot | Server clears the slot from the prior MAC first |
+| Wrong-size spare assigned | Console rejects: hardware class must match |
+| Not all assigned slots present | Round does not start; console shows which are missing |
+| Server restart | Reload the `slot → MAC` map from disk; assignments unchanged |
+| New firmware, no assignment record yet | Falls back to compiled `cube_id`; behavior preserved |
 
 ## Implementation areas
 
 ### `cube-pn5180`
 
-- Replace MAC-to-logical-ID boot identity with stable device identity.
-- Add unique device MQTT identity, presence, fresh enrollment heartbeat, and
-  offline last will.
-- Implement retained rebuild-control handling and persisted exactly-once
-  per-rebuild reboot state in full boot and timer-wake paths.
-- Set and verify a 512-byte MQTT buffer in both full and timer-wake clients;
-  refuse pooled operation if allocation fails.
-- Migrate maintenance sleep/wake topics and client IDs from logical slot to
-  device ID.
-- Add bounded membership validation, replayed acknowledgement, retained power
-  intent, and NVS last-slot preference.
-- Add retained sleep/awake state with absolute deadlines, application
-  acknowledgement, and lease-revocation clearing.
-- Implement state-aware acknowledgement validation for sleeping, active awake,
-  and lease-less available awake records.
-- Bind the deep-sleep hardware timer to the acknowledged absolute deadline by
-  programming only the guarded remaining interval.
-- Synchronize both client paths to the Pi boot-scoped time authority and reject
-  missing, regressing, or changed time epochs.
-- Read retained device roster state on maintenance wake and quarantine any
-  stale epoch/lease before starting the full client.
-- Gate logical commands behind the committed lease.
-- Publish raw device-scoped sensor snapshots with full provenance.
-- Disable logical `cube/right` publication and compiled tag fallback in pooled
-  mode.
-- Use DHCP and mDNS for pooled devices.
-- Display `ENROLLING`, `AVAILABLE`, active slot, `SLEEPING`, and quarantine
-  diagnostics.
+- Read logical slot from retained `cube/assign/{MAC}` at boot instead of the
+  compiled `cube_id`; keep the compiled table as the source of IP octet and
+  hardware traits.
+- Subscribe to `cube/assign/{own_MAC}`; add an `UNASSIGNED` idle state.
+- Stop resolving tag→number on-device and stop publishing `cube/right/{id}` for
+  pooled identity; keep publishing the raw tag on `cube/nfc/{id}`.
+- Keep static IP, sleep/wake, display, and game handling as-is.
 
 ### `cubes`
 
-- Add an administrator-triggered roster rebuild manager with an injectable
-  clock and persisted rebuild state.
-- Make cube count, hardware classes, exclusions, and enrollment timeout
-  explicit inputs.
-- Persist the normalized immutable rebuild request and canonical digest.
-- Never mutate roster membership from heartbeat expiry.
-- Build and validate one server-only immutable manifest plus bounded device
-  memberships per rebuild.
-- Implement the startup topology barrier and bulk graph installation without
-  invoking normal per-edge gameplay callbacks.
-- Validate device-scoped sensor provenance and map raw tags through the active
-  alias registry.
-- Remove `cube/right/#` as game-authoritative input.
-- Rehydrate non-retained display state after acknowledgement.
-- Publish epoch- and lease-scoped retained power intents and wait for selected
-  devices to wake before enabling gameplay.
-- Serve nonce-bound `CLOCK_BOOTTIME` samples identified by the Pi Linux boot ID.
-- Validate and acknowledge sleep-state transitions, give matching live
-  heartbeats precedence, and clear revoked retained sleep state.
-- Validate active `AWAKE` against membership and available `AWAKE` against
-  current retained roster state before acknowledging.
-- Publish retained active/available roster state for every enrolled and
-  previous-roster device at commit.
-- Expose active, enrolling, sleeping, available, missing, incompatible, and
-  excluded devices in logs/admin UI.
+- Add a persisted `slot → MAC` map and a `MAC → tag` inventory.
+- Publish retained `cube/assign/{MAC}` records; clear a slot from the prior
+  holder on reassignment.
+- Resolve NFC neighbor tags to slots server-side from those two maps; stop
+  consuming `cube/right/{id}` as authoritative.
+- Add the game-start presence gate.
+- Never change a slot assignment from heartbeat expiry or sleep.
 
 ### `pi-deploy`
 
-- Install inventory and persist roster/rebuild state.
-- Add `rebuild-cube-roster` with 6/12 profile, exclusions, and progress output.
-- Update monitoring and OTA tools for device ID and mDNS.
-- Ensure the game service can read the Linux boot ID and expose boot-scoped
-  time without relying on public NTP.
-- Clear legacy retained logical neighbor topics during cutover.
-- Preserve retained control and epoch records across broker restarts.
+- Persist the `slot → MAC` map and `MAC → tag` inventory across restarts.
+- Add a console `assign-slot` action (and a `swap` shortcut: assign a failed
+  cube's slot to a spare and clear the old holder), with hardware-class checks.
 
 ## Test plan
 
 ### Server unit tests
 
-- Heartbeat timeout never changes an active roster.
-- Sleeping status never makes a slot available.
-- Retained sleeping state reconstructs `SLEEPING` after server restart only
-  for a matching active lease, presence boot, increasing sequence, and
-  unexpired deadline in the current Pi time epoch.
-- Live matching-boot heartbeat takes precedence over stale retained sleeping
-  state.
-- Pi boot-ID change invalidates all old sleep deadlines without changing roster
-  membership.
-- Current active control plus an available device roster state revokes a saved
-  old lease even when the device missed the whole rebuild.
-- A server restart never starts a rebuild.
-- Only an explicit rebuild ID opens enrollment.
-- Restart recovery rejects a missing or digest-mismatched immutable request.
-- A mixed-size 12-cube request recovers the exact per-slot classes, exclusions,
-  and effective deadline after a server restart.
-- Restarted server receives periodic enrollment proof without rebooting cubes.
-- Retained presence without a live boot/rebuild-matched heartbeat is
-  ineligible.
-- Six-cube rebuild selects exactly six from seven compatible devices.
-- Twelve-cube rebuild selects exactly twelve from thirteen.
-- Wrong-size and excluded devices are never selected.
-- Deterministic ranking preserves compatible prior slot preferences.
-- Incomplete capacity never commits a partial manifest.
-- Prepared records cannot activate while control is `REBUILDING`.
-- Active control cannot reference an incomplete or inconsistent epoch.
-- Active control and every membership bind to the same manifest digest.
-- Restart before and after commit recovers the correct rebuild state.
-- Restart after active commit but before topology installation recovers
-  periodic acknowledgements and completes the topology barrier.
-- Delayed sensor snapshots with wrong provenance are ignored.
-- Legacy retained `cube/right/{slot}` input is ignored.
-- Topology snapshots are staged without per-edge callbacks.
-- Bulk graph installation produces no guesses, scoring, or ABC transitions.
+- Assigning a taken slot clears it from the prior MAC (one MAC per slot).
+- Heartbeat expiry and sleep never change an assignment.
+- A returning cube whose slot was reassigned resolves to `unassigned`.
+- Wrong-hardware-class assignment is rejected.
+- A round does not start until every assigned slot is present.
+- Server restart reloads the same `slot → MAC` map and re-publishes assignments.
+- Raw neighbor tag resolves to the correct slot through `MAC→tag` × `slot→MAC`,
+  including after a spare (new tag) is assigned.
 
 ### Firmware-native tests
 
-- Full boot uses fresh device and rebuild identity.
-- A new retained rebuild ID persists before causing exactly one full reboot.
-- Duplicate retained delivery, reconnect, and reboot broadcast do not cause a
-  second reboot for the same rebuild ID.
-- Active control and the bounded device membership must agree before
-  activation.
-- A last-slot NVS value is preference, never authority.
-- Timer wake uses device-scoped client and topics.
-- Timer wake under unchanged active control returns to sleep without changing
-  assignment.
-- Timer wake under a new rebuild barrier stays awake and enrolls.
-- Full boot and every timer wake obtain a nonce-matched Pi `CLOCK_BOOTTIME`
-  sample before sleep.
-- Missing time response, excessive round-trip, tick rollback, excessive offset
-  correction, and Pi boot-ID change prevent return to sleep.
-- An `ACTIVE` control epoch that does not match saved roster state forces the
-  full-client quarantine path with logical traffic disabled.
-- Current retained `AVAILABLE` roster state clears the saved slot/lease,
-  publishes lease-less `AWAKE`, and enters `AVAILABLE`.
-- Enrolling heartbeat replays on reconnect and periodically with a monotonic
-  per-boot sequence.
-- Fully awake `ACTIVE` and `AVAILABLE` devices continue heartbeat replay every
-  two seconds; sleep state switches health monitoring to the wake deadline.
-- Active assignment acknowledgement replays on reconnect and periodically
-  with a monotonic per-boot sequence.
-- The full client checks `setMaxPacketSize(512)`; the maintenance client checks
-  `keepalive_mqtt.setBufferSize(512)` and `getBufferSize()`, and both fail
-  closed when allocation is rejected.
-- Worst-case control, membership, roster-state, time-response,
-  state-acknowledgement, power-intent, and command PUBLISH packets remain
-  within 512 bytes including topic and MQTT headers.
-- Firmware never subscribes to aggregate request, manifest, owner, or alias
-  topics.
-- Timer wake applies only a power intent matching the active epoch and lease.
-- An `awake` intent starts the full client; `sleep_allowed` permits the normal
-  inactivity timer.
-- Stale, missing, and malformed power intents cannot wake an old lease or
-  change roster membership.
-- Sleeping state includes exact boot, epoch, lease, sequence, intent, and
-  boot-scoped time epoch and absolute tick deadline.
-- Firmware never enters deep sleep until the server acknowledges the exact
-  retained sleeping sequence; missing and mismatched acknowledgements keep it
-  awake.
-- Active full wake receives an `awake` acknowledgement only when presence,
-  membership, roster state, epoch, and lease all match.
-- Quarantine-to-available receives an `awake` acknowledgement with the current
-  epoch and null lease/deadline only when retained roster state is
-  `available`.
-- State, boot, sequence, epoch, lease, time epoch, or deadline mismatch causes
-  firmware to reject an acknowledgement and continue retrying.
-- A valid acknowledgement binds the exact time epoch and deadline; firmware
-  programs only the conservative remaining interval after acknowledgement.
-- An acknowledgement leaving less than one second before the guarded deadline
-  refreshes the time sample, sequence, deadline, and acknowledgement instead
-  of entering deep sleep.
-- Full wake publishes presence followed by retained `AWAKE`; reconnect retries
-  it until acknowledged.
-- Available and quarantined devices cannot use logical command topics.
-- Sensor snapshots contain exact boot, rebuild, epoch, lease, and sequence.
-- Activation and physical-state changes immediately republish sensor state.
+- A cube uses the assigned slot for topics and rotation, not the compiled
+  `cube_id`.
+- No `cube/assign` record falls back to the compiled `cube_id`.
+- An `unassigned` record produces the idle state: no slot subscriptions, no
+  neighbor/sensor publication.
+- IP octet and hardware traits come from the compiled MAC table regardless of
+  slot.
+- The cube publishes the raw neighbor tag and no longer publishes
+  `cube/right/{id}` for pooled identity.
 
-### Broker integration tests
+### Broker / hardware acceptance
 
-- Leave active cubes idle beyond the 10-minute sleep threshold and verify no
-  roster change.
-- Observe repeated 20-second timer wakes and verify device-scoped sleep status.
-- Restart the server while a cube sleeps and verify retained provenance and
-  deadline reconstruct `SLEEPING`.
-- Cold-boot the Pi and cubes on an isolated LAN with no Internet; verify the
-  Pi boot-scoped time exchange allows normal sleep/wake cycles.
-- Drift the device clock across repeated maintenance wakes and verify each
-  nonce-bound sample corrects acceptable drift while rollback and out-of-bound
-  correction keep the device awake.
-- Reboot the Pi while cubes sleep and verify the new boot ID invalidates old
-  deadlines until each cube wakes and resynchronizes.
-- Resume matching live heartbeats while a stale retained sleeping record is
-  delivered and verify health immediately becomes awake.
-- Expire a sleep deadline, change its lease, and remove the device in a
-  successor epoch; verify each case rejects or clears retained sleeping state.
-- Republish sleeping state from a revoked holder and verify the server clears
-  it without acknowledgement.
-- Drop and mismatch sleep-state acknowledgements and verify firmware does not
-  enter deep sleep; accept the exact acknowledgement and verify it does.
-- Exercise active full wake and verify the state-aware `awake`
-  acknowledgement carries the active lease and null deadline.
-- Exercise quarantine-to-available and verify lease-less retained `AWAKE` is
-  acknowledged against the current `available` roster state without retrying
-  indefinitely.
-- Delay and drop acknowledgements through the retry window using a fake clock;
-  verify the programmed timer uses only the remaining interval, near-expired
-  deadlines are refreshed, and actual timer wake never exceeds the accepted
-  deadline plus the two-second server grace.
-- Start a rebuild while cubes sleep; verify all enroll by the 30-second window
-  or remain explicitly missing without partial commit.
-- Keep a former holder offline from before `REBUILDING` through successor
-  `ACTIVE`, then wake it; verify it clears the old assignment, publishes
-  lease-less `AWAKE`, and remains `AVAILABLE`.
-- Drop the administrative reboot broadcast entirely and verify every cube
-  observes retained control, reboots exactly once, and enrolls.
-- Restart the server after enrollment heartbeats and verify periodic replay
-  completes selection without another cube reboot.
-- Restart the server after active commit but before topology installation and
-  verify acknowledgement and sensor replay complete the barrier.
-- Put the unchanged active roster to sleep, publish matching retained `awake`
-  intents, and verify all selected cubes wake on their next timer cycle without
-  a rebuild or physical action.
-- Deliver old-epoch and wrong-lease power intents and verify they are ignored.
-- Deliver a retained power intent from the previous Pi boot and verify it is
-  ignored until the server republishes for the current time epoch.
-- Replace one cube in six-cube and twelve-cube profiles.
-- Reconnect the old holder after commit and verify it remains available.
-- Interrupt rebuild after every preparation step and verify no partial roster
-  or topology becomes active.
-- Restart broker and server independently during active and rebuilding states.
-- Restart during a mixed-size rebuild and verify recovery uses the original
-  slot/class profile, exclusions, and effective deadline.
-- Run a maximum-width 12-cube rebuild and verify both full and maintenance
-  clients receive every subscribed record without truncation or disconnect.
-- Deliver retained presence and delayed old sensor messages; verify neither
-  changes selection or topology.
-- Keep a passive tag physically present while its device is omitted from the
-  new roster; verify the staged topology excludes it.
-- Prove a rebuild cannot trigger guesses, scoring, or ABC transitions from
-  intermediate topology states.
-
-### Hardware acceptance
-
-- Rebuild six-cube single-player with a compatible extra.
-- Rebuild twelve-cube two-player with compatible extras.
-- Test small-to-small and large-to-large replacement.
-- Confirm cross-size assignment is impossible.
-- Verify player grouping and rotation after cold rebuild.
-- Form words with the replacement on both left and right edges.
-- Exercise MQTT-triggered and physical all-cube reboot procedures.
-- Exercise rebuild while cubes are awake and while they are sleeping.
-- Measure minimum free heap with a 512-byte MQTT buffer during full-client and
-  timer-wake operation; enforce the agreed safety margin.
-- Acceptance target: complete roster and topology ready within 45 seconds of
-  starting the administrative rebuild.
+- Replace one cube in a 6-cube game via the console and a reboot; verify the
+  spare plays the failed slot and forms words on both left and right edges.
+- Power the failed cube back on; verify it stays idle with no IP conflict.
+- Repeat for a 12-cube game across both player sets.
+- Verify small↔small and large↔large replacement; confirm cross-size is
+  rejected.
+- Leave cubes idle past the sleep threshold; verify no assignment change.
 
 ## Rollout
 
-1. Create and validate authoritative inventory.
-2. Deploy device identity, presence, and sleep status in observe-only mode.
-3. Deploy retained roster-control handling to full boot and timer-wake paths.
-4. Deploy assignment gating and device-scoped sensor publication to every
-   field cube.
-5. Seed last-slot preferences from current IDs.
-6. Add the server-side rebuild manager and startup topology barrier.
-7. Stop consuming `cube/right/#` and clear its retained legacy values.
-8. Switch pooled cubes to DHCP and update maintenance tooling.
-9. Enable six-cube administrative rebuilds.
-10. Verify player grouping, then enable twelve-cube rebuilds.
-11. Commission at least one compatible extra per deployed size.
+1. Add the server `slot → MAC` map, `MAC → tag` inventory, and retained
+   `cube/assign` publishes, seeded to match today — no behavior change.
+2. Ship firmware that reads its slot from the assignment (compiled `cube_id`
+   fallback), keeping IP and hardware from the compiled table.
+3. Add the console assign/swap action and the game-start presence gate.
+4. Move neighbor tag resolution to the server; retire compiled
+   `lookupCubeNumberByTag` and `cube/right/{id}` for pooled identity.
 
-Mixed old/new firmware is unsafe once pooled assignment starts. An old cube
-does not understand the rebuild barrier, lease gating, or device-scoped sensor
-protocol.
+Steps 1–2 preserve behavior, so there is no flag day. Mixed firmware is safe
+until step 4, at which point every field cube must be on the assignment-aware
+build.
 
 ## Open decisions before implementation
 
-1. Where should inventory and persisted roster/rebuild state live?
-2. How will the admin select cube count, hardware profile, and excluded device
-   IDs?
-3. Confirm actual small/large layout and `preferred_set` values.
-4. Confirm whether 30 seconds covers timer wake plus Wi-Fi/MQTT startup on
-   field batteries.
-5. Define admin abort behavior when the previous roster is no longer healthy.
-6. Inventory non-retained display state requiring replay.
-7. Confirm DHCP capacity and mDNS support on the field router.
-8. Verify size, board profile, RGB order, Hall profile, and NFC tag of each
-   extra candidate.
+1. Where do the `slot → MAC` map and `MAC → tag` inventory live on the Pi?
+2. How does the console capture a spare's tag at commissioning?
+3. Confirm hardware-class metadata (small/large) per commissioned cube.
+4. Confirm which display state must be re-sent after a slot change (most
+   `cube/{slot}/...` display topics are retained and arrive on subscribe).
