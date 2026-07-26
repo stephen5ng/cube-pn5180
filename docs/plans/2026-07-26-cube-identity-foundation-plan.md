@@ -182,47 +182,59 @@ The native suite only compiles the synthetic `#ifdef NATIVE_TESTING` table, so a
 
 - [ ] **Step 1: Write the validator**
 
-Create `tools/validate_mac_table.py`:
+Create `tools/validate_mac_table.py`. It counts every row-like initializer loosely, then requires each to match the strict canonical four-field form — so a row missing the `ip_octet` field (which C++ would still compile with `ip_octet == 0`) or using a lowercase/non-canonical MAC is reported, not silently skipped. It also enforces the expected row count:
 
 ```python
 #!/usr/bin/env python3
-"""Validate the production CUBE_MAC_TABLE: unique MACs, unique ip_octets,
-octets in the allowed host range. Guards against typos the native tests
-(which compile the synthetic table) cannot catch."""
+"""Validate the production CUBE_MAC_TABLE: exactly EXPECTED_ROWS rows, each a
+canonical four-field initializer with an uppercase colon MAC, all MACs and
+ip_octets globally unique and in the allowed host range. Guards against typos
+the native tests (which compile only the synthetic table) cannot catch."""
 import re
 import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "cube_utilities.cpp"
 ALLOWED_MIN, ALLOWED_MAX = 21, 199  # .1 gateway, .20 unknown-sentinel, .247 broker excluded
+EXPECTED_ROWS = 18                  # bump when commissioning adds/removes a cube
 
-def production_rows(text):
-    # The production table is the `#else` branch of the NATIVE_TESTING guard.
-    body = text.split("#else", 1)[1].split("#endif", 1)[0]
-    row = re.compile(r'\{\s*"([0-9A-Fa-f:]+)"\s*,\s*\d+\s*,\s*\w+\s*,\s*(\d+)\s*\}')
-    return [(m.group(1), int(m.group(2))) for m in row.finditer(body)]
+# Loose: any brace initializer that opens with a quoted string. Catches a row
+# even when it is malformed (missing a field), so it is not silently skipped.
+LOOSE = re.compile(r'\{\s*"[^"]*"[^}]*\}')
+# Strict canonical: {"AA:BB:CC:DD:EE:FF", <int>, <IDENT>, <int>}, uppercase MAC.
+STRICT = re.compile(
+    r'^\{\s*"((?:[0-9A-F]{2}:){5}[0-9A-F]{2})"\s*,\s*\d+\s*,\s*\w+\s*,\s*(\d+)\s*\}$')
+
+def production_block(text):
+    # First `#ifdef NATIVE_TESTING ... #else <production> #endif` in the file.
+    return text.split("#else", 1)[1].split("#endif", 1)[0]
 
 def main():
-    rows = production_rows(SRC.read_text())
+    rows = LOOSE.findall(production_block(SRC.read_text()))
     errors = []
-    if not rows:
-        errors.append("no production rows parsed")
+    if len(rows) != EXPECTED_ROWS:
+        errors.append(f"expected {EXPECTED_ROWS} rows, found {len(rows)}")
     macs, octets = {}, {}
-    for mac, octet in rows:
+    for raw in rows:
+        m = STRICT.match(raw.strip())
+        if not m:
+            errors.append(f"malformed/non-canonical row: {raw.strip()}")
+            continue
+        mac, octet = m.group(1), int(m.group(2))
         if mac in macs:
             errors.append(f"duplicate MAC {mac}")
         macs[mac] = True
         if octet in octets:
-            errors.append(f"duplicate ip_octet {octet} (MACs {octets[octet]} and {mac})")
+            errors.append(f"duplicate ip_octet {octet} ({octets[octet]} and {mac})")
         octets[octet] = mac
         if not ALLOWED_MIN <= octet <= ALLOWED_MAX:
             errors.append(f"ip_octet {octet} for {mac} outside {ALLOWED_MIN}-{ALLOWED_MAX}")
     if errors:
-        print(f"MAC table INVALID ({len(rows)} rows):")
+        print("MAC table INVALID:")
         for e in errors:
             print(f"  - {e}")
         return 1
-    print(f"MAC table OK: {len(rows)} rows, all MACs and octets unique.")
+    print(f"MAC table OK: {len(rows)} rows, all MACs and octets unique and canonical.")
     return 0
 
 if __name__ == "__main__":
@@ -232,24 +244,51 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it against the current table — expect PASS**
 
 Run: `python3 tools/validate_mac_table.py`
-Expected: `MAC table OK: 18 rows, all MACs and octets unique.` (exit 0).
+Expected: `MAC table OK: 18 rows, all MACs and octets unique and canonical.` (exit 0).
 
-- [ ] **Step 3: Prove it catches a collision**
+- [ ] **Step 3: Prove it catches all three failure modes**
 
-Temporarily change one backup octet to duplicate a primary (e.g. set the `80:F3:DA:54:53:B8` row's octet from `41` to `21`), then:
+Make each edit below (one at a time) in the production table, run the validator, confirm exit 1, then revert and confirm PASS again:
 
-Run: `python3 tools/validate_mac_table.py`
-Expected: exit 1 with `duplicate ip_octet 21 ...`. Revert the edit and re-run to confirm PASS.
+  1. **Duplicate octet:** set the `80:F3:DA:54:53:B8` row octet from `41` to `21`. Expected: `duplicate ip_octet 21 ...`.
+  2. **Missing fourth field:** delete `, 41` from that same row (leaving three fields — C++ would compile it as octet 0). Expected: `malformed/non-canonical row: {"80:F3:DA:54:53:B8", 1, RGB_ORDER_BGR}`.
+  3. **Non-canonical MAC:** lowercase that row's MAC to `80:f3:da:54:53:b8`. Expected: `malformed/non-canonical row: ...`.
 
-- [ ] **Step 4: Wire into CI / pre-flash**
+Run each: `python3 tools/validate_mac_table.py`
 
-If a CI workflow exists (`.github/workflows/*.yml` or similar), add a step running `python3 tools/validate_mac_table.py` before the build. If none exists, add a note at the top of `tools/flash_cubes.sh` to run it first, and document it in the repo `CLAUDE.md` "After Major Feature Additions" checklist.
+- [ ] **Step 4: Make the validator an enforced pre-flash guard**
 
-- [ ] **Step 5: Commit**
+This repo has no `.github/workflows`, so the validator must gate the actual flash/update entry points, not just live as a note. Add this guard immediately after the variable block near the top of BOTH `tools/flash_cubes.sh` (after the `PIO=` line) and `tools/update.sh` (after `FIRMWARE_PATH=`):
 
 ```bash
-git add tools/validate_mac_table.py
-git commit -m "feat: CI validator for unique MACs/ip_octets in production table"
+if ! python3 "$(dirname "$0")/validate_mac_table.py"; then
+  echo "MAC table validation failed; aborting." >&2
+  exit 1
+fi
+```
+
+And at the top of `tools/update_cubes.py`'s `main()` (before any flashing), add:
+
+```python
+import subprocess, os, sys
+_validator = os.path.join(os.path.dirname(__file__), "validate_mac_table.py")
+if subprocess.run([sys.executable, _validator]).returncode != 0:
+    print("MAC table validation failed; aborting.", file=sys.stderr)
+    sys.exit(1)
+```
+
+Also add `python3 tools/validate_mac_table.py` to the repo `CLAUDE.md` "After Major Feature Additions" checklist.
+
+- [ ] **Step 5: Prove the flash guard aborts before PlatformIO/OTA**
+
+Re-apply failure mode 1 from Step 3, then run `tools/flash_cubes.sh` with any cube id (e.g. `bash tools/flash_cubes.sh 1`).
+Expected: it prints `MAC table validation failed; aborting.` and exits **before** invoking `pio`. Revert the edit.
+
+- [ ] **Step 6: Commit (stage every edited file)**
+
+```bash
+git add tools/validate_mac_table.py tools/flash_cubes.sh tools/update.sh tools/update_cubes.py CLAUDE.md
+git commit -m "feat: enforced pre-flash validator for the production MAC table"
 ```
 
 ---
@@ -280,7 +319,9 @@ In `src/main.cpp`, in `getCubeIpOctet()`, keep the existing side effects (settin
 
 Use the `entry` already fetched at the top of the function; keep the `current_rgb_order`, `cube_identifier`, and `configurePins(cube_id)` lines for the known-MAC path.
 
-**Note — no display diagnostic here:** `getCubeIpOctet()` runs at `src/main.cpp:874`, before `display_manager` is constructed (`src/main.cpp:1469`), so it is null at this point and cannot render text. The fail-closed signal is therefore the Serial log plus a cube that stays dark and never joins Wi-Fi/MQTT — a clear "not working" state for a field tech. Do not call `display_manager` here.
+**Note — no display diagnostic here:** `getCubeIpOctet()` runs at `src/main.cpp:874` inside `setupWiFiConnection()`, before `display_manager` is constructed (`src/main.cpp:1469`), so it is null at this point and cannot render text. The fail-closed signal is therefore the Serial log plus a cube that stays dark and never joins Wi-Fi/MQTT — a clear "not working" state for a field tech. Do not call `display_manager` here.
+
+**Why the halt provably prevents network bring-up:** `getCubeIpOctet()`'s return value feeds `IPAddress local_IP(...)` at `src/main.cpp:877`, and `WiFi.config(...)` is only called afterward at `src/main.cpp:883`. Halting inside `getCubeIpOctet()` (an infinite loop that never returns) means execution never reaches line 877 or 883 — so an unknown MAC structurally cannot call `WiFi.config` or any later MQTT setup. The pure, testable decision is `findCubeIpOctet()` returning the sentinel `-1` for an unknown MAC, already asserted by `test_findCubeIpOctet_unknown` in Task 1; treat `-1` as the boot-fatal value. Bench/dev boards must therefore be commissioned into the table (Task 2 count guard will flag a new MAC that is added without an octet).
 
 - [ ] **Step 2: Verify the native suite still passes**
 
@@ -292,7 +333,12 @@ Expected: PASS (native code does not call `getCubeIpOctet`; confirm no regressio
 Run: `~/.platformio/penv/bin/platformio run -e v1 -e v6 -e v6_with_hall -e v6_with_hall_analog`
 Expected: SUCCESS on all four environments; memory within limits.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Bench-verify the fail-closed path (hardware)**
+
+Flash a spare ESP32 whose MAC is **not** in the table (or temporarily comment out its row) and power it on the bench with a serial monitor.
+Expected: serial prints `FATAL: MAC not in cube table: <mac>`, the cube stays dark, and it never appears on the broker (subscribe `mosquitto_sub -h 192.168.8.247 -t 'cube/#' -v` shows no traffic from it). This is the behavioral confirmation that an unknown MAC never reaches `WiFi.config`/MQTT. Restore the row afterward.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/main.cpp
