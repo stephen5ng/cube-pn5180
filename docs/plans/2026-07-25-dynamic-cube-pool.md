@@ -108,13 +108,22 @@ Every powered cube:
 
 1. connects using DHCP;
 2. uses an MQTT client ID derived from its stable device ID;
-3. publishes retained presence and a retained offline last will;
+3. publishes retained device metadata, installs a retained offline last will,
+   and starts a non-retained heartbeat containing its per-boot nonce;
 4. waits for a server assignment before using logical cube topics;
 5. displays `AVAILABLE` while online but not selected.
 
 The server waits for a five-second discovery window on cold startup. It then
 builds a roster from devices whose hardware classes satisfy the configured
 slot requirements.
+
+Retained `online: true` presence is descriptive state, not proof that a device
+is currently reachable. A device becomes eligible only after the server
+receives a non-retained heartbeat after subscribing, with a `boot_id` matching
+the device's current presence record. Heartbeats include a monotonically
+increasing `sequence`; a duplicate or older sequence for the same boot is
+ignored. This prevents stale retained presence from entering a roster during
+the five-second discovery window after a server restart.
 
 ### Deterministic selection
 
@@ -151,18 +160,29 @@ This is a placement preference, not a primary/standby role.
 An active device is considered unavailable after:
 
 - an MQTT offline last will, or
-- six seconds without a fresh presence heartbeat.
+- six seconds without a valid live heartbeat.
 
 The server then waits a short stability interval so a transient reconnect does
 not churn the roster. If the device remains unavailable:
 
-1. keep its logical slot open;
-2. select the highest-ranked idle device matching the slot's hardware class
+1. revoke the failed device's old lease commit, which immediately quarantines
+   that lease and disables its NFC alias;
+2. keep its logical slot open;
+3. select the highest-ranked idle device matching the slot's hardware class
    and permitted player set;
-3. publish the slot owner and device assignment;
-4. publish the device's NFC tag alias for that logical slot;
-5. wait for assignment confirmation;
-6. replay any non-retained state the replacement needs.
+4. publish prepared slot owner, device assignment, and lease-bound NFC alias
+   records for a new lease;
+5. publish the new lease's activation commit only after all prepared records
+   have reached the broker;
+6. wait for a live acknowledgement matching the device, boot, slot, roster
+   epoch, and lease;
+7. replay any non-retained state the replacement needs.
+
+Owner, assignment, and alias records alone never authorize firmware activity.
+The lease commit is the final activation record. If the server crashes at any
+point before it publishes that commit, the replacement remains quarantined.
+On reconnect, every consumer requires all records to agree before using the
+lease, so retained-message delivery order cannot create a partial activation.
 
 The replacement receives the exact vacated slot rather than causing the other
 five or eleven cubes to be renumbered.
@@ -176,6 +196,13 @@ cube.
 A device that comes online after its old slot has been reassigned publishes
 presence normally but receives no active assignment. It displays `AVAILABLE`
 and does not subscribe or publish through logical cube topics.
+
+Revoking the old lease also invalidates its tag alias. The server publishes an
+inactive retained tombstone for the former holder's tag before preparing the
+replacement. Pooled firmware never falls back to the compiled tag table for a
+commissioned pooled tag: an active, lease-bound runtime alias is required.
+This prevents an unassigned cube placed near another cube from appearing as
+its former logical slot.
 
 There is no automatic “original wins” behavior. Reclaiming the slot would
 interrupt the replacement and could corrupt neighbor state during a live game.
@@ -195,7 +222,7 @@ There is also no explicit release:
 All JSON examples are illustrative; final field names should be versioned.
 Device IDs are uppercase MAC addresses without colons.
 
-### Presence
+### Presence metadata
 
 Topic:
 
@@ -218,15 +245,38 @@ Retained online payload:
 }
 ```
 
-Firmware republishes presence every two seconds and installs a retained
-`online: false` last will.
+Firmware updates this retained record on connection and installs a retained
+`online: false` last will. The server never uses a retained replay of this
+record as liveness proof.
 
-### Slot ownership
+### Live heartbeat
 
 Topic:
 
 ```text
-cube/slot/{logical_slot}/owner
+cube/device/{device_id}/heartbeat
+```
+
+Non-retained payload:
+
+```json
+{
+  "protocol": 1,
+  "boot_id": "random-per-boot",
+  "sequence": 42
+}
+```
+
+Firmware publishes immediately after connecting and every two seconds. Only a
+heartbeat received live after the server subscribed, with a `boot_id` matching
+current presence and a newer sequence, establishes or refreshes eligibility.
+
+### Current roster epoch
+
+Topic:
+
+```text
+cube/roster/current
 ```
 
 Retained payload:
@@ -234,9 +284,45 @@ Retained payload:
 ```json
 {
   "protocol": 1,
+  "epoch": "server-roster-epoch",
+  "cube_count": 6
+}
+```
+
+Firmware accepts only leases belonging to this epoch. A profile transition
+prepares a complete new epoch and publishes this record last as the global
+commit.
+
+### Roster manifest
+
+Topic:
+
+```text
+cube/roster/{epoch}/manifest
+```
+
+The retained manifest declares the configured cube count, selected devices,
+slots, hardware classes, and lease IDs for that epoch. It lets the server
+validate that a prepared roster is complete before committing it and
+reconstruct the roster after restart.
+
+### Slot ownership
+
+Topic:
+
+```text
+cube/roster/{epoch}/slot/{logical_slot}/owner
+```
+
+Retained prepared payload:
+
+```json
+{
+  "protocol": 1,
   "device_id": "80F3DA5453B8",
   "epoch": "server-roster-epoch",
-  "lease_id": "server-generated-lease"
+  "lease_id": "server-generated-lease",
+  "state": "prepared"
 }
 ```
 
@@ -245,69 +331,176 @@ Retained payload:
 Topic:
 
 ```text
-cube/device/{device_id}/assignment
+cube/roster/{epoch}/device/{device_id}/assignment
 ```
 
-Retained assigned payload:
+Retained prepared payload:
 
 ```json
 {
   "protocol": 1,
   "logical_slot": 4,
   "epoch": "server-roster-epoch",
-  "lease_id": "same-as-owner"
+  "lease_id": "same-as-owner",
+  "state": "prepared"
 }
 ```
 
-An empty retained payload means the device is unassigned. Firmware persists
-the last slot for startup preference, but activates it only when assignment
-and owner records agree.
+An inactive retained tombstone means the device is unassigned. Firmware
+persists the last slot for startup preference, but owner and assignment
+agreement alone does not activate it.
 
 ### NFC alias
 
 Topic:
 
 ```text
-cube/tag-alias/{tag_id}
+cube/roster/{epoch}/tag-alias/{tag_id}
 ```
 
-Retained payload:
+Retained prepared payload:
+
+```json
+{
+  "protocol": 1,
+  "logical_slot": 4,
+  "epoch": "server-roster-epoch",
+  "lease_id": "same-as-owner",
+  "state": "prepared"
+}
+```
+
+Every selected device's tag receives a lease-bound alias. Firmware resolves
+the alias only when its epoch is current and its lease has an active commit.
+Revocation replaces it with a retained tombstone:
+
+```json
+{
+  "protocol": 1,
+  "state": "inactive"
+}
+```
+
+Pooled firmware treats the runtime alias registry as authoritative for every
+commissioned pooled tag. The compiled `KNOWN_TAGS` table may be used only
+during the observe-only migration phase; after pooling is enabled, there is no
+static fallback for a missing or inactive alias.
+
+### Lease activation commit
+
+Topic:
 
 ```text
-4
+cube/roster/{epoch}/lease/{lease_id}/commit
 ```
 
-Every active device's tag receives an alias. All firmware resolves runtime
-aliases before the legacy compiled tag table. An unassigned device has no
-active alias and cannot appear in logical neighbor reports.
+Retained active payload:
+
+```json
+{
+  "protocol": 1,
+  "state": "active",
+  "device_id": "80F3DA5453B8",
+  "logical_slot": 4,
+  "epoch": "server-roster-epoch"
+}
+```
+
+The server publishes this only after the matching owner, assignment, and alias
+records are prepared. Revocation replaces it with `state: "revoked"`. Devices
+and tag lookups require current epoch plus exact agreement across all four
+records. The commit is therefore the final per-slot activation signal.
+
+All retained roster records are scoped beneath their epoch. Preparing a new
+6- or 12-cube profile therefore cannot overwrite owner, assignment, alias, or
+lease records used by the current epoch.
+
+### Assignment acknowledgement
+
+Topic:
+
+```text
+cube/device/{device_id}/assignment-ack
+```
+
+Non-retained payload:
+
+```json
+{
+  "protocol": 1,
+  "state": "active",
+  "boot_id": "random-per-boot",
+  "logical_slot": 4,
+  "epoch": "server-roster-epoch",
+  "lease_id": "server-generated-lease",
+  "sequence": 7
+}
+```
+
+Firmware publishes an acknowledgement immediately after entering `ACTIVE`,
+after every MQTT reconnect, and every two seconds while active. The server
+accepts only a live acknowledgement matching the current presence `boot_id`
+and exact current lease. Hydration begins only after this proof. On revocation,
+firmware publishes the same shape with `state: "available"` and null slot and
+lease fields.
+
+## Roster profile transitions
+
+Changing between 6 and 12 cubes creates a new roster epoch. The server never
+edits the current epoch in place:
+
+1. choose the complete target roster and new epoch;
+2. publish the new epoch manifest;
+3. prepare owner, assignment, alias, and active lease-commit records under the
+   new epoch for every selected device, including carried-over devices;
+4. verify the manifest and all prepared records have reached the broker;
+5. publish `cube/roster/current` with the new epoch as the global commit;
+6. wait for live acknowledgements from every selected device;
+7. tombstone assignments and aliases and revoke leases left behind in the old
+   epoch.
+
+Before step 5, firmware continues using the old roster. At step 5, any device
+without a complete matching lease in the new epoch immediately quarantines.
+Thus a `12 -> 6` transition deactivates slots `11-16` even if their old
+retained records remain during cleanup, while a `6 -> 12` transition activates
+only the fully prepared twelve-device roster. A crash before step 5 leaves the
+old roster authoritative; a crash after it leaves a complete new roster that
+can be reconstructed from retained state.
+
+Roster control records use retained QoS 1 publishes from one authoritative
+server connection. The server waits for each publish acknowledgement before
+publishing the per-lease or global commit. Consumers still validate the full
+record set; ordering alone is never treated as authority.
 
 ## Firmware behavior
 
 ```text
 BOOT
   -> DHCP + unique MQTT client ID
-  -> publish device presence
-  -> wait for assignment and matching owner
+  -> publish presence and live heartbeat
+  -> wait for current epoch and a complete committed lease
 
 AVAILABLE
   -> display "AVAILABLE"
   -> no logical cube subscriptions or sensor publishes
 
 ACTIVE
+  -> require current epoch + matching owner, assignment, alias, and commit
   -> apply slot-specific player rotation
   -> subscribe to cube/{slot}/...
   -> publish NFC/right/sensor state as {slot}
-  -> confirm assignment in presence
+  -> publish live assignment acknowledgement
 
 QUARANTINED
-  -> stop logical publishes immediately on owner/lease mismatch
+  -> stop logical publishes immediately on epoch/owner/assignment/alias/commit mismatch
+  -> discard cached aliases and lease records from a superseded epoch
   -> clear local logical neighbor state
   -> return to AVAILABLE
 ```
 
-Logical-topic gating is mandatory. Without it, a returning device could
-publish `cube/right/{old_slot} = "-"` and erase the replacement's neighbor
-state.
+Logical-topic and tag-alias gating are mandatory. Without them, a returning
+device could publish `cube/right/{old_slot} = "-"` or be recognized through
+its old static tag mapping and corrupt the replacement's neighbor state.
 
 All pooled devices use DHCP. Static IP `192.168.8.{20+slot}` cannot safely
 follow a runtime lease because a returning device may temporarily believe the
@@ -328,9 +521,10 @@ Implementation must inventory every required state field:
 - sleep state and interval;
 - any game-specific transient display mode.
 
-Anything not retained must be replayed by the game server after assignment
-confirmation. The replacement must publish fresh NFC/right state rather than
-inheriting retained sensor state from the failed device.
+Anything not retained must be replayed by the game server after a live
+assignment acknowledgement for the exact committed lease. The replacement
+must publish fresh NFC/right state rather than inheriting retained sensor state
+from the failed device.
 
 ## Failure behavior
 
@@ -342,9 +536,13 @@ inheriting retained sensor state from the failed device.
 | Failed cube returns after replacement | Returning cube stays available |
 | Wrong-size extra is online | It remains available; no assignment |
 | Too few compatible cubes | Missing slot remains unfilled |
-| Broker/server unavailable | Devices do not invent assignments |
+| Broker/server unavailable | Existing complete leases continue; no new assignments |
 | Duplicate/conflicting lease | Both claimants quarantine until resolved |
 | Transient heartbeat loss | Stability interval prevents immediate churn |
+| Retained online presence without a live heartbeat | Device is ineligible |
+| Server crashes before a lease commit | Prepared device stays quarantined |
+| Server crashes before a new epoch commit | Old roster remains authoritative |
+| 12-cube profile changes to 6 | Slots `11-16` quarantine at epoch commit |
 
 ## Inventory and commissioning
 
@@ -380,10 +578,14 @@ download mode and should not count as available capacity.
 ### `cube-pn5180`
 
 - Replace MAC-to-logical-ID boot identity with stable device identity.
-- Add assignment/owner validation and NVS last-slot preference.
-- Add unique MQTT client IDs, presence heartbeat, and last will.
+- Add current-epoch, assignment, owner, alias, and lease-commit validation plus
+  NVS last-slot preference.
+- Add unique MQTT client IDs, non-retained live heartbeat, retained presence,
+  and last will.
+- Publish lease-specific activation acknowledgements.
 - Gate every logical subscription and publish behind the active lease.
-- Add runtime NFC aliases for all active cubes.
+- Add lease-bound runtime NFC aliases for all active cubes, inactive
+  tombstones, and disable compiled tag fallback in pooled mode.
 - Move pooled networking to DHCP and add mDNS device naming.
 - Add `AVAILABLE`, active slot, and quarantine diagnostics.
 
@@ -392,7 +594,12 @@ download mode and should not count as available capacity.
 - Add a persistent roster/lease manager with an injectable clock.
 - Make desired cube count and slot hardware classes explicit game config.
 - Load and validate device inventory and preferred player sets.
-- Publish owner, assignment, and tag-alias state.
+- Publish prepared owner, assignment, and tag-alias state followed by explicit
+  lease or roster-epoch commits.
+- Validate an epoch manifest before making it current.
+- Require live boot-matched heartbeats for eligibility and exact live
+  acknowledgements before hydration.
+- Implement epoch transitions and cleanup for `6 -> 12` and `12 -> 6`.
 - Rehydrate non-retained cube state after replacement.
 - Expose active, available, missing, and incompatible devices in logs/admin UI.
 
@@ -402,7 +609,7 @@ download mode and should not count as available capacity.
 - Configure the desired 6- or 12-cube session profile.
 - Update monitoring and OTA tools to locate devices by mDNS/device ID.
 - Preserve MQTT retained ownership and assignment topics across service
-  restarts.
+  restarts, including roster epochs, lease commits, and alias tombstones.
 
 ## Test plan
 
@@ -420,15 +627,35 @@ download mode and should not count as available capacity.
 - Sticky last-slot preferences preserve player grouping.
 - Duplicate slot preferences resolve deterministically and safely.
 - Too few devices leave explicit missing slots.
-- Stale, malformed, and out-of-order presence is ignored safely.
+- Retained `online: true` presence without a post-subscription, boot-matched
+  heartbeat never establishes freshness.
+- Stale, malformed, duplicated, and out-of-order heartbeat sequences are
+  ignored safely.
+- Prepared owner/assignment/alias records cannot activate without the exact
+  lease commit.
+- An incomplete or internally inconsistent epoch manifest cannot become
+  current.
+- Acknowledgements with the wrong boot, slot, epoch, lease, or sequence do not
+  trigger hydration.
+- Revocation tombstones the former tag alias before replacement preparation.
+- `6 -> 12` and `12 -> 6` build complete new epochs and quarantine devices
+  removed from the new profile.
+- A crash before an epoch commit preserves the old roster; a crash after the
+  commit reconstructs the complete new roster.
 - Server restart reconstructs persisted or retained leases.
 
 ### Firmware-native tests
 
-- Assignment and owner must match device, slot, epoch, and lease.
+- Assignment, owner, alias, commit, and current roster must match device, slot,
+  epoch, and lease.
 - Lease loss immediately disables logical topics.
 - Last-slot NVS state is a preference, never authority.
-- Runtime NFC aliases override legacy static mappings.
+- Pooled commissioned tags never fall back to legacy static mappings.
+- Inactive alias tombstones and revoked commits both prevent tag resolution.
+- A returning unassigned cube's physical tag cannot resolve to its last slot.
+- Firmware remains quarantined after prepared records and activates only after
+  the final commit.
+- Assignment acknowledgement contains the exact boot, slot, epoch, and lease.
 - Hardware class cannot be changed by an assignment.
 - Slot `1-6` and `11-16` select correct display rotation.
 
@@ -441,6 +668,17 @@ download mode and should not count as available capacity.
 - Repeat with 13 devices in twelve-cube mode.
 - Repeat replacement with matching and mismatched size pools.
 - Restart the broker, game server, and individual devices independently.
+- Restart the server with stale retained `online: true` presence and verify no
+  device is eligible until a fresh matching heartbeat arrives.
+- Interrupt replacement after every preparation step and verify the candidate
+  remains quarantined until the commit exists.
+- Transition `6 -> 12` and `12 -> 6`; verify removed devices stop logical
+  traffic and aliases at the epoch flip.
+- Interrupt profile transition before and after the epoch commit and verify
+  recovery selects the old or new complete roster, never a partial mix.
+- Reconnect firmware with `cube/roster/current` delivered before the new
+  epoch's records and verify it stays quarantined until the complete lease
+  arrives.
 - Verify retained display hydration and fresh neighbor-state publication.
 
 ### Hardware acceptance
