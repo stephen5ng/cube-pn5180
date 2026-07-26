@@ -263,7 +263,7 @@ updates health status but never changes membership, owner, alias, lease, or
 manifest records.
 
 Before an active cube enters deep sleep, it publishes device-scoped sleep
-state:
+state as a retained record:
 
 ```text
 cube/device/{device_id}/sleep-state
@@ -273,12 +273,44 @@ cube/device/{device_id}/sleep-state
 {
   "protocol": 1,
   "state": "sleeping",
+  "boot_id": "random-per-full-boot",
   "epoch": "active-epoch",
   "lease_id": "active-lease",
+  "sequence": 12,
   "applied_intent_id": "server-generated-intent",
-  "next_wake_ms": 20000
+  "wake_deadline_ms": 1753560000000
 }
 ```
+
+`wake_deadline_ms` is an absolute Unix timestamp derived from synchronized
+time, not a relative interval. Firmware does not enter deep sleep without a
+valid clock. The sleep-state sequence is monotonic within the full-client boot
+and is persisted across timer wakes.
+
+The current EspMQTTClient and PubSubClient publish APIs send QoS 0 only, so
+firmware cannot wait for an MQTT PUBACK. Instead it repeatedly publishes the
+retained state and waits for a matching application acknowledgement:
+
+```text
+cube/device/{device_id}/sleep-state-ack
+```
+
+```json
+{
+  "protocol": 1,
+  "boot_id": "random-per-full-boot",
+  "epoch": "active-epoch",
+  "lease_id": "active-lease",
+  "sequence": 12
+}
+```
+
+The server sends this non-retained acknowledgement only after receiving and
+validating the state against current presence and membership. Firmware calls
+`esp_deep_sleep_start()` only after receiving the exact acknowledgement; if it
+times out, the cube stays awake and retries. Each maintenance wake refreshes
+the absolute deadline, increments the sequence, republishes retained sleeping
+state, and again waits for acknowledgement before returning to sleep.
 
 The active lease remains valid while the device sleeps. The server reports the
 device as `SLEEPING`, not failed or available.
@@ -289,12 +321,48 @@ On timer wake, the minimal maintenance client:
   topic identity;
 - reads retained roster control and its retained device power intent;
 - if control is still `ACTIVE` for its epoch and a matching intent requires
-  `AWAKE`, starts the full client and remains awake;
+  `AWAKE`, starts the full client, replaces retained sleep state with `AWAKE`,
+  and remains awake;
 - if control is still `ACTIVE` for its epoch and a matching intent allows
   sleep, publishes updated device-scoped sleep status and may return to sleep;
 - if control is `REBUILDING` with a new rebuild ID, stays awake, performs the
   full enrollment boot, and does not return to sleep;
 - never publishes the legacy logical `/status` keep-alive.
+
+On every full-client start, firmware first publishes current retained presence,
+then replaces the retained sleep record before relying on heartbeat health:
+
+```json
+{
+  "protocol": 1,
+  "state": "awake",
+  "boot_id": "new-random-per-full-boot",
+  "epoch": "active-epoch-or-null",
+  "lease_id": "active-lease-or-null",
+  "sequence": 1,
+  "applied_intent_id": "server-generated-intent-or-null",
+  "wake_deadline_ms": null
+}
+```
+
+It republishes `AWAKE` after MQTT reconnect until acknowledged by the same
+application handshake. A live heartbeat whose boot ID matches current retained
+presence takes immediate precedence over an older retained `SLEEPING` record,
+so stale broker delivery cannot hide an awake device while the replacement
+publish is retried. The server accepts retained `SLEEPING` after restart only
+when its epoch and lease are active, its boot ID matches current presence, its
+sequence is newer than any processed state for that boot, and its absolute
+wake deadline has not expired beyond grace. Otherwise health is
+`UNKNOWN`/`OFFLINE`, never `SLEEPING`.
+
+When a successor epoch removes a device or changes its lease, the server
+ignores the old record by provenance and clears that device's retained
+sleep-state topic with an empty retained publish after the new active commit.
+The device also replaces it with lease-less `AWAKE` when it becomes
+`AVAILABLE`. If an old holder later republishes retained state for a revoked
+lease, the server does not acknowledge it and clears the topic again. These
+rules prevent a stale sleeping record from surviving activation, lease
+revocation, or a server restart.
 
 Device-scoped retained power intents replace logical auto-sleep flags for the
 maintenance path. The server publishes `AWAKE` for every selected device
@@ -523,9 +591,19 @@ topology.
 
 The checked-in PubSubClient defaults to a 256-byte packet buffer, which is not
 large enough for the bounded protocol records once MQTT topic and fixed-header
-bytes are included. Both the full firmware client and timer-wake maintenance
-client must call `EspMQTTClient::setMaxPacketSize(512)` before connecting and
-fail closed if allocation fails.
+bytes are included. The two firmware paths use different client types and must
+call their actual APIs before the first connection:
+
+- the full `EspMQTTClient` calls `setMaxPacketSize(512)` and checks that it
+  returns `true`;
+- the timer-wake path's direct `PubSubClient keepalive_mqtt` calls
+  `keepalive_mqtt.setBufferSize(512)`, checks that it returns `true`, and
+  verifies `keepalive_mqtt.getBufferSize() == 512`.
+
+Either path fails closed without connecting or entering pooled operation if
+allocation or verification fails. The maintenance path must not call
+`EspMQTTClient::setMaxPacketSize`, which is unavailable on its direct
+`PubSubClient`.
 
 Firmware-consumed topics are capped at 80 UTF-8 bytes and minified payloads at
 384 bytes. Including the MQTT PUBLISH fixed header and two-byte topic length,
@@ -727,6 +805,8 @@ mode and must not count as available capacity.
   device ID.
 - Add bounded membership validation, replayed acknowledgement, retained power
   intent, and NVS last-slot preference.
+- Add retained sleep/awake state with absolute deadlines, application
+  acknowledgement, and lease-revocation clearing.
 - Gate logical commands behind the committed lease.
 - Publish raw device-scoped sensor snapshots with full provenance.
 - Disable logical `cube/right` publication and compiled tag fallback in pooled
@@ -753,6 +833,8 @@ mode and must not count as available capacity.
 - Rehydrate non-retained display state after acknowledgement.
 - Publish epoch- and lease-scoped retained power intents and wait for selected
   devices to wake before enabling gameplay.
+- Validate and acknowledge sleep-state transitions, give matching live
+  heartbeats precedence, and clear revoked retained sleep state.
 - Expose active, enrolling, sleeping, available, missing, incompatible, and
   excluded devices in logs/admin UI.
 
@@ -770,6 +852,11 @@ mode and must not count as available capacity.
 
 - Heartbeat timeout never changes an active roster.
 - Sleeping status never makes a slot available.
+- Retained sleeping state reconstructs `SLEEPING` after server restart only
+  for a matching active lease, presence boot, increasing sequence, and
+  unexpired absolute wake deadline.
+- Live matching-boot heartbeat takes precedence over stale retained sleeping
+  state.
 - A server restart never starts a rebuild.
 - Only an explicit rebuild ID opens enrollment.
 - Restart recovery rejects a missing or digest-mismatched immutable request.
@@ -813,8 +900,9 @@ mode and must not count as available capacity.
   two seconds; sleep state switches health monitoring to the wake deadline.
 - Active assignment acknowledgement replays on reconnect and periodically
   with a monotonic per-boot sequence.
-- Both firmware clients successfully allocate a 512-byte MQTT buffer before
-  connecting and fail closed when allocation is rejected.
+- The full client checks `setMaxPacketSize(512)`; the maintenance client checks
+  `keepalive_mqtt.setBufferSize(512)` and `getBufferSize()`, and both fail
+  closed when allocation is rejected.
 - Worst-case control, membership, power-intent, and command PUBLISH packets
   remain within 512 bytes including topic and MQTT headers.
 - Firmware never subscribes to aggregate request, manifest, owner, or alias
@@ -824,7 +912,13 @@ mode and must not count as available capacity.
   inactivity timer.
 - Stale, missing, and malformed power intents cannot wake an old lease or
   change roster membership.
-- Sleeping intent includes exact epoch, lease, and next wake.
+- Sleeping state includes exact boot, epoch, lease, sequence, intent, and
+  absolute wake deadline.
+- Firmware never enters deep sleep until the server acknowledges the exact
+  retained sleeping sequence; missing and mismatched acknowledgements keep it
+  awake.
+- Full wake publishes presence followed by retained `AWAKE`; reconnect retries
+  it until acknowledged.
 - Available and quarantined devices cannot use logical command topics.
 - Sensor snapshots contain exact boot, rebuild, epoch, lease, and sequence.
 - Activation and physical-state changes immediately republish sensor state.
@@ -834,6 +928,16 @@ mode and must not count as available capacity.
 - Leave active cubes idle beyond the 10-minute sleep threshold and verify no
   roster change.
 - Observe repeated 20-second timer wakes and verify device-scoped sleep status.
+- Restart the server while a cube sleeps and verify retained provenance and
+  deadline reconstruct `SLEEPING`.
+- Resume matching live heartbeats while a stale retained sleeping record is
+  delivered and verify health immediately becomes awake.
+- Expire a sleep deadline, change its lease, and remove the device in a
+  successor epoch; verify each case rejects or clears retained sleeping state.
+- Republish sleeping state from a revoked holder and verify the server clears
+  it without acknowledgement.
+- Drop and mismatch sleep-state acknowledgements and verify firmware does not
+  enter deep sleep; accept the exact acknowledgement and verify it does.
 - Start a rebuild while cubes sleep; verify all enroll by the 30-second window
   or remain explicitly missing without partial commit.
 - Drop the administrative reboot broadcast entirely and verify every cube
