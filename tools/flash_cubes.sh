@@ -4,7 +4,8 @@
 
 CUBE_VERSIONS_FILE="$(dirname "$0")/../config/cube_board_versions.txt"
 FW_DIR="$(dirname "$0")/.."
-PIO="$HOME/.platformio/penv/bin/pio"
+PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
+PYTHON="${PYTHON:-python3}"
 
 show_inventory() {
     echo "MAC-to-Board-Version Inventory:"
@@ -16,11 +17,18 @@ show_inventory() {
 get_mac_from_arp() {
     local cube_id=$1
     local ip="192.168.8.$((cube_id + 20))"
-    ping -c 1 -t 1 "$ip" >/dev/null 2>&1
-    # macOS arp elides leading zeros (e.g. "5c:1:3b:..."); zero-pad each octet.
-    arp -a | grep "$ip" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' \
-        | awk -F: 'BEGIN{OFS=":"} {for(i=1;i<=NF;i++) if(length($i)==1) $i="0"$i; print}' \
-        | tr 'a-f' 'A-F'
+    if command -v ip >/dev/null 2>&1; then
+        # Raspberry Pi / Linux: iproute2 is part of the base system.
+        ping -c 1 -W 1 "$ip" >/dev/null 2>&1 || true
+        ip neigh show to "$ip" \
+            | awk -v target="$ip" '$1 == target && $5 ~ /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/ {print toupper($5); exit}'
+    else
+        # macOS fallback: arp elides leading zeros (e.g. "5c:1:3b:...").
+        ping -c 1 -t 1 "$ip" >/dev/null 2>&1 || true
+        arp -a | grep "$ip" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' \
+            | awk -F: 'BEGIN{OFS=":"} {for(i=1;i<=NF;i++) if(length($i)==1) $i="0"$i; print}' \
+            | tr 'a-f' 'A-F'
+    fi
 }
 
 get_version_by_mac() {
@@ -103,7 +111,7 @@ flash_cube() {
     # Version format: "<sha>+<env>" when clean, "<sha>-<src_hash>+<env>" when dirty.
     # See scripts/compute_version.py.
     local current_version=$(get_cube_version "$cube_id")
-    local target_version=$(python3 "$FW_DIR/scripts/compute_version.py" "$version" "$FW_DIR")
+    local target_version=$("$PYTHON" "$FW_DIR/scripts/compute_version.py" "$version" "$FW_DIR")
     if [[ "$current_version" == "$target_version" ]]; then
         echo "✅ Cube $cube_id already running current firmware ($current_version, skipping)"
         return 0
@@ -170,10 +178,12 @@ if [ "$1" = "all" ]; then
         fi
     fi
 
-    for cube_id in 1 2 3 4 5 6; do
-        flash_cube "$cube_id"
+    failed=0
+    for cube_id in 1 2 3 4 5 6 11 12 13 14 15 16; do
+        flash_cube "$cube_id" || failed=1
         echo ""
     done
+    exit "$failed"
 else
     cube_id=$1
     version=$2
