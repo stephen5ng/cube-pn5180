@@ -2,6 +2,11 @@
 
 FIRMWARE_PATH="/Users/stephenng/Documents/PlatformIO/Projects/cube-pn5180/.pio/build/esp32dev/firmware.bin"
 
+if ! python3 "$(dirname "$0")/validate_mac_table.py"; then
+    echo "MAC table validation failed; aborting." >&2
+    exit 1
+fi
+
 # Function to convert cube number to IP
 cube_to_ip() {
     local cube_num=$1

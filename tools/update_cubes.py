@@ -7,6 +7,7 @@ if the version doesn't match the current build.
 """
 
 import paho.mqtt.client as mqtt
+import os
 import time
 import subprocess
 import sys
@@ -85,6 +86,11 @@ def upload_to_cube(cube_id):
 
 
 def main():
+    validator = os.path.join(os.path.dirname(__file__), "validate_mac_table.py")
+    if subprocess.run([sys.executable, validator]).returncode != 0:
+        print("MAC table validation failed; aborting.", file=sys.stderr)
+        return 1
+
     print("=" * 60)
     print("Cube Firmware Updater (Cubes 1-6)")
     print("=" * 60)
