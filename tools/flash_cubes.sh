@@ -7,6 +7,11 @@ FW_DIR="$(dirname "$0")/.."
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 PYTHON="${PYTHON:-python3}"
 
+if ! python3 "$(dirname "$0")/validate_mac_table.py"; then
+    echo "MAC table validation failed; aborting." >&2
+    exit 1
+fi
+
 show_inventory() {
     echo "MAC-to-Board-Version Inventory:"
     echo "--------------------------------"

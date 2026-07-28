@@ -99,6 +99,84 @@ void test_findCubeId_backup_cubes() {
     TEST_ASSERT_EQUAL(1, findCubeId("A1:A1:A1:A1:A1:A1"));
 }
 
+void test_findCubeIpOctet_primaries() {
+    TEST_ASSERT_EQUAL(21, findCubeIpOctet("AA:AA:AA:AA:AA:AA"));
+    TEST_ASSERT_EQUAL(26, findCubeIpOctet("FF:FF:FF:FF:FF:FF"));
+    TEST_ASSERT_EQUAL(31, findCubeIpOctet("01:01:01:01:01:01"));
+    TEST_ASSERT_EQUAL(36, findCubeIpOctet("06:06:06:06:06:06"));
+}
+
+void test_findCubeIpOctet_backup_is_unique() {
+    TEST_ASSERT_EQUAL(1, findCubeId("A1:A1:A1:A1:A1:A1"));
+    TEST_ASSERT_EQUAL(41, findCubeIpOctet("A1:A1:A1:A1:A1:A1"));
+    TEST_ASSERT_NOT_EQUAL(findCubeIpOctet("AA:AA:AA:AA:AA:AA"),
+                          findCubeIpOctet("A1:A1:A1:A1:A1:A1"));
+}
+
+void test_findCubeIpOctet_unknown() {
+    TEST_ASSERT_EQUAL(-1, findCubeIpOctet("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_EQUAL(-1, findCubeIpOctet(""));
+}
+
+void test_parseAssignmentRecord_assigned() {
+    CubeAssignment assignment;
+    TEST_ASSERT_EQUAL(ASSIGNMENT_OK,
+        parseAssignmentRecord("{\"protocol\": 1, \"generation\": 3, \"slot\": 4}", &assignment));
+    TEST_ASSERT_EQUAL(3, assignment.generation);
+    TEST_ASSERT_EQUAL(4, assignment.slot);
+    TEST_ASSERT_EQUAL(ASSIGNMENT_OK,
+        parseAssignmentRecord("{\"slot\":16,\"generation\":7,\"protocol\":1}", &assignment));
+    TEST_ASSERT_EQUAL(7, assignment.generation);
+    TEST_ASSERT_EQUAL(16, assignment.slot);
+}
+
+void test_parseAssignmentRecord_unassigned() {
+    CubeAssignment assignment;
+    TEST_ASSERT_EQUAL(ASSIGNMENT_UNASSIGNED,
+        parseAssignmentRecord("{\"protocol\": 1, \"generation\": 5, \"slot\": null}", &assignment));
+    TEST_ASSERT_EQUAL(5, assignment.generation);
+    TEST_ASSERT_EQUAL(-1, assignment.slot);
+}
+
+void test_parseAssignmentRecord_missing() {
+    CubeAssignment assignment;
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MISSING, parseAssignmentRecord(nullptr, &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MISSING, parseAssignmentRecord("", &assignment));
+}
+
+void test_parseAssignmentRecord_malformed() {
+    CubeAssignment assignment;
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"protocol\": 2, \"generation\": 1, \"slot\": 4}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"generation\": 1, \"slot\": 4}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"protocol\": 1, \"slot\": 4}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"protocol\": 1, \"generation\": 1}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"protocol\": 1, \"generation\": 1, \"slot\": 0}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"protocol\": 1, \"generation\": 1, \"slot\": 17}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"protocol\": 1, \"generation\": 1, \"slot\": nullify}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED,
+        parseAssignmentRecord("{\"protocol\": 1, \"generation\": 1x, \"slot\": 4}", &assignment));
+    TEST_ASSERT_EQUAL(ASSIGNMENT_MALFORMED, parseAssignmentRecord("garbage", &assignment));
+}
+
+void test_resolveAssignedSlot() {
+    TEST_ASSERT_EQUAL(4, resolveAssignedSlot(ASSIGNMENT_OK, 4, false, 1));
+    TEST_ASSERT_EQUAL(4, resolveAssignedSlot(ASSIGNMENT_OK, 4, true, 1));
+    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_UNASSIGNED, -1, false, 1));
+    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_UNASSIGNED, -1, true, 1));
+    TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, 1));
+    TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, 1));
+    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, true, 1));
+    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, true, 1));
+    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, -1));
+}
+
 // ========== Cube Tags Tests ==========
 
 void test_lookupCubeNumberByTag_all_known_tags() {
@@ -302,6 +380,19 @@ void test_createMqttTopic_constants() {
     TEST_ASSERT_TRUE(strstr(output, "test") != NULL);
 }
 
+void test_makeMqttClientId_full_and_keepalive() {
+    char buf[40];
+    makeMqttClientIdC("CC:DB:A7:9F:C2:84", "", buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("cube-CCDBA79FC284", buf);
+
+    makeMqttClientIdC("CC:DB:A7:9F:C2:84", "-ka", buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("cube-CCDBA79FC284-ka", buf);
+
+    char other[40];
+    makeMqttClientIdC("80:F3:DA:54:53:B8", "", other, sizeof(other));
+    TEST_ASSERT_EQUAL_STRING("cube-80F3DA5453B8", other);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -312,6 +403,14 @@ int main(void) {
     RUN_TEST(test_findCubeId_case_sensitivity);
     RUN_TEST(test_num_cube_mac_entries);
     RUN_TEST(test_findCubeId_backup_cubes);
+    RUN_TEST(test_findCubeIpOctet_primaries);
+    RUN_TEST(test_findCubeIpOctet_backup_is_unique);
+    RUN_TEST(test_findCubeIpOctet_unknown);
+    RUN_TEST(test_parseAssignmentRecord_assigned);
+    RUN_TEST(test_parseAssignmentRecord_unassigned);
+    RUN_TEST(test_parseAssignmentRecord_missing);
+    RUN_TEST(test_parseAssignmentRecord_malformed);
+    RUN_TEST(test_resolveAssignedSlot);
 
     // NFC ID conversion tests
     RUN_TEST(test_convertNfcIdToHexString_full_id);
@@ -345,6 +444,7 @@ int main(void) {
     RUN_TEST(test_createMqttTopic_special_characters);
     RUN_TEST(test_createMqttTopic_long_identifiers);
     RUN_TEST(test_createMqttTopic_constants);
+    RUN_TEST(test_makeMqttClientId_full_and_keepalive);
 
     return UNITY_END();
 }

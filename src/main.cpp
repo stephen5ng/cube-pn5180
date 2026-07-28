@@ -10,6 +10,7 @@ typedef struct MessageNfcId {
   char id[NFCID_LENGTH*2 + 1];
 } MessageNfcId;
 #include "cube_utilities.h"
+#include "cube_slot_store.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <Easing.h>
@@ -39,6 +40,7 @@ static int pn5180_busy_pin = 0; // Will be set by configurePins()
 // Forward declarations
 extern PN5180ISO15693* nfc_reader;
 void initializeNfcReader();
+void publishPresence(const char* state);
 
 // Function to configure pins based on board type (compile-time)
 void configurePins(int cube_id) {
@@ -255,6 +257,18 @@ EspMQTTClient mqtt_client(
 );
 WiFiClient wifi_client;
 static String cube_identifier;
+static int compiled_cube_id = -1;
+static int applied_slot = -1;
+static uint32_t applied_generation = 0;
+static bool authority_latched = false;
+static bool slot_resolved = false;
+static unsigned long assignment_wait_started = 0;
+static String mac_nocolons;
+static String boot_id;
+static String mqtt_topic_assign;
+static String mqtt_topic_presence;
+static String mqtt_topic_liveness_response;
+static const unsigned long ASSIGNMENT_WAIT_MS = 3000;
 static RgbOrder current_rgb_order = RGB_ORDER_BGR;
 const char* nfc_topic_out;
 static bool wifi_connection_attempt_active = false;
@@ -398,6 +412,12 @@ public:
     led_display->clearScreen();
     led_display->setFont(current_font);
     led_display->setTextSize(text_size);
+  }
+
+  void setSlotRotation(int slot) {
+    rotation = (slot <= 6) ? 2 : 0;
+    led_display->setRotation(rotation);
+    is_dirty = true;
   }
 
   void clearScreen() {
@@ -842,9 +862,16 @@ void setupNfcReader() {
 uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
   const CubeMacEntry* entry = findCubeEntry(mac_address.c_str());
-  int cube_id = entry ? entry->cube_id : 0;
-  current_rgb_order = entry ? entry->rgb_order : RGB_ORDER_BGR;
-  cube_identifier = cube_id;
+  if (!entry) {
+    Serial.print("FATAL: MAC not in cube table: ");
+    Serial.println(mac_address);
+    while (true) {
+      delay(1000);
+    }
+  }
+  int cube_id = entry->cube_id;
+  current_rgb_order = entry->rgb_order;
+  compiled_cube_id = cube_id;
 
   // Configure pins based on cube ID
   configurePins(cube_id);
@@ -852,8 +879,8 @@ uint8_t getCubeIpOctet() {
   Serial.print("mac_address: ");
   Serial.println(mac_address);
   Serial.print("cube_id: ");
-  Serial.println(cube_identifier);
-  return cube_id + 20;
+  Serial.println(compiled_cube_id);
+  return entry->ip_octet;
 }
 
 void startWiFiConnectionAttempt() {
@@ -949,9 +976,10 @@ void handleResetCommand(const String& message) {
 }
 
 void publishAutoSleepFlag() {
-  if (mqtt_topic_cube.isEmpty()) return;
-  String flag_topic = mqtt_topic_cube + "/auto_sleep";
-  mqtt_client.publish(flag_topic.c_str(), "1", true);
+  mqtt_client.publish("cube/device/" + mac_nocolons + "/auto_sleep", "1", true);
+  if (!mqtt_topic_cube.isEmpty()) {
+    mqtt_client.publish(mqtt_topic_cube + "/auto_sleep", "1", true);
+  }
   delay(100);  // Give MQTT time to flush before sleep
 }
 
@@ -959,6 +987,13 @@ void enterSleepMode() {
   debugPrintln("Entering deep sleep mode...");
   display_manager->displayDebugMessage("sleep...");
   delay(2000);
+
+  if (mqtt_client.isConnected()) {
+    publishPresence("sleeping");
+    mqtt_client.loop();
+    delay(100);
+    mqtt_client.disconnect();
+  }
 
 #ifdef BOARD_V6
   // Stop DMA and tri-state HUB75 pins to prevent backfeed through panel clamping diodes.
@@ -1014,27 +1049,38 @@ void handleWakeUp() {
     keepalive_mqtt.setServer(MQTT_SERVER_PI, MQTT_PORT);
     keepalive_mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
 
-    volatile bool stay_asleep = false;  // Default: wake up unless we see "1"
-    String client_id = "cube-" + String(cube_identifier) + "-ka";
-    String auto_sleep_topic = "cube/" + String(cube_identifier) + "/auto_sleep";
+    volatile bool device_requests_sleep = false;
+    volatile bool slot_requests_sleep = false;
+    StoredSlot stored = loadStoredSlot();
+    String client_id = makeMqttClientId(WiFi.macAddress(), "-ka");
+    String device_auto_sleep_topic = "cube/device/" + mac_nocolons + "/auto_sleep";
+    String slot_auto_sleep_topic =
+        stored.slot > 0 ? "cube/" + String(stored.slot) + "/auto_sleep" : String("");
 
     // Callback to receive retained sleep message.
     // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses its
     // internal buffer for both incoming and outgoing messages, so publishing inside
     // the callback overwrites the payload bytes.
-    keepalive_mqtt.setCallback([&stay_asleep](char* topic, byte* payload, unsigned int length) {
-      stay_asleep = (length == 1 && payload[0] == '1');
+    keepalive_mqtt.setCallback([&](char* topic, byte* payload, unsigned int length) {
+      bool requested = length == 1 && payload[0] == '1';
+      if (device_auto_sleep_topic == topic) {
+        device_requests_sleep = requested;
+      } else if (slot_auto_sleep_topic == topic) {
+        slot_requests_sleep = requested;
+      }
     });
 
     if (keepalive_mqtt.connect(client_id.c_str())) {
       debugSend("mqtt ok");
 
       // Publish keep-alive status
-      String status_topic = "cube/" + String(cube_identifier) + "/status";
+      String status_topic = "cube/device/" + mac_nocolons + "/status";
       keepalive_mqtt.publish(status_topic.c_str(), "keep-alive");
 
-      // Subscribe to per-cube auto_sleep flag
-      keepalive_mqtt.subscribe(auto_sleep_topic.c_str());
+      keepalive_mqtt.subscribe(device_auto_sleep_topic.c_str());
+      if (!slot_auto_sleep_topic.isEmpty()) {
+        keepalive_mqtt.subscribe(slot_auto_sleep_topic.c_str());
+      }
 
       // Wait for retained message to arrive
       unsigned long check_start = millis();
@@ -1043,6 +1089,11 @@ void handleWakeUp() {
         delay(10);
       }
 
+      // Assigned cubes use the slot flag so wake.sh can wake them by clearing it.
+      // Unassigned cubes have no slot topic and use the device flag.
+      bool stay_asleep = slot_auto_sleep_topic.isEmpty()
+          ? device_requests_sleep
+          : slot_requests_sleep;
       char dbg[64];
       snprintf(dbg, sizeof(dbg), "stay_asleep=%d", stay_asleep);
       debugSend(dbg);
@@ -1054,7 +1105,10 @@ void handleWakeUp() {
         enterSleepMode();
       } else {
         // Clear the auto_sleep retained flag so cube stays awake after next reboot
-        keepalive_mqtt.publish(auto_sleep_topic.c_str(), "", true);
+        keepalive_mqtt.publish(device_auto_sleep_topic.c_str(), "", true);
+        if (!slot_auto_sleep_topic.isEmpty()) {
+          keepalive_mqtt.publish(slot_auto_sleep_topic.c_str(), "", true);
+        }
         delay(100);
         keepalive_mqtt.disconnect();
 
@@ -1117,10 +1171,7 @@ void handleSleepIntervalCommand(const String& message) {
 }
 
 
-void onConnectionEstablished() {
-  debugSend("MQTT connected");
-
-  // Pre-allocate common topics
+void subscribeSlotTopics() {
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
@@ -1132,15 +1183,10 @@ void onConnectionEstablished() {
     mqtt_client.publish(createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_VERSION), GIT_VERSION, true);  // retained
   }
 
-  // Reset activity timer on any MQTT message except sleep_now and sleep_interval
   auto resetActivityTimer = []() { last_activity_time = millis(); };
 
-  // Subscribe to all command topics
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBrightnessCommand(msg); });
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleRebootCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep_now", handleSleepNowCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
@@ -1168,7 +1214,118 @@ void onConnectionEstablished() {
   strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
   last_right_published[sizeof(last_right_published) - 1] = '\0';
 
-  // Start inactivity timer from first MQTT connection
+}
+
+bool slotIsResolved() {
+  return slot_resolved && applied_slot > 0;
+}
+
+void publishPresence(const char* state) {
+  if (mqtt_topic_presence.isEmpty()) {
+    return;
+  }
+  char payload[160];
+  snprintf(payload, sizeof(payload),
+           "{\"protocol\":1,\"state\":\"%s\",\"boot_id\":\"%s\","
+           "\"applied_slot\":%d,\"applied_generation\":%lu}",
+           state, boot_id.c_str(), applied_slot,
+           static_cast<unsigned long>(applied_generation));
+  mqtt_client.publish(mqtt_topic_presence, payload, true);
+}
+
+void applySlot(int slot) {
+  slot_resolved = true;
+  applied_slot = slot;
+
+  if (slot <= 0) {
+    cube_identifier = "";
+    mqtt_topic_cube = "";
+    display_manager->displayDebugMessage("NO SLOT");
+    debugSend("unassigned: idle");
+    publishPresence("online");
+    return;
+  }
+
+  cube_identifier = String(slot);
+  display_manager->setSlotRotation(slot);
+  subscribeSlotTopics();
+  debugSend((String("slot ") + cube_identifier).c_str());
+  publishPresence("online");
+}
+
+void handleAuthorityMarker(const String& message) {
+  if (message.indexOf("\"authoritative\"") < 0 ||
+      message.indexOf("true") < 0) {
+    return;
+  }
+  if (!authority_latched) {
+    authority_latched = true;
+    latchAuthority();
+    debugSend("authority latched");
+  }
+}
+
+void handleAssignmentRecord(const String& message) {
+  CubeAssignment assignment;
+  AssignmentParseResult result =
+      parseAssignmentRecord(message.c_str(), &assignment);
+  int slot = resolveAssignedSlot(
+      result, assignment.slot, authority_latched, compiled_cube_id);
+
+  if (!slot_resolved) {
+    applied_generation = assignment.generation;
+    saveStoredSlot(slot, assignment.generation);
+    applySlot(slot);
+    return;
+  }
+
+  if (slot != applied_slot) {
+    saveStoredSlot(slot, assignment.generation);
+    debugSend("slot changed: rebooting");
+    delay(200);
+    ESP.restart();
+  }
+  applied_generation = assignment.generation;
+}
+
+void handleLivenessRequest(const String& nonce) {
+  if (nonce.isEmpty() || !slotIsResolved()) {
+    return;
+  }
+  char payload[224];
+  snprintf(payload, sizeof(payload),
+           "{\"protocol\":1,\"nonce\":\"%s\",\"boot_id\":\"%s\","
+           "\"generation\":%lu,\"applied_slot\":%d}",
+           nonce.c_str(), boot_id.c_str(),
+           static_cast<unsigned long>(applied_generation), applied_slot);
+  mqtt_client.publish(mqtt_topic_liveness_response, payload, false);
+}
+
+void onConnectionEstablished() {
+  debugSend("MQTT connected");
+
+  mqtt_topic_assign = String("cube/assign/") + mac_nocolons;
+  mqtt_topic_liveness_response =
+      String("cube/device/") + mac_nocolons + "/liveness-response";
+
+  mqtt_client.subscribe("cube/roster/authoritative", handleAuthorityMarker);
+  mqtt_client.subscribe(mqtt_topic_assign, handleAssignmentRecord);
+  mqtt_client.subscribe(
+      String("cube/device/") + mac_nocolons + "/liveness-request",
+      handleLivenessRequest);
+
+  auto resetActivityTimer = []() { last_activity_time = millis(); };
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBrightnessCommand(msg); });
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleRebootCommand(msg); });
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep_now", handleSleepNowCommand);
+
+  if (slotIsResolved()) {
+    subscribeSlotTopics();
+    publishPresence("online");
+  } else if (!slot_resolved) {
+    assignment_wait_started = millis();
+  }
+
   if (last_activity_time == 0) {
     last_activity_time = millis();
   }
@@ -1369,7 +1526,7 @@ void handleUDP() {
         // Serial.printf("Sent RSSI to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), rssiStr);
       }
       // Check if message is "timing" - return cube_id:avg_loop_time_us
-      else if (strcmp(udpBuffer, "timing") == 0) {
+      else if (slotIsResolved() && strcmp(udpBuffer, "timing") == 0) {
         // Calculate average loop time over recent samples
         unsigned long avg_loop_time_us = 0;
 
@@ -1401,7 +1558,7 @@ void handleUDP() {
                       timing_samples_filled ? TIMING_SAMPLE_SIZE : timing_sample_index);
       }
       // Check if message is "diag" - return detailed per-section timing breakdown
-      else if (strcmp(udpBuffer, "diag") == 0) {
+      else if (slotIsResolved() && strcmp(udpBuffer, "diag") == 0) {
         char diagStr[288];
         unsigned long avg_mqtt = section_timing_count > 0 ? section_timing_accum.mqtt_us / section_timing_count : 0;
         unsigned long avg_display = section_timing_count > 0 ? section_timing_accum.display_us / section_timing_count : 0;
@@ -1439,7 +1596,7 @@ void handleUDP() {
         nfc_read_max_us = 0;
       }
       // Check if message is "chip" - return ESP32 chip info
-      else if (strcmp(udpBuffer, "chip") == 0) {
+      else if (slotIsResolved() && strcmp(udpBuffer, "chip") == 0) {
         esp_chip_info_t chip_info;
         esp_chip_info(&chip_info);
 
@@ -1457,7 +1614,7 @@ void handleUDP() {
                       udp.remoteIP().toString().c_str(), udp.remotePort(), chipStr);
       }
       // Check if message is "temp" - return cube_id:temperature_celsius
-      else if (strcmp(udpBuffer, "temp") == 0) {
+      else if (slotIsResolved() && strcmp(udpBuffer, "temp") == 0) {
         // Read internal temperature sensor
         float temperature_c = temperatureRead();
 
@@ -1551,7 +1708,22 @@ void setup() {
   setupWiFiConnection();
   debugPrintln("wifi done");
 
-  String cube_id = cube_identifier;
+  mac_nocolons = removeColonsFromMac(WiFi.macAddress());
+  char boot_id_buf[9];
+  snprintf(boot_id_buf, sizeof(boot_id_buf), "%08X", esp_random());
+  boot_id = boot_id_buf;
+  mqtt_topic_presence =
+      String("cube/device/") + mac_nocolons + "/presence";
+  static String last_will_payload =
+      String("{\"protocol\":1,\"state\":\"offline\",\"boot_id\":\"") +
+      boot_id + "\"}";
+  mqtt_client.enableLastWillMessage(
+      mqtt_topic_presence.c_str(), last_will_payload.c_str(), true);
+
+  StoredSlot stored = loadStoredSlot();
+  authority_latched = stored.authority_latched;
+
+  String cube_id = String(compiled_cube_id > 0 ? compiled_cube_id : 0);
   // Create display manager
   display_manager = new DisplayManager(cube_id);
 
@@ -1571,7 +1743,7 @@ void setup() {
 
   debugSend("setup: continuing normally");
   Serial.println(cube_id);
-  static String client_name = cube_id;
+  static String client_name = makeMqttClientId(WiFi.macAddress(), "");
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
   char ipDisplay[64];
@@ -1633,6 +1805,18 @@ void loop() {
   unsigned long mqtt_end = micros();
   unsigned long mqtt_us = mqtt_end - section_start;
 
+  if (!slot_resolved && assignment_wait_started != 0 &&
+      millis() - assignment_wait_started >= ASSIGNMENT_WAIT_MS) {
+    assignment_wait_started = 0;
+    StoredSlot stored = loadStoredSlot();
+    int fallback = stored.slot > 0 ? stored.slot : compiled_cube_id;
+    int slot = resolveAssignedSlot(
+        ASSIGNMENT_MISSING, -1, authority_latched, fallback);
+    applied_generation = stored.generation;
+    saveStoredSlot(slot, stored.generation);
+    applySlot(slot);
+  }
+
   if (last_activity_time > 0 &&
       (millis() - last_activity_time > AUTO_SLEEP_TIMEOUT_MS)) {
     debugSend("auto-sleep: inactivity timeout");
@@ -1661,7 +1845,7 @@ void loop() {
   unsigned long nfc_us = 0;
 #ifndef HALL_NEIGHBOR_ID
   NfcWorkerResult worker_result;
-  if (nfc_result_queue != nullptr &&
+  if (slotIsResolved() && nfc_result_queue != nullptr &&
       xQueueReceive(nfc_result_queue, &worker_result, 0) == pdTRUE) {
     uint8_t* card_id = worker_result.card_id;
     ISO15693ErrorCode read_result = worker_result.read_result;
@@ -1739,7 +1923,7 @@ void loop() {
   // Hall 2-of-6 neighbor decode: poll ~1 kHz, debounce, publish the neighbor
   // cube id to cube/right/<sender> exactly as the NFC path does.
 #ifdef HALL_NEIGHBOR_ID
-  {
+  if (slotIsResolved()) {
     static unsigned long last_hall_poll = 0;
     static uint8_t candidate_id = 0;
     static int candidate_count = 0;
@@ -1814,7 +1998,7 @@ void loop() {
 
   // Track Hall sensor state and log connect/disconnect via MQTT
 #ifdef HALL_SENSOR_ENABLED
-  {
+  if (slotIsResolved()) {
     static unsigned long last_hall_check = 0;
     if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
       last_hall_check = current_time;
@@ -1846,7 +2030,7 @@ void loop() {
 #endif
 
 #ifdef HALL_SENSOR_ANALOG
-  {
+  if (slotIsResolved()) {
     static unsigned long last_hall_check = 0;
     static int last_hall_value = -1;
     if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {

@@ -12,6 +12,7 @@
    - Verify all existing functionality still works
    - Catch logic errors and regressions
    - Ensure utility functions are working correctly
+   - Validate the production table: `python3 tools/validate_mac_table.py`
 
 2. **Test Compilation Second** 
    ```bash
@@ -146,4 +147,3 @@ The v6 PCB has a TPS22975 load switch on GPIO5 that gates 5V to the HUB75 panel.
 - Any references to future state in the code should be in a TODO.
 - Do not comment code that is obvious. (And if code isn't obvious, try to rewrite it so that it is obvious)
 - Be wary of putting information in comments that repeats the same information in the code. There generally should only be one source of truth.
-
