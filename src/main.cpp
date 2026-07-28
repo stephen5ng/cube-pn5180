@@ -171,6 +171,11 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 // MQTT Configuration
 #define MQTT_SERVER_PI "192.168.8.247"
 #define MQTT_PORT 1883
+#define WIFI_CONNECT_ATTEMPT_TIMEOUT_MS 10000
+#define WIFI_RETRY_INTERVAL_MS 5000
+#define MQTT_RECONNECT_DELAY_MS 5000
+#define MQTT_SOCKET_TIMEOUT_S 2
+#define MQTT_CONNECTION_TIMEOUT_MS 1000
 
 // MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
@@ -225,6 +230,18 @@ uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
   0xbc, 0x10, 0xf8, 0xb8,
   0x50, 0x01, 0x04, 0xe0};
 
+struct NfcWorkerResult {
+  ISO15693ErrorCode read_result;
+  uint8_t card_id[NFCID_LENGTH];
+  uint32_t read_us;
+  uint32_t recovery_us;
+  bool recovery_attempted;
+  bool recovery_succeeded;
+};
+
+QueueHandle_t nfc_result_queue = nullptr;
+TaskHandle_t nfc_worker_handle = nullptr;
+
 // Track first boot vs wake from sleep
 static bool is_first_boot = true;
 
@@ -240,6 +257,9 @@ WiFiClient wifi_client;
 static String cube_identifier;
 static RgbOrder current_rgb_order = RGB_ORDER_BGR;
 const char* nfc_topic_out;
+static bool wifi_connection_attempt_active = false;
+static unsigned long wifi_connection_attempt_started = 0;
+static unsigned long next_wifi_connection_attempt = 0;
 
 // Animation
 char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value published to /nfc
@@ -836,8 +856,42 @@ uint8_t getCubeIpOctet() {
   return cube_id + 20;
 }
 
+void startWiFiConnectionAttempt() {
+  Serial.print("Connecting to ");
+  Serial.println(SSID_NAME_PORTABLE);
+  WiFi.setSleep(WIFI_PS_NONE);
+  WiFi.begin(SSID_NAME_PORTABLE, WIFI_PASSWORD_PORTABLE);
+  wifi_connection_attempt_started = millis();
+  wifi_connection_attempt_active = true;
+}
+
+void serviceWiFiConnection() {
+  if (WiFi.status() == WL_CONNECTED) {
+    wifi_connection_attempt_active = false;
+    next_wifi_connection_attempt = 0;
+    return;
+  }
+
+  unsigned long now = millis();
+  if (wifi_connection_attempt_active) {
+    if (now - wifi_connection_attempt_started < WIFI_CONNECT_ATTEMPT_TIMEOUT_MS) {
+      return;
+    }
+
+    Serial.println("WiFi connection attempt timed out");
+    WiFi.disconnect();
+    wifi_connection_attempt_active = false;
+    next_wifi_connection_attempt = now + WIFI_RETRY_INTERVAL_MS;
+    return;
+  }
+
+  if (next_wifi_connection_attempt == 0 ||
+      static_cast<long>(now - next_wifi_connection_attempt) >= 0) {
+    startWiFiConnectionAttempt();
+  }
+}
+
 void setupWiFiConnection() {
-  bool try_portable = true;
   Serial.print("mac address: ");
   Serial.println(WiFi.macAddress());
   uint8_t ip_octet = getCubeIpOctet();
@@ -853,21 +907,8 @@ void setupWiFiConnection() {
     Serial.println("STA Failed to configure");
   }
 
-  while (WiFi.status() != WL_CONNECTED) {
-    const char* ssid = try_portable ? SSID_NAME_PORTABLE : SSID_NAME;
-    const char* password = try_portable ? WIFI_PASSWORD_PORTABLE : WIFI_PASSWORD;
-    Serial.print("Connecting to ");
-    Serial.println(ssid);
-    WiFi.setSleep(WIFI_PS_NONE);
-    WiFi.begin(ssid, password);
-    delay(2000);
-    // try_portable = ! try_portable;
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
+  startWiFiConnectionAttempt();
+  Serial.println("WiFi connection started; setup will continue offline");
 }
 
 void handleNfcCommand(const String& message) {
@@ -897,6 +938,10 @@ void handleResetCommand(const String& message) {
     return;
   }
   debugPrintln("resetting due to /reset");
+  if (nfc_worker_handle != nullptr) {
+    xTaskNotifyGive(nfc_worker_handle);
+    return;
+  }
   if (nfc_reader != nullptr) {
     nfc_reader->reset();
     nfc_reader->setupRF();
@@ -967,6 +1012,7 @@ void handleWakeUp() {
     WiFiClient keepalive_tcp;
     PubSubClient keepalive_mqtt(keepalive_tcp);
     keepalive_mqtt.setServer(MQTT_SERVER_PI, MQTT_PORT);
+    keepalive_mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
 
     volatile bool stay_asleep = false;  // Default: wake up unless we see "1"
     String client_id = "cube-" + String(cube_identifier) + "-ka";
@@ -1230,6 +1276,64 @@ ISO15693ErrorCode readNfcCard(uint8_t* card_id) {
   return result;
 }
 
+void nfcWorkerTask(void* /*parameter*/) {
+  constexpr uint32_t NFC_RETRY_DELAY_MS = 50;
+  constexpr uint32_t NFC_RECOVERY_BACKOFF_MS = 5000;
+  bool manual_reset_requested = false;
+
+  for (;;) {
+    NfcWorkerResult worker_result = {};
+
+    unsigned long read_start = micros();
+    worker_result.read_result = readNfcCard(worker_result.card_id);
+    worker_result.read_us = micros() - read_start;
+
+    if (manual_reset_requested || worker_result.read_us > 100000UL) {
+      worker_result.recovery_attempted = true;
+      unsigned long recovery_start = micros();
+      nfc_reader->reset();
+      worker_result.recovery_succeeded = nfc_reader->setupRF();
+      worker_result.recovery_us = micros() - recovery_start;
+    }
+
+    xQueueOverwrite(nfc_result_queue, &worker_result);
+
+    uint32_t delay_ms =
+      worker_result.recovery_attempted && !worker_result.recovery_succeeded
+        ? NFC_RECOVERY_BACKOFF_MS
+        : NFC_RETRY_DELAY_MS;
+    // Wake immediately for a reset, then carry it into the next iteration.
+    manual_reset_requested =
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms)) > 0;
+  }
+}
+
+bool startNfcWorker() {
+  nfc_result_queue = xQueueCreate(1, sizeof(NfcWorkerResult));
+  if (nfc_result_queue == nullptr) {
+    Serial.println(F("ERROR: failed to create NFC result queue"));
+    return false;
+  }
+
+  BaseType_t task_created = xTaskCreatePinnedToCore(
+    nfcWorkerTask,
+    "nfc-worker",
+    4096,
+    nullptr,
+    1,
+    &nfc_worker_handle,
+    ARDUINO_RUNNING_CORE
+  );
+  if (task_created != pdPASS) {
+    vQueueDelete(nfc_result_queue);
+    nfc_result_queue = nullptr;
+    nfc_worker_handle = nullptr;
+    Serial.println(F("ERROR: failed to create NFC worker"));
+    return false;
+  }
+  return true;
+}
+
 void setupUDP() {
   udp.begin(UDP_PORT);
   Serial.printf("UDP server listening on port %d\n", UDP_PORT);
@@ -1409,7 +1513,8 @@ void setup() {
   mqtt_client.setMaxPacketSize(11999);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
-  mqtt_client.setMqttReconnectionAttemptDelay(5);
+  mqtt_client.setMqttConnectionTimeout(MQTT_CONNECTION_TIMEOUT_MS);
+  mqtt_client.setMqttReconnectionAttemptDelay(MQTT_RECONNECT_DELAY_MS);
   mqtt_client.enableOTA();
   
   esp_chip_info_t chip_info;
@@ -1504,6 +1609,10 @@ void setup() {
     snprintf(nfc_test_result, sizeof(nfc_test_result), "nfc %lums", (nfc_test_us + 500) / 1000);
   }
   display_manager->displayDebugMessage(nfc_test_result);
+
+  if (!startNfcWorker()) {
+    display_manager->displayDebugMessage("nfc task err");
+  }
 #endif
 
   debugPrintln("setting up udp...");
@@ -1516,6 +1625,8 @@ void loop() {
   loop_start_time = micros();
 
   static bool last_hall_present = true;
+
+  serviceWiFiConnection();
 
   unsigned long section_start = micros();
   mqtt_client.loop();
@@ -1549,36 +1660,21 @@ void loop() {
 
   unsigned long nfc_us = 0;
 #ifndef HALL_NEIGHBOR_ID
-  // Throttle NFC reads to ~20 Hz to prevent slow NFC hardware from blocking
-  // the main loop and starving MQTT processing / display animation
-  static unsigned long last_nfc_read = 0;
-  if (current_time - last_nfc_read >= 50) {
-    last_nfc_read = current_time;
-    unsigned long nfc_start = micros();
+  NfcWorkerResult worker_result;
+  if (nfc_result_queue != nullptr &&
+      xQueueReceive(nfc_result_queue, &worker_result, 0) == pdTRUE) {
+    uint8_t* card_id = worker_result.card_id;
+    ISO15693ErrorCode read_result = worker_result.read_result;
+    nfc_us = worker_result.read_us + worker_result.recovery_us;
 
-    uint8_t card_id[NFCID_LENGTH];
-    ISO15693ErrorCode read_result = readNfcCard(card_id);
-    nfc_us = micros() - nfc_start;
-
-    // A stuck BUSY pin causes ~1000ms NFC reads that return EC_NO_CARD (not an
-    // error code), so the recovery below is triggered by timing, not result code.
-    // Normal reads are ~200µs; 100ms is an unambiguous signal of stuck BUSY.
-    static unsigned long last_nfc_reset = 0;
-    static int consecutive_slow_reads = 0;
-    if (nfc_us > 100000UL) {
-      consecutive_slow_reads++;
-      if (consecutive_slow_reads > 3 && (millis() - last_nfc_reset > 5000)) {
-        Serial.printf("Resetting NFC reader: stuck BUSY detected (%lu us)\n", nfc_us);
-        if (nfc_reader != nullptr) {
-          nfc_reader->reset();
-          nfc_reader->setupRF();
-        }
-        last_nfc_reset = millis();
-        consecutive_slow_reads = 0;
-        nfc_reset_count++;
-      }
-    } else {
-      consecutive_slow_reads = 0;
+    if (worker_result.recovery_attempted) {
+      nfc_reset_count++;
+      Serial.printf(
+        "NFC recovery %s: read=%lu us recovery=%lu us\n",
+        worker_result.recovery_succeeded ? "succeeded" : "failed",
+        worker_result.read_us,
+        worker_result.recovery_us
+      );
     }
 
     // Always publish NFC tag IDs (needed for nfc_control_daemon).
@@ -1587,7 +1683,7 @@ void loop() {
 
     if (read_result == ISO15693_EC_OK) {
       char neighbor_id[NFCID_LENGTH * 2 + 1];
-      convertNfcIdToHexString(card_id, sizeof(card_id) / sizeof(card_id[0]), neighbor_id);
+      convertNfcIdToHexString(card_id, NFCID_LENGTH, neighbor_id);
       int cube_num = lookupCubeNumberByTag(neighbor_id);
       if (strcmp(neighbor_id, last_neighbor_id) != 0) {
         debugPrintln(F("New card"));
