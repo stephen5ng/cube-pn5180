@@ -38,16 +38,14 @@ get_version_by_mac() {
 
 is_cube_online() {
     local cube_id=$1
-    local sub_pid
 
-    # Subscribe before pinging: the cube echoes within milliseconds and does not
-    # retain the reply, so publishing first loses the echo every time.
-    mosquitto_sub -h 192.168.8.247 -t "cube/$cube_id/echo" -C 1 -W 3 >/dev/null 2>&1 &
-    sub_pid=$!
-    sleep 0.3
-    mosquitto_pub -h 192.168.8.247 -t "cube/$cube_id/ping" -m "test" >/dev/null 2>&1
-    wait "$sub_pid"
-    return $?
+    # The cube echoes within milliseconds and does not retain the reply, so the
+    # subscription must be established before the ping is published.
+    # mosquitto_rr subscribes and waits for SUBACK before publishing; separate
+    # pub/sub calls cannot express that ordering.
+    mosquitto_rr -h 192.168.8.247 \
+        -t "cube/$cube_id/ping" -e "cube/$cube_id/echo" \
+        -m "test" -W 3 >/dev/null 2>&1
 }
 
 get_cube_version() {
@@ -168,6 +166,13 @@ flash_cube() {
 }
 
 # Main
+# Checked up front: without it every cube reads as offline and the failure
+# surfaces as a misleading "could not wake cube N".
+if ! command -v mosquitto_rr >/dev/null 2>&1; then
+    echo "❌ mosquitto_rr not found (ships with mosquitto-clients)" >&2
+    exit 1
+fi
+
 if [ $# -eq 0 ]; then
     show_inventory
     echo "Usage: $0 <cube_id> [v1|v6]"
