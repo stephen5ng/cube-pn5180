@@ -1794,15 +1794,18 @@ void loop() {
           strcpy(buf, "-");  // no/invalid neighbor
         }
 
-        if (mqtt_client.isConnected() && strcmp(buf, last_right_published) != 0) {
-          if (mqtt_client.publish(mqtt_topic_cube_right, buf, true)) {
-            strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
-            last_right_published[sizeof(last_right_published) - 1] = '\0';
-            stable_id = candidate_id;
-            Serial.printf("Hall neighbor -> %s\n", buf);
-          }
-        } else {
+        // stable_id may only advance once the broker holds this value, otherwise
+        // a change decided while MQTT is down is never sent: reconnecting
+        // republishes a retained "-" and resets last_right_published, and this
+        // block would no longer see a difference to publish.
+        if (strcmp(buf, last_right_published) == 0) {
           stable_id = candidate_id;
+        } else if (mqtt_client.isConnected() &&
+                   mqtt_client.publish(mqtt_topic_cube_right, buf, true)) {
+          strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
+          last_right_published[sizeof(last_right_published) - 1] = '\0';
+          stable_id = candidate_id;
+          Serial.printf("Hall neighbor -> %s\n", buf);
         }
       }
     }
