@@ -146,9 +146,14 @@ last will. It drives the console display and MUST NOT be treated as liveness:
   "boot_id": "random-per-boot", "applied_slot": 4, "applied_generation": 3 }
 ```
 
-The deep-sleep path disconnects cleanly (no last will fires), so the cube
-**explicitly publishes `state: sleeping` before entering deep sleep**; a stale
-retained `online` therefore cannot masquerade as awake.
+The cube **explicitly publishes `state: sleeping` before entering deep sleep**,
+so a stale retained `online` cannot masquerade as awake. Today's
+`enterSleepMode()` reaches `esp_deep_sleep_start()` with no MQTT disconnect, so
+the broker sees an ungraceful drop and the last will fires *after* the
+`sleeping` publish, overwriting it with `offline`. The firmware must therefore
+send a clean DISCONNECT after publishing `sleeping` and before sleeping — on
+the full client only, since the timer-wake maintenance path enters
+`enterSleepMode()` with that client never connected.
 
 **Liveness challenge / response** — the gate's actual proof of life, both
 non-retained:
@@ -200,6 +205,19 @@ slot:
    - **Missing record and authority never latched (pre-cutover only)** — fall
      back to the compiled `cube_id` as the slot (transitional).
 
+Slot resolution is bounded, and a slot change takes effect through a reboot:
+
+- On a cold boot the cube waits a bounded interval for the retained record
+  before falling back. It must **not** apply its stored NVS slot first — the
+  slot it last held may now belong to its replacement, and subscribing to it
+  would republish retained neighbour state under another cube's slot.
+- If nothing arrives within the interval, the fallback is the stored NVS slot
+  if there is one, else the compiled `cube_id` — and neither, once authority is
+  latched.
+- A record naming a slot different from the one already applied this boot is
+  persisted to NVS and then acted on by restarting. Persisting first is what
+  makes it converge in one reboot instead of looping.
+
 Latching authority in NVS — not keying off the live marker each boot — is what
 prevents split-brain: a cut-over cube that boots into a broker with lost retained
 state, or before the server republishes the marker, still refuses fallback.
@@ -211,8 +229,14 @@ compiled `cube_id`) and `handleWakeUp()` builds the keepalive client ID,
 full MQTT setup — so a reassigned spare would revert to its old logical identity
 on every maintenance wake. The fix:
 
-- Keepalive/status/auto-sleep identity becomes **MAC-scoped** (client ID and
+- Keepalive/status identity becomes **MAC-scoped** (client ID and
   `cube/device/{MAC}/...` topics), never slot-scoped.
+- `auto_sleep` is **dual-scoped** until the console owns the MAC map: the cube
+  honours and clears both `cube/device/{MAC}/auto_sleep` and
+  `cube/{slot}/auto_sleep`. `tools/wake.sh` publishes the slot-scoped flag and
+  has no MAC map before the console exists, so a hard move would break waking
+  and contradict this design's own "steps 1–3 preserve behavior". The
+  slot-scoped flag retires with the rest of the slot-scoped tooling in step 4.
 - Before any slot-scoped publish, the maintenance client reads retained
   `cube/assign/{MAC}` and validates it against the NVS `{slot, generation}`; on
   mismatch or a newer generation it defers to a full-client start rather than
@@ -320,9 +344,11 @@ Non-goals:
   slot), regardless of marker absence.
 - Publish retained MAC-scoped presence (`cube/device/{MAC}/presence`) with an
   offline last will, and answer non-retained liveness challenges while awake.
-- Move the timer-wake keepalive/status/auto-sleep identity to MAC-scoped client
-  ID and topics; revalidate the retained assignment against NVS before any
-  slot-scoped publish; publish `state: sleeping` before deep sleep.
+- Move the timer-wake keepalive/status identity to a MAC-scoped client ID and
+  topics, and dual-scope `auto_sleep` until step 4 retires the slot-scoped
+  flag; revalidate the retained assignment against NVS before any slot-scoped
+  publish; publish `state: sleeping` and then disconnect cleanly before deep
+  sleep.
 - Publish MAC-scoped, provenance-tagged NFC (`cube/device/{MAC}/nfc` with sender
   MAC, boot ID, generation, sequence); retire on-device tag→number resolution and
   `cube/right/{id}`.
@@ -434,17 +460,32 @@ Steps 1–3 preserve behavior, so there is no flag day. Mixed firmware is safe
 until step 4 (authority cutover), at which point every field cube must be on the
 assignment-aware build.
 
+## Decisions made
+
+Settled while planning steps 2–3
+([2026-07-28-dynamic-slot-assignment-plan.md](2026-07-28-dynamic-slot-assignment-plan.md)):
+
+1. **Roster location and durable write.** The `MAC → {slot, generation, tag,
+   hardware_class}` roster is a single JSON file, `cubes/src/data/cube_roster.json`,
+   overridable with `LEXACUBE_ROSTER_PATH`. Writes are an atomic single-file
+   replace: temp file, `fsync`, `os.replace`. Moving it to a Pi-managed path
+   outside the repo is step-4 `pi-deploy` work.
+2. **NVS namespace and keys.** Namespace `cubepool`; keys `slot` (int32, `-1` =
+   unassigned), `gen` (uint32), `auth` (uint8 authority latch). It does not
+   touch the existing sleep-state persistence, which uses RTC memory, not NVS.
+
 ## Open decisions before implementation
 
-1. Where do the `MAC → {slot, generation}` map and `MAC → tag` inventory live on
-   the Pi, and what is the durable-write mechanism (single-file atomic replace)?
-2. How does the console capture a spare's tag and unique `ip_octet` at
+1. How does the console capture a spare's tag and unique `ip_octet` at
    commissioning?
-3. Confirm hardware-class metadata (small/large) per commissioned cube.
+2. Confirm hardware-class metadata (small/large) per commissioned cube. The
+   step-2 seed records `"standard"` for all 18 cubes; a second size needs real
+   values before the console can enforce class matching.
+3. Confirm the `MAC → tag` pairing physically. The seed pairs each MAC with a
+   tag by slot from `src/cube_tags.cpp`, which only holds while each chip is
+   still in the enclosure whose tag it is paired with — chips have been moved
+   between cubes before. Unused until step 5.
 4. Liveness-challenge bounds: nonce interval and response timeout that reliably
    cover a just-woken cube's Wi-Fi/MQTT startup on battery.
-4. Confirm which display state must be re-sent after a slot change (most
+5. Confirm which display state must be re-sent after a slot change (most
    `cube/{slot}/...` display topics are retained and arrive on subscribe).
-5. Confirm the NVS namespace/keys for the applied `{slot, generation}`, the
-   latched authority bit, and their
-   interaction with existing sleep-state persistence.

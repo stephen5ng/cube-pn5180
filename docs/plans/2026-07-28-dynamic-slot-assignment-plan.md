@@ -33,6 +33,31 @@
 - **`DisplayManager` keeps its early construction** (`src/main.cpp:1554`, before any assignment can arrive) and gains a `setSlotRotation(int)` setter, because the constructor uses `cube_id` for exactly one thing: `rotation = (cube_id_int <= 6) ? 2 : 0` (`src/main.cpp:369`).
 - **Deep sleep must disconnect explicitly.** The design doc claims "the deep-sleep path disconnects cleanly (no last will fires)". That is **false against the current code**: `enterSleepMode()` (`src/main.cpp:958-999`) calls `esp_deep_sleep_start()` with no MQTT disconnect, so the broker sees an ungraceful drop and the retained last will would overwrite the `sleeping` presence record with `offline`. Task B3 adds an explicit disconnect before sleeping. The vendored `lib/EspMQTTClient` exposes no `disconnect()`, so Task B3 adds one to the vendored header.
 
+## Backward compatibility
+
+Both phases are backward compatible in both directions; either can ship alone.
+
+- **New server + old firmware.** Phase A only adds 18 retained `cube/assign/#`
+  records. Today's firmware never subscribes to them, so nothing changes.
+- **New firmware + old server.** No retained record arrives, so after
+  `ASSIGNMENT_WAIT_MS` the cube falls back to its compiled `cube_id` — today's
+  slot. The authority marker is never published in either phase, so the
+  fallback can never be disabled here.
+- **Mixed firmware across cubes** is safe: slot-scoped game/display topics are
+  untouched, and the new topics are per-device.
+- **Tooling.** `tools/wake.sh` keeps working because `auto_sleep` is
+  dual-scoped. Nothing anywhere consumes `cube/{slot}/status` or its
+  `keep-alive` payload (verified across `cubes`, `cube-pn5180/tools`, and
+  `pi-deploy`), so MAC-scoping it breaks no consumer.
+- **The two real behavior changes** are a bounded (≤3 s) delay before a cube
+  subscribes to its slot topics on a cold boot, and a reboot when an assignment
+  names a different slot than the one already applied.
+- **`cubes/tools/delete_all_mqtt.sh` will wipe the retained assignments** — it
+  clears every retained topic except `cube/right/`. That is recoverable (the
+  server republishes the whole roster at startup) but leaves cubes on their
+  NVS/compiled fallback until it does. Add `cube/assign/` to that script's
+  exclusion list when the console lands in step 4.
+
 ## Assumptions to confirm (do not block on these)
 
 - **MAC↔tag pairing.** The seed roster in Task A2 pairs each MAC with a tag by slot, using `cube-pn5180/src/cube_tags.cpp` (primary set rows 1–12, backup set rows 13–24) and the production MAC table. This is only correct while each ESP32 chip stays in the enclosure whose tag it is paired with. Chips *have* been moved between enclosures historically. Task A2 includes a printed pairing review step; correct any row that does not match the physical cube. The tag inventory is unused until rollout step 5, so an error here is not shippable-blocking.
