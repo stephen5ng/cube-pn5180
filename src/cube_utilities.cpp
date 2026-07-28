@@ -139,6 +139,10 @@ AssignmentParseResult parseAssignmentRecord(const char* json, CubeAssignment* ou
   return ASSIGNMENT_OK;
 }
 
+bool assignmentRecordIsActionable(AssignmentParseResult result) {
+  return result == ASSIGNMENT_OK || result == ASSIGNMENT_UNASSIGNED;
+}
+
 int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
                         bool authority_latched, int compiled_cube_id) {
   switch (result) {

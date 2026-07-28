@@ -990,7 +990,6 @@ void enterSleepMode() {
 
   if (mqtt_client.isConnected()) {
     publishPresence("sleeping");
-    mqtt_client.loop();
     delay(100);
     mqtt_client.disconnect();
   }
@@ -1269,6 +1268,12 @@ void handleAssignmentRecord(const String& message) {
   CubeAssignment assignment;
   AssignmentParseResult result =
       parseAssignmentRecord(message.c_str(), &assignment);
+  if (!assignmentRecordIsActionable(result)) {
+    debugSend(result == ASSIGNMENT_MISSING
+                  ? "assignment missing: keeping current slot"
+                  : "assignment malformed: keeping current slot");
+    return;
+  }
   int slot = resolveAssignedSlot(
       result, assignment.slot, authority_latched, compiled_cube_id);
 
@@ -1324,6 +1329,8 @@ void onConnectionEstablished() {
     publishPresence("online");
   } else if (!slot_resolved) {
     assignment_wait_started = millis();
+  } else {
+    publishPresence("online");
   }
 
   if (last_activity_time == 0) {
@@ -1525,6 +1532,16 @@ void handleUDP() {
         
         // Serial.printf("Sent RSSI to %s:%d: %s\n", udp.remoteIP().toString().c_str(), udp.remotePort(), rssiStr);
       }
+      else if (!slotIsResolved() &&
+               (strcmp(udpBuffer, "timing") == 0 ||
+                strcmp(udpBuffer, "diag") == 0 ||
+                strcmp(udpBuffer, "chip") == 0 ||
+                strcmp(udpBuffer, "temp") == 0)) {
+        const char* marker = slot_resolved ? "unassigned" : "unresolved";
+        udp.beginPacket(udp.remoteIP(), udp.remotePort());
+        udp.write((const uint8_t*)marker, strlen(marker));
+        udp.endPacket();
+      }
       // Check if message is "timing" - return cube_id:avg_loop_time_us
       else if (slotIsResolved() && strcmp(udpBuffer, "timing") == 0) {
         // Calculate average loop time over recent samples
@@ -1714,16 +1731,16 @@ void setup() {
   boot_id = boot_id_buf;
   mqtt_topic_presence =
       String("cube/device/") + mac_nocolons + "/presence";
+  StoredSlot stored = loadStoredSlot();
+  authority_latched = stored.authority_latched;
   static String last_will_payload =
       String("{\"protocol\":1,\"state\":\"offline\",\"boot_id\":\"") +
-      boot_id + "\"}";
+      boot_id + "\",\"applied_slot\":" + String(stored.slot) +
+      ",\"applied_generation\":" + String(stored.generation) + "}";
   mqtt_client.enableLastWillMessage(
       mqtt_topic_presence.c_str(), last_will_payload.c_str(), true);
 
-  StoredSlot stored = loadStoredSlot();
-  authority_latched = stored.authority_latched;
-
-  String cube_id = String(compiled_cube_id > 0 ? compiled_cube_id : 0);
+  String cube_id = String(compiled_cube_id);
   // Create display manager
   display_manager = new DisplayManager(cube_id);
 

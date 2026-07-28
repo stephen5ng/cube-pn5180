@@ -177,6 +177,13 @@ void test_resolveAssignedSlot() {
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, -1));
 }
 
+void test_assignmentRecordIsActionable() {
+    TEST_ASSERT_TRUE(assignmentRecordIsActionable(ASSIGNMENT_OK));
+    TEST_ASSERT_TRUE(assignmentRecordIsActionable(ASSIGNMENT_UNASSIGNED));
+    TEST_ASSERT_FALSE(assignmentRecordIsActionable(ASSIGNMENT_MISSING));
+    TEST_ASSERT_FALSE(assignmentRecordIsActionable(ASSIGNMENT_MALFORMED));
+}
+
 // ========== Cube Tags Tests ==========
 
 void test_lookupCubeNumberByTag_all_known_tags() {
@@ -411,6 +418,7 @@ int main(void) {
     RUN_TEST(test_parseAssignmentRecord_missing);
     RUN_TEST(test_parseAssignmentRecord_malformed);
     RUN_TEST(test_resolveAssignedSlot);
+    RUN_TEST(test_assignmentRecordIsActionable);
 
     // NFC ID conversion tests
     RUN_TEST(test_convertNfcIdToHexString_full_id);

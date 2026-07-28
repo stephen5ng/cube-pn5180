@@ -58,6 +58,7 @@ struct CubeAssignment {
 };
 
 AssignmentParseResult parseAssignmentRecord(const char* json, CubeAssignment* out);
+bool assignmentRecordIsActionable(AssignmentParseResult result);
 int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
                         bool authority_latched, int compiled_cube_id);
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer);
