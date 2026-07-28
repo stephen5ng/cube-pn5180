@@ -2,7 +2,7 @@
 # Flash firmware to cubes based on their board version
 # Usage: ./flash_cubes.sh <cube_id> [v1|v6]
 
-CUBE_VERSIONS_FILE="$(dirname "$0")/../cube_board_versions.txt"
+CUBE_VERSIONS_FILE="$(dirname "$0")/../config/cube_board_versions.txt"
 FW_DIR="$(dirname "$0")/.."
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 PYTHON="${PYTHON:-python3}"

@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 UDP_QUERY="$SCRIPT_DIR/udp_query.py"
 LOG_FILE="$PROJECT_DIR/logs/diag_cubes.log"
-BOARD_VERSIONS_FILE="$PROJECT_DIR/cube_board_versions.txt"
+BOARD_VERSIONS_FILE="$PROJECT_DIR/config/cube_board_versions.txt"
 
 # Read board version for a cube ID
 get_board_version() {
