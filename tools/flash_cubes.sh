@@ -38,8 +38,15 @@ get_version_by_mac() {
 
 is_cube_online() {
     local cube_id=$1
+    local sub_pid
+
+    # Subscribe before pinging: the cube echoes within milliseconds and does not
+    # retain the reply, so publishing first loses the echo every time.
+    mosquitto_sub -h 192.168.8.247 -t "cube/$cube_id/echo" -C 1 -W 3 >/dev/null 2>&1 &
+    sub_pid=$!
+    sleep 0.3
     mosquitto_pub -h 192.168.8.247 -t "cube/$cube_id/ping" -m "test" >/dev/null 2>&1
-    mosquitto_sub -h 192.168.8.247 -t "cube/$cube_id/echo" -C 1 -W 2 >/dev/null 2>&1
+    wait "$sub_pid"
     return $?
 }
 
