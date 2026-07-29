@@ -43,18 +43,19 @@ log_result() {
   local cube="$2"
   local board="$3"
   local mac="$4"
-  local loop="$5"
-  local mqtt="$6"
-  local disp="$7"
-  local udp_t="$8"
-  local nfc="$9"
-  local nfc_max="${10}"
-  local nfc_resets="${11}"
-  local ltr_avg="${12}"
-  local ltr_max="${13}"
-  local rssi="${14}"
+  local uptime_ms="$5"
+  local loop="$6"
+  local mqtt="$7"
+  local disp="$8"
+  local udp_t="$9"
+  local nfc="${10}"
+  local nfc_max="${11}"
+  local nfc_resets="${12}"
+  local ltr_avg="${13}"
+  local ltr_max="${14}"
+  local rssi="${15}"
 
-  echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"mac\":\"$mac\",\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"nfc_resets\":$nfc_resets,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
+  echo "{\"timestamp\":\"$timestamp\",\"cube\":\"$cube\",\"board\":\"$board\",\"mac\":\"$mac\",\"uptime_ms\":${uptime_ms:-null},\"loop_us\":$loop,\"mqtt_us\":$mqtt,\"disp_us\":$disp,\"udp_us\":$udp_t,\"nfc_us\":$nfc,\"nfc_max_us\":$nfc_max,\"nfc_resets\":$nfc_resets,\"letter_avg_ms\":$ltr_avg,\"letter_max_ms\":$ltr_max,\"rssi_db\":$rssi}" >> "$LOG_FILE"
 }
 
 query_cube() {
@@ -108,11 +109,12 @@ parse_and_print() {
   local ltr_avg=$(echo "$line" | grep -o 'letter_avg=[0-9]*' | cut -d= -f2)
   local ltr_max=$(echo "$line" | grep -o 'letter_max=[0-9]*' | cut -d= -f2)
   local rssi=$(echo "$line" | grep -o 'rssi=-\?[0-9]*' | cut -d= -f2)
+  local uptime_ms=$(echo "$line" | grep -o 'uptime_ms=[0-9]*' | cut -d= -f2)
 
   printf "%-6s %6s %7sus %7sus %7sus %7sus %7sus %9sus %5s %9sms %9sms %5sdB\n" \
     "$cube" "$board" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "${nfc_resets:-0}" "$ltr_avg" "$ltr_max" "$rssi"
 
-  log_result "$timestamp" "$cube" "$board" "$mac" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$nfc_resets" "$ltr_avg" "$ltr_max" "$rssi"
+  log_result "$timestamp" "$cube" "$board" "$mac" "$uptime_ms" "$loop" "$mqtt" "$disp" "$udp_t" "$nfc" "$nfc_max" "$nfc_resets" "$ltr_avg" "$ltr_max" "$rssi"
 }
 
 # Initialize log file
