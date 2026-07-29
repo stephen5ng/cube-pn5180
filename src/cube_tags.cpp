@@ -30,6 +30,11 @@ const TagToCubeMapping KNOWN_TAGS[] = {
   {"BA00000000000014", 14},
   {"BA00000000000015", 15},
   {"BA00000000000016", 16},
+
+  // Field replacements. A cube keeps its old entry: the table is a
+  // many-tags-to-one-cube lookup, so a re-stickered cube resolves whichever
+  // tag it is actually wearing.
+  {"CE41D303530104E0", 4},   // replaces 1942D303530104E0 (location B)
 };
 
 const size_t NUM_KNOWN_TAGS = sizeof(KNOWN_TAGS) / sizeof(KNOWN_TAGS[0]);

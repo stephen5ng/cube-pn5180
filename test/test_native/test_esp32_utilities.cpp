@@ -209,6 +209,14 @@ void test_lookupCubeNumberByTag_unknown_tag() {
     TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag("1234567890123456"));
 }
 
+void test_lookupCubeNumberByTag_replacement_sticker() {
+    // Cube 4's location-B sticker was replaced in the field. A cube whose tag
+    // is unknown still reads (/nfc carries the raw id) but never resolves to a
+    // cube number, so /right stays empty and the neighbour is invisible to the
+    // game -- which is silent unless you are watching MQTT.
+    TEST_ASSERT_EQUAL(4, lookupCubeNumberByTag("CE41D303530104E0"));
+}
+
 void test_lookupCubeNumberByTag_null_pointer() {
     // Test NULL pointer handling
     TEST_ASSERT_EQUAL(0, lookupCubeNumberByTag(nullptr));
@@ -249,8 +257,8 @@ void test_lookupCubeNumberByTag_similar_tags() {
 
 void test_num_known_tags() {
     // Test that the known tags table has the expected size
-    // 12 primary + 12 backup = 24 total
-    TEST_ASSERT_EQUAL(24, NUM_KNOWN_TAGS);
+    // 12 primary + 12 backup + 1 field replacement = 25 total
+    TEST_ASSERT_EQUAL(25, NUM_KNOWN_TAGS);
 }
 
 void test_lookupCubeNumberByTag_tag_to_cube_mapping() {
@@ -431,6 +439,7 @@ int main(void) {
     RUN_TEST(test_lookupCubeNumberByTag_all_known_tags);
     RUN_TEST(test_lookupCubeNumberByTag_tag_to_cube_mapping);
     RUN_TEST(test_lookupCubeNumberByTag_unknown_tag);
+    RUN_TEST(test_lookupCubeNumberByTag_replacement_sticker);
     RUN_TEST(test_lookupCubeNumberByTag_null_pointer);
     RUN_TEST(test_lookupCubeNumberByTag_empty_string);
     RUN_TEST(test_lookupCubeNumberByTag_case_sensitivity);
