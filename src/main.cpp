@@ -1055,6 +1055,21 @@ void handleWakeUp() {
     // Timer wake - check if we should stay asleep or wake fully
     debugSend("timer wake");
 
+    // setupWiFiConnection() just fired a non-blocking WiFi.begin(); wait for
+    // association before touching MQTT, or an ordinary association delay
+    // looks identical to a real MQTT failure below and fail-opens to a full
+    // wake on every check-in, defeating the keep-alive pulse.
+    unsigned long wifi_wait_start = millis();
+    while (WiFi.status() != WL_CONNECTED &&
+           millis() - wifi_wait_start < WIFI_CONNECT_ATTEMPT_TIMEOUT_MS) {
+      delay(10);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      debugSend("wifi timeout on check-in");
+      last_activity_time = millis();  // Reset auto-sleep timer
+      return;
+    }
+
     // Connect to MQTT to check for retained sleep message
     WiFiClient keepalive_tcp;
     PubSubClient keepalive_mqtt(keepalive_tcp);
