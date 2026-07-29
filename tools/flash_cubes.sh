@@ -178,8 +178,26 @@ flash_cube() {
     fi
 
     $PIO run -e "$version" -t upload --upload-port "$ip"
+    local upload_status=$?
 
-    if [ $? -eq 0 ]; then
+    if [ $upload_status -ne 0 ]; then
+        # espota routinely reports failure after a successful upload: its
+        # result-wait dies when the cube reboots (or a lossy link drops the
+        # final OK) before answering. The retained version topic is the
+        # ground truth -- the rebooted cube republishes it -- so ask the
+        # cube before believing the exit code.
+        echo "Upload reported failure; checking what cube $cube_id is running..."
+        local attempt
+        for attempt in 1 2 3; do
+            sleep 8
+            if [[ "$(get_cube_version "$cube_id")" == "$target_version" ]]; then
+                echo "✅ Cube $cube_id is running $target_version despite the reported upload failure"
+                return 0
+            fi
+        done
+    fi
+
+    if [ $upload_status -eq 0 ]; then
         echo "✅ Cube $cube_id flashed successfully"
 
         # Reboot and verify
