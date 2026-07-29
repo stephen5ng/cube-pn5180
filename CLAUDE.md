@@ -54,10 +54,11 @@
 
 ## Network Environment
 - **MQTT Broker**: `192.168.8.247` (NOT localhost)
-- **Cube IP Mapping**: Simple formula - cube N is at `192.168.8.{20+N}`
-  - Cube 1: `192.168.8.21`
-  - Cube 2: `192.168.8.22`
-  - etc.
+- **Cube IP Mapping**: firmware assigns each MAC its own static-IP octet
+  (`findCubeIpOctet`): primary-set MACs get `192.168.8.{20+N}`, backup-set
+  MACs `192.168.8.{40+N}`. A cube's address therefore depends on which
+  physical board holds the slot — probe both octets (as
+  `tools/flash_cubes.sh` does) rather than assuming `20+N`.
 - **Python Game Directory**: `/Users/stephenng/programming/blockwords/cubes/`
   - This is where responsiveness tests and main game code are located
   - NOT the PlatformIO project directory

@@ -19,9 +19,35 @@ show_inventory() {
     echo ""
 }
 
+ping_once() {
+    local ip=$1
+    if command -v ip >/dev/null 2>&1; then
+        ping -c 1 -W 1 "$ip" >/dev/null 2>&1
+    else
+        # macOS ping: -t is the timeout in seconds.
+        ping -c 1 -t 1 "$ip" >/dev/null 2>&1
+    fi
+}
+
+# Firmware assigns each MAC its own static-IP octet (findCubeIpOctet):
+# primary-set MACs get 20+N, backup-set MACs 40+N. Which set a slot's
+# current board comes from isn't knowable here, so probe both.
+resolve_cube_ip() {
+    local cube_id=$1
+    local ip
+    for base in 20 40; do
+        ip="192.168.8.$((cube_id + base))"
+        if ping_once "$ip"; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    return 1
+}
+
 get_mac_from_arp() {
     local cube_id=$1
-    local ip="192.168.8.$((cube_id + 20))"
+    local ip=$2
     if command -v ip >/dev/null 2>&1; then
         # Raspberry Pi / Linux: iproute2 is part of the base system.
         ping -c 1 -W 1 "$ip" >/dev/null 2>&1 || true
@@ -90,11 +116,15 @@ wait_for_cube_online() {
 flash_cube() {
     local cube_id=$1
     local version=$2
-    local ip="192.168.8.$((cube_id + 20))"
+    local ip=$(resolve_cube_ip "$cube_id")
+    if [ -z "$ip" ]; then
+        echo "❌ Cube $cube_id not reachable at 192.168.8.$((cube_id + 20)) or 192.168.8.$((cube_id + 40))"
+        return 1
+    fi
 
     # If no version specified, resolve MAC from ARP and look up version
     if [ -z "$version" ]; then
-        local mac=$(get_mac_from_arp "$cube_id")
+        local mac=$(get_mac_from_arp "$cube_id" "$ip")
         if [ -z "$mac" ]; then
             echo "❌ Could not resolve MAC for cube $cube_id at $ip"
             return 1
