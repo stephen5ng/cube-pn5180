@@ -118,8 +118,14 @@ void configurePins(int cube_id) {
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
-#define BATTERY_MAINTENANCE_INTERVAL_S  360000ULL  /* Wake up for battery maintenance */
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
+// Timer-wake check-in window: how long the keep-alive holds the WiFi radio up
+// waiting for the retained auto_sleep flag. This doubles as the current-pulse
+// dwell that keeps a USB-C power bank from auto-shutting-off on low draw, so
+// lengthen it (not add a display flash) if a bank still cuts off. Stopgap for
+// the USB-C generation; irrelevant once the 18650 power board lands.
+#define KEEPALIVE_CHECKIN_WINDOW_MS  1000UL
+#define POWER_RAIL_SETTLE_MS  50  /* Let the HUB75 5V rail come up before I2S DMA drives the panel */
 #ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
 #endif
@@ -160,7 +166,6 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #endif
 
 // Sleep state management
-RTC_DATA_ATTR bool is_sleep_mode = false;
 RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 RTC_DATA_ATTR uint32_t sleep_interval_s = 20;  // Default 20s, configurable via MQTT
@@ -986,8 +991,12 @@ void publishAutoSleepFlag() {
 
 void enterSleepMode() {
   debugPrintln("Entering deep sleep mode...");
-  display_manager->displayDebugMessage("sleep...");
-  delay(2000);
+  // display_manager is null on a timer-wake check-in that never powered the
+  // panel — skip the "sleep..." paint and its 2s dwell so that pulse stays cheap.
+  if (display_manager != nullptr) {
+    display_manager->displayDebugMessage("sleep...");
+    delay(2000);
+  }
 
   if (mqtt_client.isConnected()) {
     publishPresence("sleeping");
@@ -998,7 +1007,11 @@ void enterSleepMode() {
 #ifdef BOARD_V6
   // Stop DMA and tri-state HUB75 pins to prevent backfeed through panel clamping diodes.
   // Hold all GPIO states through deep sleep so tri-stated pins don't float on power-down.
-  display_manager->shutdownForSleep();
+  // On a check-in re-sleep the panel was never powered and DMA never started, so there
+  // is nothing to tear down — the pads are already Hi-Z after gpio_deep_sleep_hold_dis().
+  if (display_manager != nullptr) {
+    display_manager->shutdownForSleep();
+  }
   digitalWrite(POWER_SWITCH_PIN, LOW);
   gpio_hold_en(POWER_SWITCH_PIN);
   gpio_deep_sleep_hold_en();
@@ -1023,7 +1036,6 @@ void enterSleepMode() {
   // Enable timer wake-up using configurable interval
   esp_sleep_enable_timer_wakeup((uint64_t)sleep_interval_s * uS_TO_S_FACTOR);
 
-  is_sleep_mode = true;
   sleep_start_time = millis();
 
   // Send debug via UDP
@@ -1042,6 +1054,21 @@ void handleWakeUp() {
   if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
     // Timer wake - check if we should stay asleep or wake fully
     debugSend("timer wake");
+
+    // setupWiFiConnection() just fired a non-blocking WiFi.begin(); wait for
+    // association before touching MQTT, or an ordinary association delay
+    // looks identical to a real MQTT failure below and fail-opens to a full
+    // wake on every check-in, defeating the keep-alive pulse.
+    unsigned long wifi_wait_start = millis();
+    while (WiFi.status() != WL_CONNECTED &&
+           millis() - wifi_wait_start < WIFI_CONNECT_ATTEMPT_TIMEOUT_MS) {
+      delay(10);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      debugSend("wifi timeout on check-in");
+      last_activity_time = millis();  // Reset auto-sleep timer
+      return;
+    }
 
     // Connect to MQTT to check for retained sleep message
     WiFiClient keepalive_tcp;
@@ -1082,9 +1109,9 @@ void handleWakeUp() {
         keepalive_mqtt.subscribe(slot_auto_sleep_topic.c_str());
       }
 
-      // Wait for retained message to arrive
+      // Wait for retained message to arrive (also the WiFi-active current dwell)
       unsigned long check_start = millis();
-      while (millis() - check_start < 1000) {
+      while (millis() - check_start < KEEPALIVE_CHECKIN_WINDOW_MS) {
         keepalive_mqtt.loop();
         delay(10);
       }
@@ -1114,25 +1141,21 @@ void handleWakeUp() {
 
         debugSend("WAKE FULL - staying awake");
         last_activity_time = millis();  // Reset auto-sleep timer on wake
-        is_sleep_mode = false;
         Serial.println("Waking fully - continuing setup");
       }
     } else {
       debugSend("mqtt fail");
       // If MQTT failed, assume we should wake (safer default)
       last_activity_time = millis();  // Reset auto-sleep timer
-      is_sleep_mode = false;
     }
   }
   else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
     debugPrintln("Woken by external signal (Pin 0 released)");
     // Wake reason "wake:2" already indicates button wake, no need for "WAKE" message
     last_activity_time = millis();  // Reset auto-sleep timer
-    is_sleep_mode = false;
     Serial.println("Pin 0 wake-up detected - staying awake");
   }
   else {
-    is_sleep_mode = false;
     debugPrintln("Normal boot - staying awake");
   }
 }
@@ -1684,6 +1707,11 @@ void setup() {
   // Track if this is first boot or wake from sleep
   is_first_boot = (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED);
 
+  // A timer wake is a keep-alive check-in: stay dark and skip display init until
+  // handleWakeUp() decides we are actually waking. First boot and button wakes
+  // light the panel immediately.
+  const bool is_timer_wake = (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER);
+
   mqtt_client.enableDebuggingMessages(true);
   mqtt_client.setMaxPacketSize(11999);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
@@ -1705,11 +1733,13 @@ void setup() {
   pinMode(0, INPUT_PULLUP);
 
 #ifdef BOARD_V6
-  // Release holds set in enterSleepMode(), re-enable TPS22975
+  // Release holds set in enterSleepMode(). A timer-wake check-in keeps the
+  // TPS22975 (and HUB75 panel) off so the wake draws only WiFi current; the
+  // panel is powered later, in the full-wake path, once we commit to waking.
   gpio_deep_sleep_hold_dis();
   gpio_hold_dis(POWER_SWITCH_PIN);
   pinMode(POWER_SWITCH_PIN, OUTPUT);
-  digitalWrite(POWER_SWITCH_PIN, HIGH);
+  digitalWrite(POWER_SWITCH_PIN, is_timer_wake ? LOW : HIGH);
 
   // Initialize Hall effect sensor on GPIO36
 #if defined(HALL_SENSOR_ENABLED)
@@ -1741,25 +1771,33 @@ void setup() {
   mqtt_client.enableLastWillMessage(
       mqtt_topic_presence.c_str(), last_will_payload.c_str(), true);
 
-  String cube_id = String(compiled_cube_id);
-  // Create display manager
-  display_manager = new DisplayManager(cube_id);
+  // Decide whether this wake is a keep-alive check-in or a real wake BEFORE any
+  // display work. On a check-in that stays asleep this re-enters deep sleep and
+  // never returns, so the panel, DisplayManager, and debug paints below are all
+  // skipped — that is what makes the keep-alive pulse cheap.
+  handleWakeUp();
 
+  // Reaching here means we are fully waking: first boot, button wake, or a
+  // check-in whose auto_sleep flag was cleared.
+#ifdef BOARD_V6
+  // Power the panel now. On a timer wake the rail was held off above, so raise
+  // it and let the 5V rail settle before I2S DMA starts driving the panel. On a
+  // button/first boot the rail was raised early and WiFi setup already gave it
+  // time to come up.
+  if (is_timer_wake) {
+    digitalWrite(POWER_SWITCH_PIN, HIGH);
+    delay(POWER_RAIL_SETTLE_MS);
+  }
+#endif
+
+  debugSend("setup: continuing normally");
+
+  String cube_id = String(compiled_cube_id);
+  display_manager = new DisplayManager(cube_id);
   display_manager->clearDebugDisplay();
   display_manager->displayDebugMessage(GIT_TIMESTAMP);
   delay(DISPLAY_STARTUP_DELAY_MS);
-
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
-
-  handleWakeUp();
-  
-  // If we're in battery maintenance mode, skip the rest of setup
-  if (is_sleep_mode && wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
-    debugSend("setup: returning to sleep");
-    return;  // Will go back to sleep in handleWakeUp()
-  }
-
-  debugSend("setup: continuing normally");
   Serial.println(cube_id);
   static String client_name = makeMqttClientId(WiFi.macAddress(), "");
   Serial.println(client_name);
