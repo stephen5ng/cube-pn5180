@@ -432,16 +432,17 @@ public:
   void displayDebugMessage(const char* message) {
     int y_pos = debug_line * 8 + 8;
 
-    led_display->setCursor(1, y_pos);
+    // setFont(NULL) shifts the cursor up 6px when a custom font was active, so it
+    // must run before setCursor or the two buffers disagree on the y position.
     led_display->setTextSize(1);
     led_display->setFont(NULL);
     led_display->setTextColor(RED, BLACK);
+
+    // Write the same text to both DMA buffers so it survives subsequent flips.
+    led_display->setCursor(1, y_pos);
     led_display->print(message);
     led_display->flipDMABuffer();
     led_display->setCursor(1, y_pos);
-    led_display->setTextSize(1);
-    led_display->setFont(NULL);
-    led_display->setTextColor(RED, BLACK);
     led_display->print(message);
 
     debug_line++;
