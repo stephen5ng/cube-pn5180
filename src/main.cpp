@@ -1065,11 +1065,10 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     mqtt_.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
   }
 
-  // setupWiFiConnection() fired a non-blocking WiFi.begin(); wait for
-  // association before touching MQTT, or an ordinary association delay looks
-  // identical to a real MQTT failure and fail-opens to a full wake on every
-  // check-in, defeating the keep-alive pulse.
-  bool awaitWifi() {
+  // setupWiFiConnection() fired a non-blocking WiFi.begin(); WiFi may not be
+  // associated yet, so give it until KEEPALIVE_WIFI_TIMEOUT_MS before treating
+  // the check-in as a network failure.
+  bool awaitWifi() override {
     unsigned long wifi_wait_start = millis();
     while (WiFi.status() != WL_CONNECTED &&
            millis() - wifi_wait_start < KEEPALIVE_WIFI_TIMEOUT_MS) {
@@ -1085,7 +1084,7 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     return true;
   }
 
-  bool connectMqtt() {
+  bool connectMqtt() override {
     String client_id = makeMqttClientId(WiFi.macAddress(), "-ka");
     if (!mqtt_.connect(client_id.c_str())) {
       debugSend("mqtt fail");
@@ -1095,9 +1094,9 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     return true;
   }
 
-  bool hasSlotTopic() { return !slot_topic_.isEmpty(); }
+  bool hasSlotTopic() override { return !slot_topic_.isEmpty(); }
 
-  SleepFlags readSleepFlags() {
+  SleepFlags readSleepFlags() override {
     // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses
     // its internal buffer for both incoming and outgoing messages, so
     // publishing inside the callback overwrites the payload bytes.
@@ -1132,7 +1131,7 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     return flags_;
   }
 
-  void clearSleepFlags() {
+  void clearSleepFlags() override {
     mqtt_.publish(device_topic_.c_str(), "", true);
     if (hasSlotTopic()) {
       mqtt_.publish(slot_topic_.c_str(), "", true);
@@ -1141,13 +1140,13 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     mqtt_.disconnect();
   }
 
-  void enterSleep() {
+  void enterSleep() override {
     mqtt_.disconnect();
     debugSend("sleep again");
     enterSleepMode();
   }
 
-  void stayAwake() {
+  void stayAwake() override {
     last_activity_time = millis();
     debugSend("WAKE FULL - staying awake");
     Serial.println("Waking fully - continuing setup");

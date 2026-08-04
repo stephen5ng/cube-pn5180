@@ -449,13 +449,13 @@ struct FakeWakeCheckInPorts : public WakeCheckInPorts {
     return strstr(calls, needle) != NULL;
   }
 
-  bool awaitWifi() { record("awaitWifi"); return wifi_result; }
-  bool connectMqtt() { record("connectMqtt"); return mqtt_result; }
-  bool hasSlotTopic() { record("hasSlotTopic"); return slot_topic_result; }
-  SleepFlags readSleepFlags() { record("readSleepFlags"); return flags; }
-  void clearSleepFlags() { record("clearSleepFlags"); }
-  void enterSleep() { record("enterSleep"); }
-  void stayAwake() { record("stayAwake"); }
+  bool awaitWifi() override { record("awaitWifi"); return wifi_result; }
+  bool connectMqtt() override { record("connectMqtt"); return mqtt_result; }
+  bool hasSlotTopic() override { record("hasSlotTopic"); return slot_topic_result; }
+  SleepFlags readSleepFlags() override { record("readSleepFlags"); return flags; }
+  void clearSleepFlags() override { record("clearSleepFlags"); }
+  void enterSleep() override { record("enterSleep"); }
+  void stayAwake() override { record("stayAwake"); }
 };
 
 void test_runWakeCheckIn_wifi_timeout() {
@@ -498,6 +498,17 @@ void test_runWakeCheckIn_flag_clear_clears_then_stays_awake() {
     TEST_ASSERT_EQUAL_STRING(
         "awaitWifi,connectMqtt,hasSlotTopic,readSleepFlags,clearSleepFlags,stayAwake,",
         ports.calls);
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+}
+
+void test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags.slot_requests_sleep = false;
+    ports.flags.device_requests_sleep = true;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
 }
 
@@ -577,6 +588,7 @@ int main(void) {
     RUN_TEST(test_runWakeCheckIn_mqtt_connect_fails);
     RUN_TEST(test_runWakeCheckIn_flag_set_sleeps_without_clearing);
     RUN_TEST(test_runWakeCheckIn_flag_clear_clears_then_stays_awake);
+    RUN_TEST(test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag);
     RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
     RUN_TEST(test_runWakeCheckIn_normal_boot_touches_nothing);
 
