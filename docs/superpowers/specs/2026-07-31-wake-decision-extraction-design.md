@@ -105,7 +105,7 @@ struct WakeCheckInPorts {
   virtual bool hasSlotTopic() = 0;
   virtual SleepFlags readSleepFlags() = 0;  // status publish, subscribe, dwell
   virtual void clearSleepFlags() = 0;       // retained-flag clear + disconnect
-  virtual void enterSleep() = 0;            // does not return on hardware
+  virtual void enterSleep() = 0;      // disconnects MQTT; no return on hardware
   virtual void stayAwake() = 0;             // resets last_activity_time
 };
 
@@ -120,7 +120,8 @@ effect. `debugSend()` is deliberately not a port — nothing asserts on it, and
 
 ```cpp
 void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
-  if (wake_reason != WAKE_REASON_TIMER) { ports.stayAwake(); return; }
+  if (wake_reason == WAKE_REASON_BUTTON) { ports.stayAwake(); return; }
+  if (wake_reason != WAKE_REASON_TIMER) return;
 
   bool wifi = ports.awaitWifi();
   bool mqtt = wifi && ports.connectMqtt();
@@ -140,6 +141,12 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
   ports.stayAwake();
 }
 ```
+
+`WAKE_REASON_OTHER` returns without calling `stayAwake()`, matching today's
+normal-boot branch at lines 1153–1157, which only logs. Only the EXT0 branch
+resets `last_activity_time`, so only `WAKE_REASON_BUTTON` calls `stayAwake()`
+here. That asymmetry preserves a latent bug — see the out-of-scope list — but
+preserving it is the point of this commit.
 
 `hasSlotTopic()` sits under the `mqtt` guard because `resolveWakeAction`
 short-circuits on `!wifi_connected || !mqtt_connected` before it consults
@@ -203,6 +210,7 @@ wired to the wrong effect — the resolver table above catches neither:
 | TIMER, all up, flag set | `enterSleep` called; `clearSleepFlags` **never** called |
 | TIMER, all up, flag clear | `clearSleepFlags` called, then `stayAwake`; `enterSleep` never called |
 | BUTTON, WiFi down | `stayAwake` called; `awaitWifi`, `connectMqtt`, `enterSleep` **never** called |
+| OTHER (normal boot) | **no** port called at all — including `stayAwake` |
 
 The "never called" assertions are the point: they fail on a mis-wired action,
 where an expectation on the returned value alone would not.
@@ -250,14 +258,15 @@ connect in `loop()` — this commit does not lower that.
 
 ### Duty cycle, awake time per 20 s cycle
 
-Deep-sleep interval is `sleep_interval_s` = 20 s in every row. Boot and
-`setupWiFiConnection()` overhead is common to all rows and omitted; `t_assoc`
-is actual WiFi association time.
+Duty cycle is awake / (awake + 20 s), with `sleep_interval_s` = 20 s in every
+row. Boot and `setupWiFiConnection()` overhead is common to all rows and
+omitted. `t_assoc` is actual WiFi association time, taken as **1,000 ms**
+throughout — a placeholder the commit-4 logging replaces with measurements.
 
 | case | awake time | before | after |
 |---|---|---|---|
 | AP unreachable | WiFi timeout | 10,000 ms → **33%** | 3,000 ms → **13%** |
-| WiFi up, broker down | `t_assoc` + `MQTT_SOCKET_TIMEOUT_S` (2 s, `main.cpp:184`) | `t_assoc` + 2,000 ms → ~**12%** | unchanged |
+| WiFi up, broker down | `t_assoc` + `MQTT_SOCKET_TIMEOUT_S` (2 s, `main.cpp:184`) | `t_assoc` + 2,000 ms → ~**13%** | unchanged |
 | normal check-in, flag set | `t_assoc` + `KEEPALIVE_CHECKIN_WINDOW_MS` (1 s, `main.cpp:127`) | `t_assoc` + 1,000 ms → ~**9%** | unchanged |
 
 Only the first row changes; the other two are here because they bound how low
@@ -271,10 +280,9 @@ cube that can reach the AP but associates slowly re-sleeps every cycle, and
 `wake.sh` can never wake it. That is worse than the bug being fixed, and it
 only shows up in a weak-signal corner.
 
-3,000 ms is a starting value, not a measured one. The cubes use static IPs (no
-DHCP round-trip), so association is the entire cost, and 3 s is several times a
-healthy association while still cutting the no-network duty cycle by two
-thirds.
+3,000 ms is a starting value, not a measured one: 3× the assumed `t_assoc`,
+still cutting the no-network duty cycle by two thirds. The cubes use static IPs
+(no DHCP round-trip), so association is the entire cost.
 
 Validation goes in the firmware, not in this doc: commit 4 also makes the
 check-in `debugSend` the measured association time,
@@ -315,6 +323,13 @@ network healthy, confirm `wake.sh` still wakes a sleeping cube, and read the
   failed check-in re-sleeps on the first failure at the unchanged interval;
   the button is the override.
 - Lowering `WIFI_CONNECT_ATTEMPT_TIMEOUT_MS` for the foreground connect.
+- The stale-`last_activity_time` bug on the normal-boot path. `last_activity_time`
+  is `RTC_DATA_ATTR` (`main.cpp:176`) and survives a software or brownout reset
+  while `millis()` restarts at 0, so `millis() - last_activity_time`
+  (`main.cpp:1876`) is a huge unsigned and auto-sleep can fire almost at once;
+  the `== 0` backstop at `main.cpp:1360` is inside `onConnectionEstablished()`
+  and only lands after MQTT connects. `runWakeCheckIn` preserves this rather
+  than quietly fixing it inside an extraction commit. Worth its own change.
 - A battery-life budget in mAh. No measured current figures for the v6 board
   exist in the repo, so the duty-cycle table above is stated as an awake-time
   fraction rather than as a runtime estimate.
