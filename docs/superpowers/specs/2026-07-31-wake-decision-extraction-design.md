@@ -55,8 +55,7 @@ New in `src/cube_utilities.h` / `.cpp`, alongside `resolveAssignedSlot` and
 enum WakeReason { WAKE_REASON_TIMER, WAKE_REASON_BUTTON, WAKE_REASON_OTHER };
 enum WakeAction { WAKE_ACTION_STAY_ASLEEP, WAKE_ACTION_WAKE_FULL };
 
-WakeAction resolveWakeAction(WakeReason wake_reason,
-                             bool wifi_connected,
+WakeAction resolveWakeAction(bool wifi_connected,
                              bool mqtt_connected,
                              bool has_slot_topic,
                              bool device_requests_sleep,
@@ -64,8 +63,13 @@ WakeAction resolveWakeAction(WakeReason wake_reason,
 ```
 
 `WakeReason` is our own enum rather than `esp_sleep_wakeup_cause_t` so the
-function needs no ESP-IDF headers and compiles under `NATIVE_TESTING` like
-the rest of `cube_utilities`.
+dispatch in §1b needs no ESP-IDF headers and compiles under `NATIVE_TESTING`
+like the rest of `cube_utilities`.
+
+`resolveWakeAction` takes no `WakeReason`: it is the *check-in* decision, and
+only a timer wake makes a check-in. Wake-reason dispatch lives in
+`runWakeCheckIn` and is tested there (§2b), so "button always wakes" has one
+source of truth rather than a guard and a resolver branch that must agree.
 
 `has_slot_topic` carries the existing distinction at lines 1121–1123: an
 assigned cube (non-empty `slot_auto_sleep_topic`) obeys the slot flag so
@@ -75,11 +79,10 @@ topic and obeys the device flag.
 Body, matching today's behavior exactly:
 
 ```cpp
-WakeAction resolveWakeAction(WakeReason wake_reason, bool wifi_connected,
-                             bool mqtt_connected, bool has_slot_topic,
+WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
+                             bool has_slot_topic,
                              bool device_requests_sleep,
                              bool slot_requests_sleep) {
-  if (wake_reason != WAKE_REASON_TIMER) return WAKE_ACTION_WAKE_FULL;
   if (!wifi_connected || !mqtt_connected) return WAKE_ACTION_WAKE_FULL;
   bool stay_asleep = has_slot_topic ? slot_requests_sleep
                                     : device_requests_sleep;
@@ -132,8 +135,7 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
     flags = ports.readSleepFlags();
   }
 
-  WakeAction action = resolveWakeAction(wake_reason, wifi, mqtt,
-                                        has_slot_topic,
+  WakeAction action = resolveWakeAction(wifi, mqtt, has_slot_topic,
                                         flags.device_requests_sleep,
                                         flags.slot_requests_sleep);
   if (action == WAKE_ACTION_STAY_ASLEEP) { ports.enterSleep(); return; }
@@ -143,7 +145,7 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
 ```
 
 `WAKE_REASON_OTHER` returns without calling `stayAwake()`, matching today's
-normal-boot branch at lines 1153–1157, which only logs. Only the EXT0 branch
+normal-boot branch at lines 1158–1160, which only logs. Only the EXT0 branch
 resets `last_activity_time`, so only `WAKE_REASON_BUTTON` calls `stayAwake()`
 here. That asymmetry preserves a latent bug — see the out-of-scope list — but
 preserving it is the point of this commit.
@@ -183,19 +185,18 @@ so a reader does not mistake them for intent.
 
 ### 2a. Decision table (`resolveWakeAction`)
 
-| wake_reason | wifi | mqtt | has_slot_topic | device flag | slot flag | expected |
-|---|---|---|---|---|---|---|
-| BUTTON | – | – | – | – | – | WAKE_FULL |
-| OTHER | – | – | – | – | – | WAKE_FULL |
-| TIMER | false | – | – | – | – | WAKE_FULL *(bug)* |
-| TIMER | true | false | – | – | – | WAKE_FULL *(bug)* |
-| TIMER | true | true | true | false | true | STAY_ASLEEP |
-| TIMER | true | true | false | true | false | STAY_ASLEEP |
-| TIMER | true | true | true | true | false | WAKE_FULL |
-| TIMER | true | true | false | false | true | WAKE_FULL |
+| wifi | mqtt | has_slot_topic | device flag | slot flag | expected |
+|---|---|---|---|---|---|
+| false | – | – | – | – | WAKE_FULL *(bug)* |
+| true | false | – | – | – | WAKE_FULL *(bug)* |
+| true | true | true | false | true | STAY_ASLEEP |
+| true | true | false | true | false | STAY_ASLEEP |
+| true | true | true | true | false | WAKE_FULL |
+| true | true | false | false | true | WAKE_FULL |
 
 The last two cover the slot-vs-device precedence: an assigned cube ignores
-the device flag, an unassigned cube ignores the slot flag.
+the device flag, an unassigned cube ignores the slot flag. Wake reason is not
+a column — it is dispatched in `runWakeCheckIn` and covered by §2b.
 
 ### 2b. Wiring tests (`runWakeCheckIn` + recording fake)
 
@@ -235,9 +236,9 @@ allocated, so `enterSleepMode()` takes its existing cheap path — no "sleep..."
 paint, no HUB75 teardown — identical in cost to an ordinary keep-alive
 re-sleep.
 
-Button wake is untouched: `WAKE_REASON_BUTTON` returns `WAKE_ACTION_WAKE_FULL`
-regardless of network state, so a cube in a dead zone can always be woken by
-hand for debugging.
+Button wake is untouched: `runWakeCheckIn` returns on `WAKE_REASON_BUTTON`
+before it ever consults the network, so a cube in a dead zone can always be
+woken by hand for debugging. The BUTTON row in §2b pins that.
 
 ## 4. Keep-alive WiFi timeout (behavior change)
 
@@ -257,6 +258,12 @@ New constant, used **only** in the timer-wake check-in path:
 connect in `loop()` — this commit does not lower that.
 
 ### Duty cycle, awake time per 20 s cycle
+
+The baseline in the "before" column is **commit 3 applied, commit 4 not** —
+these rows compare the two timeout values, not this branch against shipped
+firmware. Against today's firmware the first row is not 33%: the fail-open
+keeps the cube awake for `AUTO_SLEEP_TIMEOUT_MS` = 10 min per 20 s of sleep,
+roughly 97%. That is what §3 fixes; §4 then trims what is left.
 
 Duty cycle is awake / (awake + 20 s), with `sleep_interval_s` = 20 s in every
 row. Boot and `setupWiFiConnection()` overhead is common to all rows and
