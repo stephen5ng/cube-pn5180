@@ -1048,17 +1048,23 @@ void enterSleepMode() {
   esp_deep_sleep_start();
 }
 
-void handleWakeUp() {
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
-    // Timer wake - check if we should stay asleep or wake fully
-    debugSend("timer wake");
+class KeepAliveCheckInPorts : public WakeCheckInPorts {
+ public:
+  KeepAliveCheckInPorts() : mqtt_(tcp_) {
+    StoredSlot stored = loadStoredSlot();
+    device_topic_ = "cube/device/" + mac_nocolons + "/auto_sleep";
+    slot_topic_ = stored.slot > 0
+        ? "cube/" + String(stored.slot) + "/auto_sleep"
+        : String("");
+    mqtt_.setServer(MQTT_SERVER_PI, MQTT_PORT);
+    mqtt_.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
+  }
 
-    // setupWiFiConnection() just fired a non-blocking WiFi.begin(); wait for
-    // association before touching MQTT, or an ordinary association delay
-    // looks identical to a real MQTT failure below and fail-opens to a full
-    // wake on every check-in, defeating the keep-alive pulse.
+  // setupWiFiConnection() fired a non-blocking WiFi.begin(); wait for
+  // association before touching MQTT, or an ordinary association delay looks
+  // identical to a real MQTT failure and fail-opens to a full wake on every
+  // check-in, defeating the keep-alive pulse.
+  bool awaitWifi() {
     unsigned long wifi_wait_start = millis();
     while (WiFi.status() != WL_CONNECTED &&
            millis() - wifi_wait_start < WIFI_CONNECT_ATTEMPT_TIMEOUT_MS) {
@@ -1066,98 +1072,103 @@ void handleWakeUp() {
     }
     if (WiFi.status() != WL_CONNECTED) {
       debugSend("wifi timeout on check-in");
-      last_activity_time = millis();  // Reset auto-sleep timer
-      return;
+      return false;
     }
+    return true;
+  }
 
-    // Connect to MQTT to check for retained sleep message
-    WiFiClient keepalive_tcp;
-    PubSubClient keepalive_mqtt(keepalive_tcp);
-    keepalive_mqtt.setServer(MQTT_SERVER_PI, MQTT_PORT);
-    keepalive_mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
-
-    volatile bool device_requests_sleep = false;
-    volatile bool slot_requests_sleep = false;
-    StoredSlot stored = loadStoredSlot();
+  bool connectMqtt() {
     String client_id = makeMqttClientId(WiFi.macAddress(), "-ka");
-    String device_auto_sleep_topic = "cube/device/" + mac_nocolons + "/auto_sleep";
-    String slot_auto_sleep_topic =
-        stored.slot > 0 ? "cube/" + String(stored.slot) + "/auto_sleep" : String("");
+    if (!mqtt_.connect(client_id.c_str())) {
+      debugSend("mqtt fail");
+      return false;
+    }
+    debugSend("mqtt ok");
+    return true;
+  }
 
-    // Callback to receive retained sleep message.
-    // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses its
-    // internal buffer for both incoming and outgoing messages, so publishing inside
-    // the callback overwrites the payload bytes.
-    keepalive_mqtt.setCallback([&](char* topic, byte* payload, unsigned int length) {
+  bool hasSlotTopic() { return !slot_topic_.isEmpty(); }
+
+  SleepFlags readSleepFlags() {
+    // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses
+    // its internal buffer for both incoming and outgoing messages, so
+    // publishing inside the callback overwrites the payload bytes.
+    mqtt_.setCallback([this](char* topic, byte* payload, unsigned int length) {
       bool requested = length == 1 && payload[0] == '1';
-      if (device_auto_sleep_topic == topic) {
-        device_requests_sleep = requested;
-      } else if (slot_auto_sleep_topic == topic) {
-        slot_requests_sleep = requested;
+      if (device_topic_ == topic) {
+        flags_.device_requests_sleep = requested;
+      } else if (slot_topic_ == topic) {
+        flags_.slot_requests_sleep = requested;
       }
     });
 
-    if (keepalive_mqtt.connect(client_id.c_str())) {
-      debugSend("mqtt ok");
+    String status_topic = "cube/device/" + mac_nocolons + "/status";
+    mqtt_.publish(status_topic.c_str(), "keep-alive");
 
-      // Publish keep-alive status
-      String status_topic = "cube/device/" + mac_nocolons + "/status";
-      keepalive_mqtt.publish(status_topic.c_str(), "keep-alive");
-
-      keepalive_mqtt.subscribe(device_auto_sleep_topic.c_str());
-      if (!slot_auto_sleep_topic.isEmpty()) {
-        keepalive_mqtt.subscribe(slot_auto_sleep_topic.c_str());
-      }
-
-      // Wait for retained message to arrive (also the WiFi-active current dwell)
-      unsigned long check_start = millis();
-      while (millis() - check_start < KEEPALIVE_CHECKIN_WINDOW_MS) {
-        keepalive_mqtt.loop();
-        delay(10);
-      }
-
-      // Assigned cubes use the slot flag so wake.sh can wake them by clearing it.
-      // Unassigned cubes have no slot topic and use the device flag.
-      bool stay_asleep = slot_auto_sleep_topic.isEmpty()
-          ? device_requests_sleep
-          : slot_requests_sleep;
-      char dbg[64];
-      snprintf(dbg, sizeof(dbg), "stay_asleep=%d", stay_asleep);
-      debugSend(dbg);
-
-      if (stay_asleep) {
-        // Go back to sleep
-        keepalive_mqtt.disconnect();
-        debugSend("sleep again");
-        enterSleepMode();
-      } else {
-        // Clear the auto_sleep retained flag so cube stays awake after next reboot
-        keepalive_mqtt.publish(device_auto_sleep_topic.c_str(), "", true);
-        if (!slot_auto_sleep_topic.isEmpty()) {
-          keepalive_mqtt.publish(slot_auto_sleep_topic.c_str(), "", true);
-        }
-        delay(100);
-        keepalive_mqtt.disconnect();
-
-        debugSend("WAKE FULL - staying awake");
-        last_activity_time = millis();  // Reset auto-sleep timer on wake
-        Serial.println("Waking fully - continuing setup");
-      }
-    } else {
-      debugSend("mqtt fail");
-      // If MQTT failed, assume we should wake (safer default)
-      last_activity_time = millis();  // Reset auto-sleep timer
+    mqtt_.subscribe(device_topic_.c_str());
+    if (hasSlotTopic()) {
+      mqtt_.subscribe(slot_topic_.c_str());
     }
+
+    // Wait for the retained message to arrive (also the WiFi-active dwell)
+    unsigned long check_start = millis();
+    while (millis() - check_start < KEEPALIVE_CHECKIN_WINDOW_MS) {
+      mqtt_.loop();
+      delay(10);
+    }
+
+    char dbg[64];
+    snprintf(dbg, sizeof(dbg), "flags device=%d slot=%d",
+             flags_.device_requests_sleep, flags_.slot_requests_sleep);
+    debugSend(dbg);
+    return flags_;
   }
-  else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+
+  void clearSleepFlags() {
+    mqtt_.publish(device_topic_.c_str(), "", true);
+    if (hasSlotTopic()) {
+      mqtt_.publish(slot_topic_.c_str(), "", true);
+    }
+    delay(100);
+    mqtt_.disconnect();
+  }
+
+  void enterSleep() {
+    mqtt_.disconnect();
+    debugSend("sleep again");
+    enterSleepMode();
+  }
+
+  void stayAwake() {
+    last_activity_time = millis();
+    debugSend("WAKE FULL - staying awake");
+    Serial.println("Waking fully - continuing setup");
+  }
+
+ private:
+  WiFiClient tcp_;
+  PubSubClient mqtt_;
+  String device_topic_;
+  String slot_topic_;
+  SleepFlags flags_ = {false, false};
+};
+
+void handleWakeUp() {
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  WakeReason reason = WAKE_REASON_OTHER;
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+    reason = WAKE_REASON_TIMER;
+    debugSend("timer wake");
+  } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+    reason = WAKE_REASON_BUTTON;
     debugPrintln("Woken by external signal (Pin 0 released)");
-    // Wake reason "wake:2" already indicates button wake, no need for "WAKE" message
-    last_activity_time = millis();  // Reset auto-sleep timer
-    Serial.println("Pin 0 wake-up detected - staying awake");
-  }
-  else {
+  } else {
     debugPrintln("Normal boot - staying awake");
   }
+
+  KeepAliveCheckInPorts ports;
+  runWakeCheckIn(reason, ports);
 }
 
 void handleSleepNowCommand(const String& /*message*/) {
