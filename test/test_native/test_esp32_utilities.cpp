@@ -408,11 +408,10 @@ void test_makeMqttClientId_full_and_keepalive() {
     TEST_ASSERT_EQUAL_STRING("cube-80F3DA5453B8", other);
 }
 
-void test_resolveWakeAction_network_failure_wakes_full() {
-    // TODO(task 4): both become WAKE_ACTION_STAY_ASLEEP when the fail-open is fixed.
-    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+void test_resolveWakeAction_network_failure_stays_asleep() {
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
                       resolveWakeAction(false, false, false, true, true));
-    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
                       resolveWakeAction(true, false, false, true, true));
 }
 
@@ -463,9 +462,8 @@ void test_runWakeCheckIn_wifi_timeout() {
     FakeWakeCheckInPorts ports;
     ports.wifi_result = false;
     runWakeCheckIn(WAKE_REASON_TIMER, ports);
-    // TODO(task 4): becomes enterSleep when the fail-open is fixed.
-    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
-    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.sawCall("connectMqtt"));
     TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
     TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
@@ -476,9 +474,8 @@ void test_runWakeCheckIn_mqtt_connect_fails() {
     FakeWakeCheckInPorts ports;
     ports.mqtt_result = false;
     runWakeCheckIn(WAKE_REASON_TIMER, ports);
-    // TODO(task 4): becomes enterSleep when the fail-open is fixed.
-    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
-    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
     TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
     TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
@@ -573,7 +570,7 @@ int main(void) {
     RUN_TEST(test_makeMqttClientId_full_and_keepalive);
 
     // Wake decision tests
-    RUN_TEST(test_resolveWakeAction_network_failure_wakes_full);
+    RUN_TEST(test_resolveWakeAction_network_failure_stays_asleep);
     RUN_TEST(test_resolveWakeAction_assigned_cube_obeys_slot_flag);
     RUN_TEST(test_resolveWakeAction_unassigned_cube_obeys_device_flag);
     RUN_TEST(test_runWakeCheckIn_wifi_timeout);

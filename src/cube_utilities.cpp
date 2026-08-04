@@ -159,7 +159,7 @@ WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
                              bool has_slot_topic,
                              bool device_requests_sleep,
                              bool slot_requests_sleep) {
-  if (!wifi_connected || !mqtt_connected) return WAKE_ACTION_WAKE_FULL;
+  if (!wifi_connected || !mqtt_connected) return WAKE_ACTION_STAY_ASLEEP;
   bool stay_asleep = has_slot_topic ? slot_requests_sleep
                                     : device_requests_sleep;
   return stay_asleep ? WAKE_ACTION_STAY_ASLEEP : WAKE_ACTION_WAKE_FULL;
