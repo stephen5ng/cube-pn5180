@@ -179,6 +179,11 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 #define MQTT_SERVER_PI "192.168.8.247"
 #define MQTT_PORT 1883
 #define WIFI_CONNECT_ATTEMPT_TIMEOUT_MS 10000
+// Timer-wake check-in only. Must stay above real association time: below it,
+// a cube that can reach the AP but associates slowly re-sleeps every cycle and
+// wake.sh can never reach it. 3x the ~1s a static-IP association is expected
+// to take; the "wifi assoc" debug line below is how that gets confirmed.
+#define KEEPALIVE_WIFI_TIMEOUT_MS 3000UL
 #define WIFI_RETRY_INTERVAL_MS 5000
 #define MQTT_RECONNECT_DELAY_MS 5000
 #define MQTT_SOCKET_TIMEOUT_S 2
@@ -1067,9 +1072,12 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
   bool awaitWifi() {
     unsigned long wifi_wait_start = millis();
     while (WiFi.status() != WL_CONNECTED &&
-           millis() - wifi_wait_start < WIFI_CONNECT_ATTEMPT_TIMEOUT_MS) {
+           millis() - wifi_wait_start < KEEPALIVE_WIFI_TIMEOUT_MS) {
       delay(10);
     }
+    char dbg[64];
+    snprintf(dbg, sizeof(dbg), "wifi assoc %lums", millis() - wifi_wait_start);
+    debugSend(dbg);
     if (WiFi.status() != WL_CONNECTED) {
       debugSend("wifi timeout on check-in");
       return false;
