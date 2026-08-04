@@ -124,11 +124,15 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
 
   bool wifi = ports.awaitWifi();
   bool mqtt = wifi && ports.connectMqtt();
+  bool has_slot_topic = false;
   SleepFlags flags = {false, false};
-  if (mqtt) flags = ports.readSleepFlags();
+  if (mqtt) {
+    has_slot_topic = ports.hasSlotTopic();
+    flags = ports.readSleepFlags();
+  }
 
   WakeAction action = resolveWakeAction(wake_reason, wifi, mqtt,
-                                        ports.hasSlotTopic(),
+                                        has_slot_topic,
                                         flags.device_requests_sleep,
                                         flags.slot_requests_sleep);
   if (action == WAKE_ACTION_STAY_ASLEEP) { ports.enterSleep(); return; }
@@ -136,6 +140,14 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
   ports.stayAwake();
 }
 ```
+
+`hasSlotTopic()` sits under the `mqtt` guard because `resolveWakeAction`
+short-circuits on `!wifi_connected || !mqtt_connected` before it consults
+`has_slot_topic` — reading it on a failure path would be an `loadStoredSlot()`
+NVS read whose answer is discarded, on the exact path this design is trying to
+make cheap. It is called before `readSleepFlags()`, and the concrete
+implementation reads `loadStoredSlot()` once and caches the slot topic for
+both, since `readSleepFlags()` needs the same topic to subscribe to.
 
 **`enterSleep()` contract.** On hardware `enterSleepMode()` ends in
 `esp_deep_sleep_start()` and never returns; in a fake it does return. Every
@@ -186,8 +198,8 @@ wired to the wrong effect — the resolver table above catches neither:
 
 | case | asserts |
 |---|---|
-| TIMER, WiFi times out | `enterSleep` called; `connectMqtt` **never** called; nothing called after `enterSleep` *(bug: today asserts `stayAwake`, not `enterSleep`)* |
-| TIMER, WiFi up, MQTT connect fails | `enterSleep` called; `readSleepFlags` and `clearSleepFlags` **never** called *(bug: today asserts `stayAwake`)* |
+| TIMER, WiFi times out | `enterSleep` called; `connectMqtt`, `hasSlotTopic`, `readSleepFlags` **never** called; nothing called after `enterSleep` *(bug: today asserts `stayAwake`, not `enterSleep`)* |
+| TIMER, WiFi up, MQTT connect fails | `enterSleep` called; `hasSlotTopic`, `readSleepFlags` and `clearSleepFlags` **never** called *(bug: today asserts `stayAwake`)* |
 | TIMER, all up, flag set | `enterSleep` called; `clearSleepFlags` **never** called |
 | TIMER, all up, flag clear | `clearSleepFlags` called, then `stayAwake`; `enterSleep` never called |
 | BUTTON, WiFi down | `stayAwake` called; `awaitWifi`, `connectMqtt`, `enterSleep` **never** called |
