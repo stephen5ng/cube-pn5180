@@ -73,6 +73,25 @@ WakeAction resolveWakeAction(bool wifi_connected,
                              bool device_requests_sleep,
                              bool slot_requests_sleep);
 
+enum WakeReason { WAKE_REASON_TIMER, WAKE_REASON_BUTTON, WAKE_REASON_OTHER };
+
+struct SleepFlags { bool device_requests_sleep; bool slot_requests_sleep; };
+
+struct WakeCheckInPorts {
+  virtual ~WakeCheckInPorts() {}
+  virtual bool awaitWifi() = 0;
+  virtual bool connectMqtt() = 0;
+  virtual bool hasSlotTopic() = 0;
+  virtual SleepFlags readSleepFlags() = 0;
+  virtual void clearSleepFlags() = 0;
+  // Disconnects an active keep-alive client, then sleeps. Does not return on
+  // hardware, so every call site returns immediately after it.
+  virtual void enterSleep() = 0;
+  virtual void stayAwake() = 0;
+};
+
+void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports);
+
 #ifdef NATIVE_TESTING
 // Native C versions for testing
 void removeColonsFromMacC(const char* mac_address, char* output, size_t output_size);

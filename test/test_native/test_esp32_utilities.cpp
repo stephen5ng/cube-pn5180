@@ -430,6 +430,93 @@ void test_resolveWakeAction_unassigned_cube_obeys_device_flag() {
                       resolveWakeAction(true, true, false, false, true));
 }
 
+struct FakeWakeCheckInPorts : public WakeCheckInPorts {
+  bool wifi_result = true;
+  bool mqtt_result = true;
+  bool slot_topic_result = false;
+  SleepFlags flags = {false, false};
+
+  char calls[128] = "";
+  bool called_after_sleep = false;
+
+  void record(const char* name) {
+    if (strstr(calls, "enterSleep,") != NULL) called_after_sleep = true;
+    strncat(calls, name, sizeof(calls) - strlen(calls) - 1);
+    strncat(calls, ",", sizeof(calls) - strlen(calls) - 1);
+  }
+  bool sawCall(const char* name) {
+    char needle[32];
+    snprintf(needle, sizeof(needle), "%s,", name);
+    return strstr(calls, needle) != NULL;
+  }
+
+  bool awaitWifi() { record("awaitWifi"); return wifi_result; }
+  bool connectMqtt() { record("connectMqtt"); return mqtt_result; }
+  bool hasSlotTopic() { record("hasSlotTopic"); return slot_topic_result; }
+  SleepFlags readSleepFlags() { record("readSleepFlags"); return flags; }
+  void clearSleepFlags() { record("clearSleepFlags"); }
+  void enterSleep() { record("enterSleep"); }
+  void stayAwake() { record("stayAwake"); }
+};
+
+void test_runWakeCheckIn_wifi_timeout() {
+    FakeWakeCheckInPorts ports;
+    ports.wifi_result = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    // TODO(task 4): becomes enterSleep when the fail-open is fixed.
+    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("connectMqtt"));
+    TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
+    TEST_ASSERT_FALSE(ports.called_after_sleep);
+}
+
+void test_runWakeCheckIn_mqtt_connect_fails() {
+    FakeWakeCheckInPorts ports;
+    ports.mqtt_result = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    // TODO(task 4): becomes enterSleep when the fail-open is fixed.
+    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.called_after_sleep);
+}
+
+void test_runWakeCheckIn_flag_set_sleeps_without_clearing() {
+    FakeWakeCheckInPorts ports;
+    ports.flags.device_requests_sleep = true;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.called_after_sleep);
+}
+
+void test_runWakeCheckIn_flag_clear_clears_then_stays_awake() {
+    FakeWakeCheckInPorts ports;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_EQUAL_STRING(
+        "awaitWifi,connectMqtt,hasSlotTopic,readSleepFlags,clearSleepFlags,stayAwake,",
+        ports.calls);
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+}
+
+void test_runWakeCheckIn_button_wake_ignores_network() {
+    FakeWakeCheckInPorts ports;
+    ports.wifi_result = false;
+    runWakeCheckIn(WAKE_REASON_BUTTON, ports);
+    TEST_ASSERT_EQUAL_STRING("stayAwake,", ports.calls);
+}
+
+void test_runWakeCheckIn_normal_boot_touches_nothing() {
+    FakeWakeCheckInPorts ports;
+    runWakeCheckIn(WAKE_REASON_OTHER, ports);
+    TEST_ASSERT_EQUAL_STRING("", ports.calls);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -489,6 +576,12 @@ int main(void) {
     RUN_TEST(test_resolveWakeAction_network_failure_wakes_full);
     RUN_TEST(test_resolveWakeAction_assigned_cube_obeys_slot_flag);
     RUN_TEST(test_resolveWakeAction_unassigned_cube_obeys_device_flag);
+    RUN_TEST(test_runWakeCheckIn_wifi_timeout);
+    RUN_TEST(test_runWakeCheckIn_mqtt_connect_fails);
+    RUN_TEST(test_runWakeCheckIn_flag_set_sleeps_without_clearing);
+    RUN_TEST(test_runWakeCheckIn_flag_clear_clears_then_stays_awake);
+    RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
+    RUN_TEST(test_runWakeCheckIn_normal_boot_touches_nothing);
 
     return UNITY_END();
 }
