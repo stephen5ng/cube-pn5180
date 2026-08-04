@@ -408,6 +408,28 @@ void test_makeMqttClientId_full_and_keepalive() {
     TEST_ASSERT_EQUAL_STRING("cube-80F3DA5453B8", other);
 }
 
+void test_resolveWakeAction_network_failure_wakes_full() {
+    // TODO(task 4): both become WAKE_ACTION_STAY_ASLEEP when the fail-open is fixed.
+    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+                      resolveWakeAction(false, false, false, true, true));
+    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+                      resolveWakeAction(true, false, false, true, true));
+}
+
+void test_resolveWakeAction_assigned_cube_obeys_slot_flag() {
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
+                      resolveWakeAction(true, true, true, false, true));
+    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+                      resolveWakeAction(true, true, true, true, false));
+}
+
+void test_resolveWakeAction_unassigned_cube_obeys_device_flag() {
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
+                      resolveWakeAction(true, true, false, true, false));
+    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+                      resolveWakeAction(true, true, false, false, true));
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -462,6 +484,11 @@ int main(void) {
     RUN_TEST(test_createMqttTopic_long_identifiers);
     RUN_TEST(test_createMqttTopic_constants);
     RUN_TEST(test_makeMqttClientId_full_and_keepalive);
+
+    // Wake decision tests
+    RUN_TEST(test_resolveWakeAction_network_failure_wakes_full);
+    RUN_TEST(test_resolveWakeAction_assigned_cube_obeys_slot_flag);
+    RUN_TEST(test_resolveWakeAction_unassigned_cube_obeys_device_flag);
 
     return UNITY_END();
 }

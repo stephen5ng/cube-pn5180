@@ -155,6 +155,16 @@ int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
   }
 }
 
+WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
+                             bool has_slot_topic,
+                             bool device_requests_sleep,
+                             bool slot_requests_sleep) {
+  if (!wifi_connected || !mqtt_connected) return WAKE_ACTION_WAKE_FULL;
+  bool stay_asleep = has_slot_topic ? slot_requests_sleep
+                                    : device_requests_sleep;
+  return stay_asleep ? WAKE_ACTION_STAY_ASLEEP : WAKE_ACTION_WAKE_FULL;
+}
+
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
   for (int i = 0; i < id_length; i++) {
     snprintf(hex_buffer + (i * 2), 3, "%02X", nfc_id[i]);

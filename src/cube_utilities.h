@@ -63,6 +63,16 @@ int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
                         bool authority_latched, int compiled_cube_id);
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer);
 
+enum WakeAction { WAKE_ACTION_STAY_ASLEEP, WAKE_ACTION_WAKE_FULL };
+
+// The keep-alive check-in decision. Only a timer wake makes a check-in, so
+// there is no wake-reason parameter; runWakeCheckIn() dispatches on that.
+WakeAction resolveWakeAction(bool wifi_connected,
+                             bool mqtt_connected,
+                             bool has_slot_topic,
+                             bool device_requests_sleep,
+                             bool slot_requests_sleep);
+
 #ifdef NATIVE_TESTING
 // Native C versions for testing
 void removeColonsFromMacC(const char* mac_address, char* output, size_t output_size);
