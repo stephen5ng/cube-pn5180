@@ -125,6 +125,10 @@ void configurePins(int cube_id) {
 // lengthen it (not add a display flash) if a bank still cuts off. Stopgap for
 // the USB-C generation; irrelevant once the 18650 power board lands.
 #define KEEPALIVE_CHECKIN_WINDOW_MS  1000UL
+// How long to keep waiting for the round-trip marker that confirms the retained
+// sleep flag has been delivered. Only reached when the broker or the link is
+// slow; the common case ends at KEEPALIVE_CHECKIN_WINDOW_MS above.
+#define KEEPALIVE_FLAG_READ_TIMEOUT_MS  3000UL
 #define POWER_RAIL_SETTLE_MS  50  /* Let the HUB75 5V rail come up before I2S DMA drives the panel */
 #ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
@@ -1061,6 +1065,7 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     slot_topic_ = stored.slot > 0
         ? "cube/" + String(stored.slot) + "/auto_sleep"
         : String("");
+    status_topic_ = "cube/device/" + mac_nocolons + "/status";
     mqtt_.setServer(MQTT_SERVER_PI, MQTT_PORT);
     mqtt_.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
   }
@@ -1100,7 +1105,17 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
 
   bool hasSlotTopic() override { return !slot_topic_.isEmpty(); }
 
-  SleepFlags readSleepFlags() override {
+  // An empty retained topic delivers nothing at all, so elapsed time cannot
+  // tell "no flag is set" from "the flag has not arrived yet". The keep-alive
+  // publish doubles as a round-trip marker: it is sent after the flag
+  // subscriptions, and the broker queues each subscription's retained message
+  // as it processes that SUBSCRIBE, so on one TCP connection the marker coming
+  // back proves any retained flag was already delivered. Returns false when it
+  // does not come back -- the caller must not read silence as "no flag".
+  bool readSleepFlags(SleepFlags* out) override {
+    flags_ = {false, false};
+    marker_seen_ = false;
+
     // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses
     // its internal buffer for both incoming and outgoing messages, so
     // publishing inside the callback overwrites the payload bytes.
@@ -1110,29 +1125,37 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
         flags_.device_requests_sleep = requested;
       } else if (slot_topic_ == topic) {
         flags_.slot_requests_sleep = requested;
+      } else if (status_topic_ == topic) {
+        marker_seen_ = true;
       }
     });
 
-    String status_topic = "cube/device/" + mac_nocolons + "/status";
-    mqtt_.publish(status_topic.c_str(), "keep-alive");
-
+    mqtt_.subscribe(status_topic_.c_str());
     mqtt_.subscribe(device_topic_.c_str());
     if (hasSlotTopic()) {
       mqtt_.subscribe(slot_topic_.c_str());
     }
+    mqtt_.publish(status_topic_.c_str(), "keep-alive");
 
-    // Wait for the retained message to arrive (also the WiFi-active dwell)
     unsigned long check_start = millis();
-    while (millis() - check_start < KEEPALIVE_CHECKIN_WINDOW_MS) {
+    while (true) {
       mqtt_.loop();
       delay(10);
+      unsigned long elapsed = millis() - check_start;
+      // KEEPALIVE_CHECKIN_WINDOW_MS is also the current-pulse dwell that keeps
+      // a USB-C power bank from cutting off, so hold the radio up for the full
+      // window even once the marker is back.
+      if (elapsed >= KEEPALIVE_CHECKIN_WINDOW_MS && marker_seen_) break;
+      if (elapsed >= KEEPALIVE_FLAG_READ_TIMEOUT_MS) break;
     }
 
     char dbg[64];
-    snprintf(dbg, sizeof(dbg), "flags device=%d slot=%d",
-             flags_.device_requests_sleep, flags_.slot_requests_sleep);
+    snprintf(dbg, sizeof(dbg), "flags device=%d slot=%d confirmed=%d",
+             flags_.device_requests_sleep, flags_.slot_requests_sleep,
+             marker_seen_);
     debugSend(dbg);
-    return flags_;
+    *out = flags_;
+    return marker_seen_;
   }
 
   void clearSleepFlags() override {
@@ -1161,6 +1184,8 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
   PubSubClient mqtt_;
   String device_topic_;
   String slot_topic_;
+  String status_topic_;
+  bool marker_seen_ = false;
   SleepFlags flags_ = {false, false};
 };
 

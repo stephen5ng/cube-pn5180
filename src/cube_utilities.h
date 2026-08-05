@@ -82,7 +82,11 @@ struct WakeCheckInPorts {
   virtual bool awaitWifi() = 0;
   virtual bool connectMqtt() = 0;
   virtual bool hasSlotTopic() = 0;
-  virtual SleepFlags readSleepFlags() = 0;
+  // Reads the retained sleep flags into `out`. Returns false when the read
+  // could not be confirmed, which is not the same as "no flag is set": an
+  // empty retained topic delivers nothing, so an unconfirmed read carries no
+  // information at all.
+  virtual bool readSleepFlags(SleepFlags* out) = 0;
   virtual void clearSleepFlags() = 0;
   // Disconnects an active keep-alive client, then sleeps. Does not return on
   // hardware, so every call site returns immediately after it.
