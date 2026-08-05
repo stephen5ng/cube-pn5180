@@ -117,7 +117,6 @@ void configurePins(int cube_id) {
 
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
 // Timer-wake check-in window: how long the keep-alive holds the WiFi radio up
 // waiting for the retained auto_sleep flag. This doubles as the current-pulse
@@ -172,7 +171,9 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // Sleep state management
 RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
-RTC_DATA_ATTR uint32_t sleep_interval_s = 20;  // Default 20s, configurable via MQTT
+// How long a sleeping cube stays down between keep-alive check-ins. Survives
+// deep sleep in RTC memory, and cube/{id}/sleep_interval overrides it.
+RTC_DATA_ATTR uint32_t sleep_interval_s = 20;
 RTC_DATA_ATTR uint16_t saved_brightness = BRIGHTNESS;  // Persist brightness across sleep
 
 // Auto-sleep inactivity tracking
