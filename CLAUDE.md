@@ -14,10 +14,14 @@
    - Ensure utility functions are working correctly
    - Validate the production table: `python3 tools/validate_mac_table.py`
 
-2. **Test Compilation Second** 
+2. **Test Compilation Second**
    ```bash
-   ~/.platformio/penv/bin/platformio run -e esp32dev
+   ~/.platformio/penv/bin/platformio run -e v6
    ```
+   Environments are `v1`, `v6`, `v6_with_hall`, `v6_with_hall_analog`,
+   `v6_with_hall_neighbor` and `native` — there is no `esp32dev` environment
+   (`esp32dev` is the *board*, set inside `[env:v1]`). `v6` is what the Pi
+   builds for production.
    - Verify code compiles for target hardware
    - Catch syntax errors, missing declarations, type mismatches
    - Ensure memory usage is within acceptable limits
@@ -46,6 +50,10 @@
 - `src/main.cpp` - Main ESP32 application code
 - `src/cube_utilities.cpp/.h` - Utility functions for MAC/NFC handling
 - `test/test_native/` - Native unit tests for utility functions
+- `lib/EspMQTTClient/` - Vendored as a **git submodule**. A fresh clone or a new
+  git worktree has it empty and the build fails on `EspMQTTClient.h not found`;
+  run `git submodule update --init --recursive` there first. `src/secrets.h` is
+  gitignored, so a new worktree needs a copy of it too
 - `tools/` - Cube management: `flash_cubes.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `check_cubes.sh`, `show_cube_numbers.py`, diagnostics
 - `docs/` - Planning docs, hardware debugging notes, analysis write-ups
 - `config/cube_board_versions.txt` - Maps MAC address to board version (v6/v6_with_hall); read by flashing/diagnostic scripts
@@ -144,6 +152,11 @@ The v6 PCB has a TPS22975 load switch on GPIO5 that gates 5V to the HUB75 panel.
 - All tests must pass before deployment
 - Segfault protection implemented for unrecognized MAC addresses
 - Sleep mode implementation includes battery maintenance wake-up every hour
+- A sleeping cube checks in every `sleep_interval_s` seconds (default **20**,
+  overridable via `cube/{id}/sleep_interval`), holding the radio up for
+  `KEEPALIVE_CHECKIN_WINDOW_MS` each time. That dwell is also the current pulse
+  that stops a USB-C power bank cutting off on low draw, so it is a power
+  requirement, not just a timeout
 - Comments should only refer to the current state of the code. They should not describe any changes from previous states ("More detailed error handling" or "code move to ...")
 - Any references to future state in the code should be in a TODO.
 - Do not comment code that is obvious. (And if code isn't obvious, try to rewrite it so that it is obvious)
