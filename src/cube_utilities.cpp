@@ -188,8 +188,6 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
     return;
   }
 
-  if (is_reset) ports.publishFirmwareVersion();
-
   bool has_slot_topic = ports.hasSlotTopic();
   SleepFlags flags = ports.readSleepFlags();
   WakeAction action = resolveWakeAction(wifi, mqtt, has_slot_topic,

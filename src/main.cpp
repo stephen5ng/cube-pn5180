@@ -1061,9 +1061,6 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     slot_topic_ = stored.slot > 0
         ? "cube/" + String(stored.slot) + "/auto_sleep"
         : String("");
-    version_topic_ = stored.slot > 0
-        ? createMqttTopic(String(stored.slot), MQTT_TOPIC_PREFIX_VERSION)
-        : String("");
     mqtt_.setServer(MQTT_SERVER_PI, MQTT_PORT);
     mqtt_.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
   }
@@ -1138,18 +1135,6 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     return flags_;
   }
 
-  // The slot here is the last one this cube stored, which is also what
-  // slot_topic_ is built from. A cube reassigned while it was away publishes
-  // under the old slot until the authoritative assignment arrives and the
-  // normal boot path republishes -- a stale record beats none, which is what
-  // an OTA verification sees today if the cube sleeps first.
-  void publishFirmwareVersion() override {
-    if (version_topic_.isEmpty()) {
-      return;
-    }
-    mqtt_.publish(version_topic_.c_str(), GIT_VERSION, true);
-  }
-
   void clearSleepFlags() override {
     mqtt_.publish(device_topic_.c_str(), "", true);
     if (hasSlotTopic()) {
@@ -1176,7 +1161,6 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
   PubSubClient mqtt_;
   String device_topic_;
   String slot_topic_;
-  String version_topic_;
   SleepFlags flags_ = {false, false};
 };
 
