@@ -1076,9 +1076,13 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     }
     char dbg[64];
     snprintf(dbg, sizeof(dbg), "wifi assoc %lums", millis() - wifi_wait_start);
+    // Also to serial: a failed association is the case KEEPALIVE_WIFI_TIMEOUT_MS
+    // has to be validated against, and it is the case UDP cannot report.
     debugSend(dbg);
+    debugPrintln(dbg);
     if (WiFi.status() != WL_CONNECTED) {
       debugSend("wifi timeout on check-in");
+      debugPrintln("wifi timeout on check-in");
       return false;
     }
     return true;
