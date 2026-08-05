@@ -155,6 +155,40 @@ int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
   }
 }
 
+WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
+                             bool has_slot_topic,
+                             bool device_requests_sleep,
+                             bool slot_requests_sleep) {
+  if (!wifi_connected || !mqtt_connected) return WAKE_ACTION_STAY_ASLEEP;
+  // An assigned cube (has a slot topic) obeys the slot flag, so tools/wake.sh
+  // can wake it by clearing that topic; an unassigned cube has no slot topic
+  // and falls back to the device flag.
+  bool stay_asleep = has_slot_topic ? slot_requests_sleep
+                                    : device_requests_sleep;
+  return stay_asleep ? WAKE_ACTION_STAY_ASLEEP : WAKE_ACTION_WAKE_FULL;
+}
+
+void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
+  if (wake_reason == WAKE_REASON_BUTTON) { ports.stayAwake(); return; }
+  if (wake_reason != WAKE_REASON_TIMER) return;
+
+  bool wifi = ports.awaitWifi();
+  bool mqtt = wifi && ports.connectMqtt();
+  bool has_slot_topic = false;
+  SleepFlags flags = {false, false};
+  if (mqtt) {
+    has_slot_topic = ports.hasSlotTopic();
+    flags = ports.readSleepFlags();
+  }
+
+  WakeAction action = resolveWakeAction(wifi, mqtt, has_slot_topic,
+                                        flags.device_requests_sleep,
+                                        flags.slot_requests_sleep);
+  if (action == WAKE_ACTION_STAY_ASLEEP) { ports.enterSleep(); return; }
+  if (mqtt) ports.clearSleepFlags();
+  ports.stayAwake();
+}
+
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
   for (int i = 0; i < id_length; i++) {
     snprintf(hex_buffer + (i * 2), 3, "%02X", nfc_id[i]);

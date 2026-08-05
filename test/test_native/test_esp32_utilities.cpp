@@ -408,6 +408,123 @@ void test_makeMqttClientId_full_and_keepalive() {
     TEST_ASSERT_EQUAL_STRING("cube-80F3DA5453B8", other);
 }
 
+void test_resolveWakeAction_network_failure_stays_asleep() {
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
+                      resolveWakeAction(false, false, false, true, true));
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
+                      resolveWakeAction(true, false, false, true, true));
+}
+
+void test_resolveWakeAction_assigned_cube_obeys_slot_flag() {
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
+                      resolveWakeAction(true, true, true, false, true));
+    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+                      resolveWakeAction(true, true, true, true, false));
+}
+
+void test_resolveWakeAction_unassigned_cube_obeys_device_flag() {
+    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
+                      resolveWakeAction(true, true, false, true, false));
+    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
+                      resolveWakeAction(true, true, false, false, true));
+}
+
+struct FakeWakeCheckInPorts : public WakeCheckInPorts {
+  bool wifi_result = true;
+  bool mqtt_result = true;
+  bool slot_topic_result = false;
+  SleepFlags flags = {false, false};
+
+  char calls[128] = "";
+  bool called_after_sleep = false;
+
+  void record(const char* name) {
+    if (strstr(calls, "enterSleep,") != NULL) called_after_sleep = true;
+    strncat(calls, name, sizeof(calls) - strlen(calls) - 1);
+    strncat(calls, ",", sizeof(calls) - strlen(calls) - 1);
+  }
+  bool sawCall(const char* name) {
+    char needle[32];
+    snprintf(needle, sizeof(needle), "%s,", name);
+    return strstr(calls, needle) != NULL;
+  }
+
+  bool awaitWifi() override { record("awaitWifi"); return wifi_result; }
+  bool connectMqtt() override { record("connectMqtt"); return mqtt_result; }
+  bool hasSlotTopic() override { record("hasSlotTopic"); return slot_topic_result; }
+  SleepFlags readSleepFlags() override { record("readSleepFlags"); return flags; }
+  void clearSleepFlags() override { record("clearSleepFlags"); }
+  void enterSleep() override { record("enterSleep"); }
+  void stayAwake() override { record("stayAwake"); }
+};
+
+void test_runWakeCheckIn_wifi_timeout() {
+    FakeWakeCheckInPorts ports;
+    ports.wifi_result = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("connectMqtt"));
+    TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
+    TEST_ASSERT_FALSE(ports.called_after_sleep);
+}
+
+void test_runWakeCheckIn_mqtt_connect_fails() {
+    FakeWakeCheckInPorts ports;
+    ports.mqtt_result = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.called_after_sleep);
+}
+
+void test_runWakeCheckIn_flag_set_sleeps_without_clearing() {
+    FakeWakeCheckInPorts ports;
+    ports.flags.device_requests_sleep = true;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.called_after_sleep);
+}
+
+void test_runWakeCheckIn_flag_clear_clears_then_stays_awake() {
+    FakeWakeCheckInPorts ports;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_EQUAL_STRING(
+        "awaitWifi,connectMqtt,hasSlotTopic,readSleepFlags,clearSleepFlags,stayAwake,",
+        ports.calls);
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+}
+
+void test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags.slot_requests_sleep = false;
+    ports.flags.device_requests_sleep = true;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+}
+
+void test_runWakeCheckIn_button_wake_ignores_network() {
+    FakeWakeCheckInPorts ports;
+    ports.wifi_result = false;
+    runWakeCheckIn(WAKE_REASON_BUTTON, ports);
+    TEST_ASSERT_EQUAL_STRING("stayAwake,", ports.calls);
+}
+
+void test_runWakeCheckIn_normal_boot_touches_nothing() {
+    FakeWakeCheckInPorts ports;
+    runWakeCheckIn(WAKE_REASON_OTHER, ports);
+    TEST_ASSERT_EQUAL_STRING("", ports.calls);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -462,6 +579,18 @@ int main(void) {
     RUN_TEST(test_createMqttTopic_long_identifiers);
     RUN_TEST(test_createMqttTopic_constants);
     RUN_TEST(test_makeMqttClientId_full_and_keepalive);
+
+    // Wake decision tests
+    RUN_TEST(test_resolveWakeAction_network_failure_stays_asleep);
+    RUN_TEST(test_resolveWakeAction_assigned_cube_obeys_slot_flag);
+    RUN_TEST(test_resolveWakeAction_unassigned_cube_obeys_device_flag);
+    RUN_TEST(test_runWakeCheckIn_wifi_timeout);
+    RUN_TEST(test_runWakeCheckIn_mqtt_connect_fails);
+    RUN_TEST(test_runWakeCheckIn_flag_set_sleeps_without_clearing);
+    RUN_TEST(test_runWakeCheckIn_flag_clear_clears_then_stays_awake);
+    RUN_TEST(test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag);
+    RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
+    RUN_TEST(test_runWakeCheckIn_normal_boot_touches_nothing);
 
     return UNITY_END();
 }

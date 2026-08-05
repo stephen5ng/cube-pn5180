@@ -63,6 +63,35 @@ int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
                         bool authority_latched, int compiled_cube_id);
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer);
 
+enum WakeAction { WAKE_ACTION_STAY_ASLEEP, WAKE_ACTION_WAKE_FULL };
+
+// The keep-alive check-in decision. Only a timer wake makes a check-in, so
+// there is no wake-reason parameter; runWakeCheckIn() dispatches on that.
+WakeAction resolveWakeAction(bool wifi_connected,
+                             bool mqtt_connected,
+                             bool has_slot_topic,
+                             bool device_requests_sleep,
+                             bool slot_requests_sleep);
+
+enum WakeReason { WAKE_REASON_TIMER, WAKE_REASON_BUTTON, WAKE_REASON_OTHER };
+
+struct SleepFlags { bool device_requests_sleep; bool slot_requests_sleep; };
+
+struct WakeCheckInPorts {
+  virtual ~WakeCheckInPorts() {}
+  virtual bool awaitWifi() = 0;
+  virtual bool connectMqtt() = 0;
+  virtual bool hasSlotTopic() = 0;
+  virtual SleepFlags readSleepFlags() = 0;
+  virtual void clearSleepFlags() = 0;
+  // Disconnects an active keep-alive client, then sleeps. Does not return on
+  // hardware, so every call site returns immediately after it.
+  virtual void enterSleep() = 0;
+  virtual void stayAwake() = 0;
+};
+
+void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports);
+
 #ifdef NATIVE_TESTING
 // Native C versions for testing
 void removeColonsFromMacC(const char* mac_address, char* output, size_t output_size);
