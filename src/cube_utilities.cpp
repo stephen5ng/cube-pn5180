@@ -170,22 +170,33 @@ WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
 
 void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
   if (wake_reason == WAKE_REASON_BUTTON) { ports.stayAwake(); return; }
-  if (wake_reason != WAKE_REASON_TIMER) return;
+
+  // A reset -- brownout, watchdog, crash, a jostled battery contact -- reads
+  // the sleep flag just as a timer wake does. It is not someone deciding to
+  // use the cube, so a stored cube that glitches goes back to sleep instead of
+  // burning ten minutes of battery and making the next glitch likelier.
+  const bool is_reset = (wake_reason == WAKE_REASON_OTHER);
 
   bool wifi = ports.awaitWifi();
   bool mqtt = wifi && ports.connectMqtt();
-  bool has_slot_topic = false;
-  SleepFlags flags = {false, false};
-  if (mqtt) {
-    has_slot_topic = ports.hasSlotTopic();
-    flags = ports.readSleepFlags();
+  if (!mqtt) {
+    // The two wakes disagree about what silence means. A timer wake was
+    // already asleep, so leaving it there costs nothing. A reset has no such
+    // prior: sleeping because the broker happened to be unreachable would make
+    // a working cube look dead to whoever is standing at the cabinet.
+    if (is_reset) ports.stayAwake(); else ports.enterSleep();
+    return;
   }
 
+  if (is_reset) ports.publishFirmwareVersion();
+
+  bool has_slot_topic = ports.hasSlotTopic();
+  SleepFlags flags = ports.readSleepFlags();
   WakeAction action = resolveWakeAction(wifi, mqtt, has_slot_topic,
                                         flags.device_requests_sleep,
                                         flags.slot_requests_sleep);
   if (action == WAKE_ACTION_STAY_ASLEEP) { ports.enterSleep(); return; }
-  if (mqtt) ports.clearSleepFlags();
+  ports.clearSleepFlags();
   ports.stayAwake();
 }
 

@@ -84,6 +84,10 @@ struct WakeCheckInPorts {
   virtual bool hasSlotTopic() = 0;
   virtual SleepFlags readSleepFlags() = 0;
   virtual void clearSleepFlags() = 0;
+  // Publishes the retained version topic. Only a reset needs this: the boot
+  // path publishes it later, but a reset that goes straight back to sleep
+  // never reaches that point.
+  virtual void publishFirmwareVersion() = 0;
   // Disconnects an active keep-alive client, then sleeps. Does not return on
   // hardware, so every call site returns immediately after it.
   virtual void enterSleep() = 0;

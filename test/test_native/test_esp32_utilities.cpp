@@ -454,6 +454,7 @@ struct FakeWakeCheckInPorts : public WakeCheckInPorts {
   bool hasSlotTopic() override { record("hasSlotTopic"); return slot_topic_result; }
   SleepFlags readSleepFlags() override { record("readSleepFlags"); return flags; }
   void clearSleepFlags() override { record("clearSleepFlags"); }
+  void publishFirmwareVersion() override { record("publishFirmwareVersion"); }
   void enterSleep() override { record("enterSleep"); }
   void stayAwake() override { record("stayAwake"); }
 };
@@ -519,10 +520,76 @@ void test_runWakeCheckIn_button_wake_ignores_network() {
     TEST_ASSERT_EQUAL_STRING("stayAwake,", ports.calls);
 }
 
-void test_runWakeCheckIn_normal_boot_touches_nothing() {
+// A reset -- brownout, watchdog, crash, a jostled battery contact -- is not
+// someone deciding to use the cube. Until now any of them came up fully awake
+// and ignored the sleep flag entirely, so a stored cube woke for 10 minutes
+// every time it glitched, and a weak battery made the next glitch likelier.
+void test_runWakeCheckIn_reset_obeys_a_set_sleep_flag() {
     FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags = {false, true};
     runWakeCheckIn(WAKE_REASON_OTHER, ports);
-    TEST_ASSERT_EQUAL_STRING("", ports.calls);
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
+}
+
+// The retained version topic is the only trustworthy record that a flash
+// landed -- espota's own report is not. It is published once per boot, after
+// this decision, so a reset that sleeps here would take the confirmation with
+// it and make every OTA look like it failed.
+void test_runWakeCheckIn_reset_publishes_version_before_sleeping() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags = {false, true};
+    runWakeCheckIn(WAKE_REASON_OTHER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("publishFirmwareVersion"));
+    const char* version = strstr(ports.calls, "publishFirmwareVersion,");
+    const char* sleep = strstr(ports.calls, "enterSleep,");
+    TEST_ASSERT_NOT_NULL(version);
+    TEST_ASSERT_NOT_NULL(sleep);
+    TEST_ASSERT_TRUE(version < sleep);
+}
+
+// Asymmetry with the timer path, and deliberate: a timer wake was already
+// asleep, so silence just leaves it there. A reset has no such prior. Sleeping
+// because the broker happened to be unreachable would turn every cube into a
+// dead one for anyone standing at the cabinet during an outage.
+void test_runWakeCheckIn_reset_without_network_stays_awake() {
+    FakeWakeCheckInPorts ports;
+    ports.wifi_result = false;
+    runWakeCheckIn(WAKE_REASON_OTHER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+}
+
+void test_runWakeCheckIn_reset_with_no_flag_set_stays_awake() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags = {false, false};
+    runWakeCheckIn(WAKE_REASON_OTHER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+}
+
+// An unassigned cube has no slot topic and falls back to the device flag, the
+// same rule the timer path uses.
+void test_runWakeCheckIn_reset_unassigned_cube_obeys_device_flag() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = false;
+    ports.flags = {true, false};
+    runWakeCheckIn(WAKE_REASON_OTHER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
+}
+
+// A timer wake must not pay for the version publish: it happens on every
+// check-in, and the whole point of the keep-alive pulse is that it is cheap.
+void test_runWakeCheckIn_timer_checkin_does_not_publish_version() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags = {false, true};
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_FALSE(ports.sawCall("publishFirmwareVersion"));
 }
 
 int main(void) {
@@ -590,7 +657,12 @@ int main(void) {
     RUN_TEST(test_runWakeCheckIn_flag_clear_clears_then_stays_awake);
     RUN_TEST(test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag);
     RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
-    RUN_TEST(test_runWakeCheckIn_normal_boot_touches_nothing);
+    RUN_TEST(test_runWakeCheckIn_reset_obeys_a_set_sleep_flag);
+    RUN_TEST(test_runWakeCheckIn_reset_publishes_version_before_sleeping);
+    RUN_TEST(test_runWakeCheckIn_reset_without_network_stays_awake);
+    RUN_TEST(test_runWakeCheckIn_reset_with_no_flag_set_stays_awake);
+    RUN_TEST(test_runWakeCheckIn_reset_unassigned_cube_obeys_device_flag);
+    RUN_TEST(test_runWakeCheckIn_timer_checkin_does_not_publish_version);
 
     return UNITY_END();
 }
