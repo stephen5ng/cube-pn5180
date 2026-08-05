@@ -49,7 +49,7 @@
 - `tools/` - Cube management: `flash_cubes.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `check_cubes.sh`, `show_cube_numbers.py`, diagnostics
 - `docs/` - Planning docs, hardware debugging notes, analysis write-ups
 - `config/cube_board_versions.txt` - Maps MAC address to board version (v6/v6_with_hall); read by flashing/diagnostic scripts
-- Sleep mode uses GPIO 5 for button input
+- Sleep mode wakes on GPIO 0, the boot button (`SLEEP_PIN`, `src/main.cpp`). GPIO 5 is `POWER_SWITCH_PIN`, the HUB75 power gate — see the sleep-mode section below
 - MAC address table determines cube configuration and RGB pin assignments
 
 ## Network Environment
