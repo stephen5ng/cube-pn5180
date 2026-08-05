@@ -452,7 +452,12 @@ struct FakeWakeCheckInPorts : public WakeCheckInPorts {
   bool awaitWifi() override { record("awaitWifi"); return wifi_result; }
   bool connectMqtt() override { record("connectMqtt"); return mqtt_result; }
   bool hasSlotTopic() override { record("hasSlotTopic"); return slot_topic_result; }
-  SleepFlags readSleepFlags() override { record("readSleepFlags"); return flags; }
+  bool flags_confirmed = true;
+  bool readSleepFlags(SleepFlags* out) override {
+    record("readSleepFlags");
+    *out = flags;
+    return flags_confirmed;
+  }
   void clearSleepFlags() override { record("clearSleepFlags"); }
   void enterSleep() override { record("enterSleep"); }
   void stayAwake() override { record("stayAwake"); }
@@ -523,6 +528,33 @@ void test_runWakeCheckIn_button_wake_ignores_network() {
 // someone deciding to use the cube. Until now any of them came up fully awake
 // and ignored the sleep flag entirely, so a stored cube woke for 10 minutes
 // every time it glitched, and a weak battery made the next glitch likelier.
+// The window for the retained flag is finite, so a slow broker or weak RF can
+// end it with nothing received -- which looks identical to no flag being set,
+// because an empty retained topic delivers nothing. Reading that silence as
+// "no flag" made the cube clear its own flag and stay awake for ten minutes,
+// and the weak battery causing the slow link is what pays for it.
+void test_runWakeCheckIn_unconfirmed_flag_read_does_not_clear_or_wake() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags_confirmed = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
+}
+
+// A reset cannot fall back to sleep on an unreadable flag for the same reason
+// it cannot on an unreachable broker: it would make a working cube look dead.
+void test_runWakeCheckIn_reset_with_unconfirmed_flag_read_stays_awake() {
+    FakeWakeCheckInPorts ports;
+    ports.slot_topic_result = true;
+    ports.flags_confirmed = false;
+    runWakeCheckIn(WAKE_REASON_OTHER, ports);
+    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
+    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+}
+
 void test_runWakeCheckIn_reset_obeys_a_set_sleep_flag() {
     FakeWakeCheckInPorts ports;
     ports.slot_topic_result = true;
@@ -629,6 +661,8 @@ int main(void) {
     RUN_TEST(test_runWakeCheckIn_flag_clear_clears_then_stays_awake);
     RUN_TEST(test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag);
     RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
+    RUN_TEST(test_runWakeCheckIn_unconfirmed_flag_read_does_not_clear_or_wake);
+    RUN_TEST(test_runWakeCheckIn_reset_with_unconfirmed_flag_read_stays_awake);
     RUN_TEST(test_runWakeCheckIn_reset_obeys_a_set_sleep_flag);
     RUN_TEST(test_runWakeCheckIn_reset_without_network_stays_awake);
     RUN_TEST(test_runWakeCheckIn_reset_with_no_flag_set_stays_awake);

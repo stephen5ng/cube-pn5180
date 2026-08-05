@@ -189,7 +189,15 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
   }
 
   bool has_slot_topic = ports.hasSlotTopic();
-  SleepFlags flags = ports.readSleepFlags();
+  SleepFlags flags = {false, false};
+  if (!ports.readSleepFlags(&flags)) {
+    // Unconfirmed is not "no flag". Treating it as one is how a cube that
+    // merely had a slow link cleared its own sleep flag and stayed awake for
+    // ten minutes -- and a weak battery, which causes the slow link, is
+    // exactly the cube that can least afford it.
+    if (is_reset) ports.stayAwake(); else ports.enterSleep();
+    return;
+  }
   WakeAction action = resolveWakeAction(wifi, mqtt, has_slot_topic,
                                         flags.device_requests_sleep,
                                         flags.slot_requests_sleep);
