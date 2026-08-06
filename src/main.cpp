@@ -1282,9 +1282,16 @@ void subscribeSlotTopics() {
 
   // Publish initial "no neighbor" state so game server sees all cubes on startup
   mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+#ifdef HALL_NEIGHBOR_ID
+  // Only the Hall build still owns the cube/right protocol. The NFC build
+  // announces itself through cube/device/{MAC}/nfc instead -- publishing
+  // "-" here would retained-clobber the edge the observation path just
+  // established, and nothing in this build re-establishes it until the
+  // observed tag changes.
   mqtt_client.publish(mqtt_topic_cube_right, "-", true);
   strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
   last_right_published[sizeof(last_right_published) - 1] = '\0';
+#endif  // HALL_NEIGHBOR_ID
 
 }
 
