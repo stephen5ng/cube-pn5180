@@ -596,6 +596,66 @@ void test_runWakeCheckIn_reset_unassigned_cube_obeys_device_flag() {
     TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
 }
 
+void test_decideNfcObservation_publishes_a_new_tag() {
+    TEST_ASSERT_EQUAL(NFC_OBS_TAG,
+        decideNfcObservation(true, false, true, false, "AABB", "-"));
+}
+
+void test_decideNfcObservation_suppresses_an_unchanged_tag() {
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE,
+        decideNfcObservation(true, false, true, false, "AABB", "AABB"));
+}
+
+void test_decideNfcObservation_respects_the_hall_gate() {
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE,
+        decideNfcObservation(true, false, false, false, "AABB", "-"));
+}
+
+void test_decideNfcObservation_reports_absence_when_both_sensors_agree() {
+    TEST_ASSERT_EQUAL(NFC_OBS_ABSENT,
+        decideNfcObservation(false, true, true, false, "", "AABB"));
+}
+
+void test_decideNfcObservation_keeps_the_neighbor_when_hall_still_sees_it() {
+    // A hall-present guard on an NFC flake: this is what stops a dropped read
+    // from breaking a word in play.
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE,
+        decideNfcObservation(false, true, true, true, "", "AABB"));
+}
+
+void test_decideNfcObservation_suppresses_repeated_absence() {
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE,
+        decideNfcObservation(false, true, true, false, "", "-"));
+}
+
+void test_decideNfcObservation_ignores_a_failed_read() {
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE,
+        decideNfcObservation(false, false, true, false, "", "AABB"));
+}
+
+void test_buildObservationPayload_carries_protocol_boot_id_and_tag() {
+    char buf[160];
+    buildObservationPayload("A3F9", "0A40D303530104E0", buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"protocol\":1,\"boot_id\":\"A3F9\",\"tag\":\"0A40D303530104E0\"}", buf);
+}
+
+void test_buildObservationPayload_encodes_no_neighbor() {
+    char buf[160];
+    buildObservationPayload("A3F9", "-", buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("{\"protocol\":1,\"boot_id\":\"A3F9\",\"tag\":\"-\"}", buf);
+}
+
+void test_buildObservationPayload_has_no_provenance_fields() {
+    // The spec is explicit: no generation, no sequence. Validating provenance
+    // was tried and removed -- it kills neighbor detection on bench-flashed
+    // cubes -- so the field must not exist to be tempting.
+    char buf[160];
+    buildObservationPayload("A3F9", "AABB", buf, sizeof(buf));
+    TEST_ASSERT_NULL(strstr(buf, "generation"));
+    TEST_ASSERT_NULL(strstr(buf, "sequence"));
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -667,6 +727,18 @@ int main(void) {
     RUN_TEST(test_runWakeCheckIn_reset_without_network_stays_awake);
     RUN_TEST(test_runWakeCheckIn_reset_with_no_flag_set_stays_awake);
     RUN_TEST(test_runWakeCheckIn_reset_unassigned_cube_obeys_device_flag);
+
+    // Neighbor observation protocol tests
+    RUN_TEST(test_decideNfcObservation_publishes_a_new_tag);
+    RUN_TEST(test_decideNfcObservation_suppresses_an_unchanged_tag);
+    RUN_TEST(test_decideNfcObservation_respects_the_hall_gate);
+    RUN_TEST(test_decideNfcObservation_reports_absence_when_both_sensors_agree);
+    RUN_TEST(test_decideNfcObservation_keeps_the_neighbor_when_hall_still_sees_it);
+    RUN_TEST(test_decideNfcObservation_suppresses_repeated_absence);
+    RUN_TEST(test_decideNfcObservation_ignores_a_failed_read);
+    RUN_TEST(test_buildObservationPayload_carries_protocol_boot_id_and_tag);
+    RUN_TEST(test_buildObservationPayload_encodes_no_neighbor);
+    RUN_TEST(test_buildObservationPayload_has_no_provenance_fields);
 
     return UNITY_END();
 }

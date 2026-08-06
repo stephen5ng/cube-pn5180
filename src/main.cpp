@@ -281,6 +281,8 @@ static unsigned long assignment_wait_started = 0;
 static String mac_nocolons;
 static String boot_id;
 static String mqtt_topic_assign;
+static String mqtt_topic_device_nfc;
+static char last_observation_published[NFCID_LENGTH * 2 + 1] = "";
 static String mqtt_topic_presence;
 static String mqtt_topic_liveness_response;
 static const unsigned long ASSIGNMENT_WAIT_MS = 3000;
@@ -1281,9 +1283,16 @@ void subscribeSlotTopics() {
 
   // Publish initial "no neighbor" state so game server sees all cubes on startup
   mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
+#ifdef HALL_NEIGHBOR_ID
+  // Only the Hall build still owns the cube/right protocol. The NFC build
+  // announces itself through cube/device/{MAC}/nfc instead -- publishing
+  // "-" here would retained-clobber the edge the observation path just
+  // established, and nothing in this build re-establishes it until the
+  // observed tag changes.
   mqtt_client.publish(mqtt_topic_cube_right, "-", true);
   strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
   last_right_published[sizeof(last_right_published) - 1] = '\0';
+#endif  // HALL_NEIGHBOR_ID
 
 }
 
@@ -1313,6 +1322,9 @@ void applySlot(int slot) {
     mqtt_topic_cube = "";
     display_manager->displayDebugMessage("NO SLOT");
     debugSend("unassigned: idle");
+    if (!mqtt_topic_device_nfc.isEmpty()) {
+      mqtt_client.publish(mqtt_topic_device_nfc, "", true);
+    }
     publishPresence("online");
     return;
   }
@@ -1382,6 +1394,7 @@ void onConnectionEstablished() {
   debugSend("MQTT connected");
 
   mqtt_topic_assign = String("cube/assign/") + mac_nocolons;
+  mqtt_topic_device_nfc = String("cube/device/") + mac_nocolons + "/nfc";
   mqtt_topic_liveness_response =
       String("cube/device/") + mac_nocolons + "/liveness-response";
 
@@ -1395,6 +1408,13 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBrightnessCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleRebootCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep_now", handleSleepNowCommand);
+  mqtt_client.subscribe("cube/resend", [](const String&) {
+    // Re-announce what we see now. Publish-on-change alone would leave a
+    // cleared record unrestored until the neighbor physically moved.
+    last_observation_published[0] = '\0';
+  });
+
+  last_observation_published[0] = '\0';
 
   if (slotIsResolved()) {
     subscribeSlotTopics();
@@ -1966,13 +1986,13 @@ void loop() {
     }
 
     // Always publish NFC tag IDs (needed for nfc_control_daemon).
-    // Only gate "right" neighbor messages on hall sensor state.
+    // Only gate neighbor observations on hall sensor state.
     bool hall_allows_neighbor = !HAS_HALL_SENSOR || last_hall_present || HAS_HALL_ANALOG;
+    bool hall_says_present = HAS_HALL_SENSOR && last_hall_present;
+    char neighbor_id[NFCID_LENGTH * 2 + 1] = "";
 
     if (read_result == ISO15693_EC_OK) {
-      char neighbor_id[NFCID_LENGTH * 2 + 1];
       convertNfcIdToHexString(card_id, NFCID_LENGTH, neighbor_id);
-      int cube_num = lookupCubeNumberByTag(neighbor_id);
       if (strcmp(neighbor_id, last_neighbor_id) != 0) {
         debugPrintln(F("New card"));
         unsigned long publish_start = millis();
@@ -1982,15 +2002,6 @@ void loop() {
         if (success) {
           strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
           last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-        }
-      }
-      if (cube_num > 0 && hall_allows_neighbor) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", cube_num);
-        if (strcmp(buf, last_right_published) != 0) {
-          mqtt_client.publish(mqtt_topic_cube_right, buf, true);
-          strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
-          last_right_published[sizeof(last_right_published) - 1] = '\0';
         }
       }
     } else if (read_result == EC_NO_CARD) {
@@ -2006,16 +2017,29 @@ void loop() {
           last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
         }
       }
-      // /right flips to "-" only when both sensors agree there's no neighbor —
-      // hall-present guards an NFC flake.
-      bool hall_says_present = HAS_HALL_SENSOR && last_hall_present;
-      if (!hall_says_present && strcmp(last_right_published, "-") != 0) {
-        mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-        strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
-        last_right_published[sizeof(last_right_published) - 1] = '\0';
-      }
     } else {
       Serial.printf("NFC read failed with error code: %d\n", read_result);
+    }
+
+    // Resolution moved to the server: publish the raw tag keyed by MAC and let
+    // the roster decide which slot wears it. cube/right is no longer published
+    // from this path. The gating is unchanged -- "-" still requires both
+    // sensors to agree, which is what stops an NFC flake breaking a word.
+    if (slotIsResolved()) {
+      NfcObservationAction action = decideNfcObservation(
+          read_result == ISO15693_EC_OK, read_result == EC_NO_CARD,
+          hall_allows_neighbor, hall_says_present, neighbor_id,
+          last_observation_published);
+      if (action != NFC_OBS_NONE) {
+        const char* tag = (action == NFC_OBS_TAG) ? neighbor_id : "-";
+        char payload[160];
+        buildObservationPayload(boot_id.c_str(), tag, payload, sizeof(payload));
+        if (mqtt_client.publish(mqtt_topic_device_nfc, payload, true)) {
+          strncpy(last_observation_published, tag,
+                  sizeof(last_observation_published) - 1);
+          last_observation_published[sizeof(last_observation_published) - 1] = '\0';
+        }
+      }
     }
 
     if (nfc_us > nfc_read_max_us) {
@@ -2114,19 +2138,13 @@ void loop() {
         mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
         Serial.printf("Hall sensor %s\n", status);
 
-        // On hall connect, if NFC still remembers a tag from before, republish
-        // its cube_num immediately so /right doesn't sit empty while NFC re-acquires.
+        // On hall connect, if NFC still remembers a tag from before, force the
+        // next gated NFC read to re-announce it rather than skip it as
+        // unchanged, so the observation republishes via cube/device/{MAC}/nfc
+        // instead of sitting silent while NFC re-acquires. The server
+        // resolves the tag now, not this firmware.
         if (hall_present && strcmp(last_neighbor_id, "-") != 0) {
-          int cube_num = lookupCubeNumberByTag(last_neighbor_id);
-          if (cube_num > 0) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "%d", cube_num);
-            if (strcmp(buf, last_right_published) != 0) {
-              mqtt_client.publish(mqtt_topic_cube_right, buf, true);
-              strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
-              last_right_published[sizeof(last_right_published) - 1] = '\0';
-            }
-          }
+          last_observation_published[0] = '\0';
         }
       }
     }
