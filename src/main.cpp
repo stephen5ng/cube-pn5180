@@ -1012,8 +1012,21 @@ void enterSleepMode() {
 
   if (mqtt_client.isConnected()) {
     publishPresence("sleeping");
+    // Settle before tearing the connection down. Deliberately no loop() here:
+    // enterSleepMode() is reachable from the sleep_now subscribe callback, so
+    // pumping the client would re-enter PubSubClient::loop() while it is still
+    // dispatching -- and it would buy nothing, since publish() writes straight
+    // to the socket rather than queueing.
     delay(100);
     mqtt_client.disconnect();
+    // PubSubClient::disconnect() writes the DISCONNECT packet and immediately
+    // stops the socket, so those bytes race the radio going down. When they
+    // lose, the broker never sees a clean disconnect and ~22.5s later (1.5x
+    // the k15 keep-alive PubSubClient defaults to) it publishes the retained
+    // last will -- overwriting the correct "sleeping" record with "offline".
+    // Seen on 2026-08-06: cube 3 published "sleeping" at 02:21:09 and the
+    // broker logged "has exceeded timeout, disconnecting" at 02:21:32.
+    delay(100);
   }
 
 #ifdef BOARD_V6
