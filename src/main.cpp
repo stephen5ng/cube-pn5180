@@ -1012,12 +1012,12 @@ void enterSleepMode() {
 
   if (mqtt_client.isConnected()) {
     publishPresence("sleeping");
-    // Drain the retained "sleeping" publish before tearing the connection
-    // down. delay() alone does not service the client; only loop() does.
-    for (int i = 0; i < 5; i++) {
-      mqtt_client.loop();
-      delay(20);
-    }
+    // Settle before tearing the connection down. Deliberately no loop() here:
+    // enterSleepMode() is reachable from the sleep_now subscribe callback, so
+    // pumping the client would re-enter PubSubClient::loop() while it is still
+    // dispatching -- and it would buy nothing, since publish() writes straight
+    // to the socket rather than queueing.
+    delay(100);
     mqtt_client.disconnect();
     // PubSubClient::disconnect() writes the DISCONNECT packet and immediately
     // stops the socket, so those bytes race the radio going down. When they
