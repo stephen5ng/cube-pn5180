@@ -63,6 +63,21 @@ int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
                         bool authority_latched, int compiled_cube_id);
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer);
 
+enum NfcObservationAction {
+  NFC_OBS_NONE,    // nothing to publish
+  NFC_OBS_TAG,     // publish tag_hex
+  NFC_OBS_ABSENT,  // publish "-"
+};
+
+NfcObservationAction decideNfcObservation(bool read_ok, bool no_card,
+                                          bool hall_allows_neighbor,
+                                          bool hall_says_present,
+                                          const char* tag_hex,
+                                          const char* last_published);
+
+void buildObservationPayload(const char* boot_id, const char* tag,
+                             char* out, size_t out_size);
+
 enum WakeAction { WAKE_ACTION_STAY_ASLEEP, WAKE_ACTION_WAKE_FULL };
 
 // The keep-alive check-in decision. Only a timer wake makes a check-in, so

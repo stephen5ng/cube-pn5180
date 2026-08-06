@@ -213,6 +213,35 @@ void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
   hex_buffer[id_length * 2] = '\0';
 }
 
+NfcObservationAction decideNfcObservation(bool read_ok, bool no_card,
+                                          bool hall_allows_neighbor,
+                                          bool hall_says_present,
+                                          const char* tag_hex,
+                                          const char* last_published) {
+  if (read_ok) {
+    if (!hall_allows_neighbor || tag_hex == nullptr) {
+      return NFC_OBS_NONE;
+    }
+    return strcmp(tag_hex, last_published) == 0 ? NFC_OBS_NONE : NFC_OBS_TAG;
+  }
+  if (no_card) {
+    // "-" only when both sensors agree: hall-present guards an NFC flake.
+    if (hall_says_present || strcmp(last_published, "-") == 0) {
+      return NFC_OBS_NONE;
+    }
+    return NFC_OBS_ABSENT;
+  }
+  return NFC_OBS_NONE;
+}
+
+void buildObservationPayload(const char* boot_id, const char* tag,
+                             char* out, size_t out_size) {
+  // protocol, boot_id, tag. Nothing else: the server validates no provenance,
+  // so a field carried here would be complexity with no behaviour.
+  snprintf(out, out_size, "{\"protocol\":1,\"boot_id\":\"%s\",\"tag\":\"%s\"}",
+           boot_id, tag);
+}
+
 #ifdef NATIVE_TESTING
 // C versions for native testing
 void removeColonsFromMacC(const char* mac_address, char* output, size_t output_size) {
