@@ -6,7 +6,7 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "cube_utilities.cpp"
 ALLOWED_MIN, ALLOWED_MAX = 21, 199
-EXPECTED_ROWS = 19
+EXPECTED_ROWS = 20
 
 LOOSE = re.compile(r'\{\s*"[^"]*"[^}]*\}')
 # cube_id is \w+ rather than \d+: a spare carries the CUBE_ID_NONE sentinel

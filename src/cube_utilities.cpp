@@ -44,6 +44,7 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   // Unassigned spare: the roster holds it at slot null, so it displays
   // NO SLOT until an operator assigns it a slot from the admin page.
   {"20:50:0D:19:FB:C8", CUBE_ID_NONE, RGB_ORDER_BGR, 47},  // spare
+  {"5C:01:3B:65:F2:74", CUBE_ID_NONE, RGB_ORDER_BGR, 48},  // spare
 };
 #endif
 const int NUM_CUBE_MAC_ENTRIES = sizeof(CUBE_MAC_TABLE) / sizeof(CUBE_MAC_TABLE[0]);
