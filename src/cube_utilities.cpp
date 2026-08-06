@@ -41,6 +41,11 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"D4:8A:FC:9F:B0:C0",  4, RGB_ORDER_BGR, 44},  // backup slot 4
   {"D8:BC:38:E5:A8:38",  5, RGB_ORDER_RGB, 45},  // backup slot 5
   {"5C:01:3B:4A:87:4C",  6, RGB_ORDER_RGB, 46},  // backup slot 6
+  // Unassigned spare: the roster holds it at slot null, so it displays
+  // NO SLOT until an operator assigns it. cube_id 1 is only the fallback
+  // for a missing/malformed assignment record on a cube that has never
+  // latched authority; a spare should never reach that path.
+  {"20:50:0D:19:FB:C8",  1, RGB_ORDER_BGR, 47},  // spare
 };
 #endif
 const int NUM_CUBE_MAC_ENTRIES = sizeof(CUBE_MAC_TABLE) / sizeof(CUBE_MAC_TABLE[0]);
