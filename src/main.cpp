@@ -2137,19 +2137,13 @@ void loop() {
         mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
         Serial.printf("Hall sensor %s\n", status);
 
-        // On hall connect, if NFC still remembers a tag from before, republish
-        // its cube_num immediately so /right doesn't sit empty while NFC re-acquires.
+        // On hall connect, if NFC still remembers a tag from before, force the
+        // next gated NFC read to re-announce it rather than skip it as
+        // unchanged, so the observation republishes via cube/device/{MAC}/nfc
+        // instead of sitting silent while NFC re-acquires. The server
+        // resolves the tag now, not this firmware.
         if (hall_present && strcmp(last_neighbor_id, "-") != 0) {
-          int cube_num = lookupCubeNumberByTag(last_neighbor_id);
-          if (cube_num > 0) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "%d", cube_num);
-            if (strcmp(buf, last_right_published) != 0) {
-              mqtt_client.publish(mqtt_topic_cube_right, buf, true);
-              strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
-              last_right_published[sizeof(last_right_published) - 1] = '\0';
-            }
-          }
+          last_observation_published[0] = '\0';
         }
       }
     }
