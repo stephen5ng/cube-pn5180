@@ -175,6 +175,16 @@ void test_resolveAssignedSlot() {
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, true, 1));
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, true, 1));
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, -1));
+
+    // An uncommissioned spare must not adopt a real cube's slot when no
+    // assignment record arrives. Blank NVS means authority_latched is false,
+    // which is exactly the branch that hands back the compiled id, so the
+    // sentinel is the only thing standing between a freshly flashed board and
+    // a slot collision on the live fleet.
+    TEST_ASSERT_TRUE(
+        resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, CUBE_ID_NONE) <= 0);
+    TEST_ASSERT_TRUE(
+        resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, CUBE_ID_NONE) <= 0);
 }
 
 void test_assignmentRecordIsActionable() {

@@ -6,11 +6,13 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "cube_utilities.cpp"
 ALLOWED_MIN, ALLOWED_MAX = 21, 199
-EXPECTED_ROWS = 18
+EXPECTED_ROWS = 19
 
 LOOSE = re.compile(r'\{\s*"[^"]*"[^}]*\}')
+# cube_id is \w+ rather than \d+: a spare carries the CUBE_ID_NONE sentinel
+# instead of a literal. ip_octet stays numeric, since it is range-checked.
 STRICT = re.compile(
-    r'^\{\s*"((?:[0-9A-F]{2}:){5}[0-9A-F]{2})"\s*,\s*\d+\s*,\s*\w+\s*,\s*(\d+)\s*\}$'
+    r'^\{\s*"((?:[0-9A-F]{2}:){5}[0-9A-F]{2})"\s*,\s*\w+\s*,\s*\w+\s*,\s*(\d+)\s*\}$'
 )
 
 
