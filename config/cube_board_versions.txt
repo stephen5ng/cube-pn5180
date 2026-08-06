@@ -14,3 +14,5 @@ CC:DB:A7:9F:C2:84=v6_with_hall
 D4:8A:FC:9F:B0:C0=v6
 D8:BC:38:E5:A8:38=v6
 EC:E3:34:79:8A:BC=v6_with_hall
+20:50:0D:19:FB:C8=v6
+5C:01:3B:65:F2:74=v6

@@ -29,12 +29,34 @@ ping_once() {
     fi
 }
 
+# MAC and static-IP octet for every board, from the compiled table that
+# assigns them. The table is the only place an octet is decided, so reading it
+# beats duplicating the mapping here.
+mac_table_entries() {
+    sed -n '/^#else/,/^#endif/p' "$FW_DIR/src/cube_utilities.cpp" \
+        | sed -nE 's/^[[:space:]]*\{"(([0-9A-F]{2}:){5}[0-9A-F]{2})"[[:space:]]*,[^,]+,[^,]+,[[:space:]]*([0-9]+)[[:space:]]*\}.*/\1 \3/p'
+}
+
+# The slot a board currently holds, from its retained assignment record, or
+# empty when it holds none.
+assigned_slot_of() {
+    local mac_nocolons=${1//:/}
+    mosquitto_sub -h 192.168.8.247 -t "cube/assign/$mac_nocolons" -C 1 -W 2 \
+        2>/dev/null \
+        | sed -nE 's/.*"slot"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p'
+}
+
 # Firmware assigns each MAC its own static-IP octet (findCubeIpOctet):
 # primary-set MACs get 20+N, backup-set MACs 40+N. Which set a slot's
 # current board comes from isn't knowable here, so probe both.
+#
+# A spare does not follow either rule -- it keeps the octet its MAC was given
+# (47, 48, ...) whatever slot it is later assigned -- so guessing from the slot
+# cannot find one. Fall back to asking which board actually holds this slot and
+# using that board's own octet.
 resolve_cube_ip() {
     local cube_id=$1
-    local ip
+    local ip mac octet
     for base in 20 40; do
         ip="192.168.8.$((cube_id + base))"
         if ping_once "$ip"; then
@@ -42,6 +64,15 @@ resolve_cube_ip() {
             return 0
         fi
     done
+    while read -r mac octet; do
+        [ -n "$mac" ] || continue
+        [ "$(assigned_slot_of "$mac")" = "$cube_id" ] || continue
+        ip="192.168.8.$octet"
+        if ping_once "$ip"; then
+            echo "$ip"
+            return 0
+        fi
+    done < <(mac_table_entries)
     return 1
 }
 
