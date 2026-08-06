@@ -27,6 +27,18 @@ struct CubeMacEntry {
   int ip_octet;
 };
 
+// cube_id for a board with no default slot -- an uncommissioned spare.
+//
+// The fallback below hands back compiled_cube_id when no assignment record
+// arrives, which is a safety net for a fielded cube whose record was lost but
+// a live hazard for a spare: a freshly flashed board has blank NVS, so
+// authority_latched is false and it would adopt a real cube's slot on the
+// fleet network. Every consumer treats a non-positive slot as unassigned, so
+// this makes the fallback inert instead of a collision. A spare that has been
+// assigned keeps its own safety net, because the fallback prefers the stored
+// slot once it has one.
+constexpr int CUBE_ID_NONE = 0;
+
 extern const CubeMacEntry CUBE_MAC_TABLE[];
 extern const int NUM_CUBE_MAC_ENTRIES;
 
