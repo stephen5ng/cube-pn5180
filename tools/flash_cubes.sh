@@ -139,9 +139,26 @@ wake_cube() {
     sleep 2  # Give cube time to wake
 }
 
+# A cube sleeps after AUTO_SLEEP_TIMEOUT_MS (10 minutes) of inactivity,
+# whatever the retained sleep flag says. Flashing the fleet takes longer than
+# that, so cubes late in the list doze off while the earlier ones are being
+# flashed, and each then has to be woken and waited for.
+#
+# The /ping subscription resets the cube's inactivity timer, so nudging the
+# ones still to come keeps them up rather than recovering them afterwards. A
+# cube already asleep is not listening, which is fine -- flash_cube still
+# wakes it.
+keep_awake() {
+    local id
+    for id in "$@"; do
+        mosquitto_pub -h 192.168.8.247 -t "cube/$id/ping" -m keep-awake \
+            >/dev/null 2>&1 || true
+    done
+}
+
 wait_for_cube_online() {
     local cube_id=$1
-    local max_attempts=30
+    local max_attempts=60
     local attempt=0
 
     echo "Waiting for cube $cube_id to come online..."
@@ -155,7 +172,7 @@ wait_for_cube_online() {
         sleep 1
     done
 
-    echo "❌ Cube $cube_id did not come online after 30 seconds"
+    echo "❌ Cube $cube_id did not come online after $max_attempts seconds"
     return 1
 }
 
@@ -290,8 +307,10 @@ if [ "$1" = "all" ]; then
     fi
 
     failed=0
-    for cube_id in 1 2 3 4 5 6 11 12 13 14 15 16; do
-        flash_cube "$cube_id" || failed=1
+    all_cubes=(1 2 3 4 5 6 11 12 13 14 15 16)
+    for index in "${!all_cubes[@]}"; do
+        keep_awake "${all_cubes[@]:$index}"
+        flash_cube "${all_cubes[$index]}" || failed=1
         echo ""
     done
     exit "$failed"
