@@ -156,32 +156,53 @@ keep_awake() {
     done
 }
 
+# A sleeping cube learns the flag was cleared only at its next check-in --
+# sleep_interval_s, 20 by default -- and then needs a full boot, so the window
+# has to cover both comfortably.
+#
+# Measured against the clock, not counted in attempts: each failed
+# is_cube_online blocks for its own timeout before this loop's sleep, so an
+# attempt count is several times longer than the same number of seconds and
+# the reported figure would be wrong.
 wait_for_cube_online() {
     local cube_id=$1
-    local max_attempts=60
-    local attempt=0
+    local timeout_s=${2:-60}
+    local deadline=$((SECONDS + timeout_s))
 
-    echo "Waiting for cube $cube_id to come online..."
-    while [ $attempt -lt $max_attempts ]; do
+    echo "Waiting up to ${timeout_s}s for cube $cube_id to come online..."
+    while [ $SECONDS -lt $deadline ]; do
         if is_cube_online "$cube_id"; then
             echo "✅ Cube $cube_id is online"
             return 0
         fi
-        attempt=$((attempt + 1))
-        echo "  Attempt $attempt/$max_attempts..."
+        echo "  $((deadline - SECONDS))s remaining..."
         sleep 1
     done
 
-    echo "❌ Cube $cube_id did not come online after $max_attempts seconds"
+    echo "❌ Cube $cube_id did not come online within ${timeout_s}s"
     return 1
 }
 
 flash_cube() {
     local cube_id=$1
     local version=$2
+
+    # Wake first. Resolving the address needs the cube to answer a ping, so a
+    # sleeping cube would fail resolution and return before ever reaching the
+    # wake below -- the recovery path would be unreachable exactly when it is
+    # needed.
+    if ! is_cube_online "$cube_id"; then
+        echo "⚠️  Cube $cube_id not responding to MQTT (possibly sleeping)"
+        wake_cube "$cube_id"
+        if ! wait_for_cube_online "$cube_id"; then
+            echo "❌ Could not wake cube $cube_id. Aborting flash."
+            return 1
+        fi
+    fi
+
     local ip=$(resolve_cube_ip "$cube_id")
     if [ -z "$ip" ]; then
-        echo "❌ Cube $cube_id not reachable at 192.168.8.$((cube_id + 20)) or 192.168.8.$((cube_id + 40))"
+        echo "❌ Cube $cube_id is on MQTT but its address did not answer"
         return 1
     fi
 
@@ -196,16 +217,6 @@ flash_cube() {
         version=$(get_version_by_mac "$mac")
         if [ -z "$version" ]; then
             echo "❌ MAC $mac not found in $CUBE_VERSIONS_FILE"
-            return 1
-        fi
-    fi
-
-    # Check if cube is online, wake if sleeping
-    if ! is_cube_online "$cube_id"; then
-        echo "⚠️  Cube $cube_id not responding to MQTT (possibly sleeping)"
-        wake_cube "$cube_id"
-        if ! wait_for_cube_online "$cube_id"; then
-            echo "❌ Could not wake cube $cube_id. Aborting flash."
             return 1
         fi
     fi
