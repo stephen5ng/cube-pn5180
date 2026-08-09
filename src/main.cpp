@@ -10,6 +10,7 @@ typedef struct MessageNfcId {
   char id[NFCID_LENGTH*2 + 1];
 } MessageNfcId;
 #include "cube_utilities.h"
+#include "hall_presence.h"
 #include "cube_slot_store.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
@@ -155,11 +156,14 @@ void configurePins(int cube_id) {
 // table. Order is P1..P6, mapping to id_mask bits 0..5.
 static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_PIN 36        // existing v6 hall tap (GPIO36, input-only)
-// DRV5055A4 analog presence sensor thresholds
-#define HALL_PRESENCE_ON_THRESHOLD_LOW  1500
-#define HALL_PRESENCE_ON_THRESHOLD_HIGH 2600
-#define HALL_PRESENCE_OFF_THRESHOLD_LOW 1800
-#define HALL_PRESENCE_OFF_THRESHOLD_HIGH 2300
+// DRV5055 analog presence sensor. Thresholds are deltas from a tracked baseline, not
+// absolute ADC values; see hall_presence.h.
+#define HALL_PRESENCE_DIRECTION        1    // +1: presence magnet drives the reading up
+#define HALL_PRESENCE_ON_DELTA         95   // ~50% of the 194-count deflection measured on slot 1
+#define HALL_PRESENCE_OFF_DELTA        48   // ~25%, hysteresis
+#define HALL_PRESENCE_FAST_SHIFT       3    // ~8 samples at the 1kHz poll
+#define HALL_PRESENCE_BASE_SHIFT       7
+#define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
 // hall_debug: idle mask reads 111111 with HIGH as the reference level).
@@ -1483,29 +1487,26 @@ static uint8_t hallCubeIdForMask(uint8_t id_mask) {
   }
 }
 
+static HallPresenceTracker hall_presence;
+
 void setupHallSensors() {
   for (uint8_t i = 0; i < 6; i++) {
     pinMode(HALL_ID_PINS[i], INPUT);
   }
   pinMode(HALL_PRESENCE_PIN, INPUT);
+  hall_presence.begin({HALL_PRESENCE_DIRECTION,
+                       HALL_PRESENCE_ON_DELTA,
+                       HALL_PRESENCE_OFF_DELTA,
+                       HALL_PRESENCE_FAST_SHIFT,
+                       HALL_PRESENCE_BASE_SHIFT,
+                       HALL_PRESENCE_BASE_INTERVAL_MS});
 
   Serial.println(F("Hall neighbor sensors initialized"));
 }
 
 // Returns the neighbor's cube id, or 0 for no/invalid neighbor.
 uint8_t readHallNeighborId() {
-  static bool presence_active = false;
-  int adc_val = analogRead(HALL_PRESENCE_PIN);
-
-  if (!presence_active) {
-    if (adc_val < HALL_PRESENCE_ON_THRESHOLD_LOW || adc_val > HALL_PRESENCE_ON_THRESHOLD_HIGH) {
-      presence_active = true;
-    }
-  } else {
-    if (adc_val > HALL_PRESENCE_OFF_THRESHOLD_LOW && adc_val < HALL_PRESENCE_OFF_THRESHOLD_HIGH) {
-      presence_active = false;
-    }
-  }
+  bool presence_active = hall_presence.update(analogRead(HALL_PRESENCE_PIN), millis());
 
   if (!presence_active) {
     return 0;  // presence magnet absent -> no neighbor seated

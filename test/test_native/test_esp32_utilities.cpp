@@ -1,10 +1,127 @@
 #include <unity.h>
 #include "../../src/cube_utilities.h"
 #include "../../src/cube_tags.h"
+#include "../../src/hall_presence.h"
 
 // For testing, include the implementation directly
 #include "../../src/cube_utilities.cpp"
 #include "../../src/cube_tags.cpp"
+
+
+// ---------------------------------------------------------------------------
+// Hall presence tracker
+// ---------------------------------------------------------------------------
+// The presence signal is tiny -- roughly 120 ADC counts at the installed gap -- and it
+// rides on a baseline that drifts with the +3V3 rail, because the DRV5055 output is
+// ratiometric to the rail while the ESP32 ADC references its own bandgap. A 100mV rail
+// move is worth about 62 counts, over half the signal, which is why the old fixed
+// thresholds could not work and why these tests care so much about drift.
+
+static HallPresenceConfig test_presence_config() {
+    // direction, on_delta, off_delta, fast_shift, base_shift, base_interval_ms
+    return HallPresenceConfig{1, 60, 30, 3, 7, 250};
+}
+
+// Feed a steady value for long enough that both filters settle.
+static void settle(HallPresenceTracker& t, int raw, uint32_t& now, int steps = 4000) {
+    for (int i = 0; i < steps; i++) t.update(raw, now += 1);
+}
+
+void test_presence_starts_inactive_and_adopts_the_first_reading() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    TEST_ASSERT_FALSE(t.update(2035, now));
+    // Primed from the first sample rather than from an assumed 2048 midpoint, so a cube
+    // whose rail sits off-nominal does not boot already half-way to threshold.
+    TEST_ASSERT_EQUAL(2035, t.baseline());
+    TEST_ASSERT_EQUAL(0, t.delta());
+}
+
+void test_presence_asserts_above_on_delta_and_holds_through_hysteresis() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+
+    // Just under the threshold does nothing.
+    settle(t, 2035 + 50, now, 200);
+    TEST_ASSERT_FALSE(t.active());
+
+    settle(t, 2035 + 120, now, 200);
+    TEST_ASSERT_TRUE(t.active());
+
+    // Falls back between off_delta and on_delta: still present. Without this a neighbour
+    // sitting near the trip point chatters the published id.
+    settle(t, 2035 + 45, now, 200);
+    TEST_ASSERT_TRUE(t.active());
+
+    settle(t, 2035 + 10, now, 200);
+    TEST_ASSERT_FALSE(t.active());
+}
+
+void test_presence_ignores_the_wrong_direction() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    // The DRV5055 is bipolar and the ID magnets are 32mm away; a deflection the other
+    // way is their crosstalk, not the presence magnet, so it must not assert.
+    settle(t, 2035 - 400, now, 200);
+    TEST_ASSERT_FALSE(t.active());
+}
+
+void test_presence_tracks_slow_rail_drift_without_asserting() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    // 100mV of rail sag, ramped in over 30s. Bigger than on_delta, so a fixed-threshold
+    // implementation would report a neighbour that is not there.
+    for (int i = 0; i <= 62; i++) settle(t, 2035 + i, now, 500);
+    TEST_ASSERT_FALSE(t.active());
+    // The baseline follows but lags -- it is a filter, not a tracker. Assert that it
+    // moved most of the way rather than pinning an exact value, which would just be
+    // restating the filter constants.
+    TEST_ASSERT_TRUE(t.baseline() > 2035 + 20);
+    TEST_ASSERT_TRUE(t.baseline() <= 2035 + 62);
+}
+
+void test_presence_is_fooled_by_a_fast_rail_step() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    // KNOWN LIMITATION, asserted so it cannot regress silently. The baseline has a ~32s
+    // time constant, so it rejects drift only up to roughly on_delta/tau -- a couple of
+    // counts per second. A step, such as the HUB75 rail moving when the display is
+    // gated, outruns it and reads as a neighbour arriving.
+    settle(t, 2035 + 120, now, 200);
+    TEST_ASSERT_TRUE(t.active());
+}
+
+void test_presence_freezes_the_baseline_while_a_neighbour_is_present() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    settle(t, 2035 + 120, now, 200);
+    TEST_ASSERT_TRUE(t.active());
+    const int base_at_assert = t.baseline();
+
+    // Hold the magnet for two minutes. An adapting baseline would climb to meet it and
+    // silently drop the neighbour.
+    for (int i = 0; i < 120; i++) settle(t, 2035 + 120, now, 1000);
+    TEST_ASSERT_TRUE(t.active());
+    TEST_ASSERT_EQUAL(base_at_assert, t.baseline());
+}
+
+void test_presence_delta_is_monotonic_with_approach() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    // delta() is what a distance animation would read, so it has to rise smoothly rather
+    // than only be meaningful at the trip point.
+    settle(t, 2035 + 30, now, 200);  int near_far = t.delta();
+    settle(t, 2035 + 90, now, 200);  int near_mid = t.delta();
+    settle(t, 2035 + 200, now, 200); int near_close = t.delta();
+    TEST_ASSERT_TRUE(near_far < near_mid);
+    TEST_ASSERT_TRUE(near_mid < near_close);
+}
 
 // Test functions
 void setUp(void) {}
@@ -749,6 +866,15 @@ int main(void) {
     RUN_TEST(test_buildObservationPayload_carries_protocol_boot_id_and_tag);
     RUN_TEST(test_buildObservationPayload_encodes_no_neighbor);
     RUN_TEST(test_buildObservationPayload_has_no_provenance_fields);
+
+    // Hall presence tracker
+    RUN_TEST(test_presence_starts_inactive_and_adopts_the_first_reading);
+    RUN_TEST(test_presence_asserts_above_on_delta_and_holds_through_hysteresis);
+    RUN_TEST(test_presence_ignores_the_wrong_direction);
+    RUN_TEST(test_presence_tracks_slow_rail_drift_without_asserting);
+    RUN_TEST(test_presence_is_fooled_by_a_fast_rail_step);
+    RUN_TEST(test_presence_freezes_the_baseline_while_a_neighbour_is_present);
+    RUN_TEST(test_presence_delta_is_monotonic_with_approach);
 
     return UNITY_END();
 }
