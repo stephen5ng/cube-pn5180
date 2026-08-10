@@ -890,8 +890,11 @@ void setupNfcReader() {
 }
 
 // Set by detectSensorMode() when stage 2 rejects a reader; published from
-// subscribeSlotTopics() once mqtt_topic_cube exists.
-static char sensor_probe_report[64] = "";
+// subscribeSlotTopics() once mqtt_topic_cube exists. RTC_DATA_ATTR for the
+// same reason as cached_sensor_mode below: detectSensorMode() only runs once
+// per power session, so a wake that used plain RAM here would republish an
+// empty report and this diagnostic would go stale until the next power cycle.
+RTC_DATA_ATTR static char sensor_probe_report[64] = "";
 
 // Survives deep sleep, cleared by a power cycle. The cable cannot change while
 // the cube is powered, and setup() re-runs on every timer wake, so probing once
