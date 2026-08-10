@@ -1349,10 +1349,12 @@ void subscribeSlotTopics() {
   // outside the is_first_boot guard above.
   mqtt_client.publish(mqtt_topic_cube + "/sensor_mode",
                       sensorModeIsMagnets() ? "magnets" : "nfc", true);
-  if (sensor_probe_report[0] != '\0') {
-    mqtt_client.publish(mqtt_topic_cube + "/sensor_probe",
-                        sensor_probe_report, true);
-  }
+  // Retained, so a report from a rejected probe outlives the cable swap that
+  // fixes it -- a cube reading "nfc" would still carry "I probed and found
+  // nothing" beside it. Publishing unconditionally clears the record when
+  // there is nothing to report.
+  mqtt_client.publish(mqtt_topic_cube + "/sensor_probe", sensor_probe_report,
+                      true);
 
   // cube/device/{MAC}/nfc is retained, so a tag read before a cable swap
   // outlives the swap. The game server resolves neighbours from that topic, so
