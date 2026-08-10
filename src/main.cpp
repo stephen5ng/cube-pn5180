@@ -1346,6 +1346,15 @@ void subscribeSlotTopics() {
                         sensor_probe_report, true);
   }
 
+  // cube/device/{MAC}/nfc is retained, so a tag read before a cable swap
+  // outlives the swap. The game server resolves neighbours from that topic, so
+  // the record would be applied as a live neighbour for a cube that no longer
+  // has a reader. An empty payload is how a cleared observation is already
+  // expressed, so publishing one retires the record.
+  if (sensorModeIsMagnets() && !mqtt_topic_device_nfc.isEmpty()) {
+    mqtt_client.publish(mqtt_topic_device_nfc, "", true);
+  }
+
   auto resetActivityTimer = []() { last_activity_time = millis(); };
 
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
