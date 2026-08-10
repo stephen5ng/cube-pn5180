@@ -956,10 +956,18 @@ uint8_t getCubeIpOctet() {
 
   // Configure pins based on cube ID
   configurePins(cube_id);
-  if (cached_sensor_mode == SENSOR_MODE_UNKNOWN) {
+  // "probed" vs "cached" is the difference between a reading of the connector
+  // and a reading of RTC memory. A cable swapped without a power cycle reports
+  // the old mode, and only this line says which one you are looking at.
+  bool probed = cached_sensor_mode == SENSOR_MODE_UNKNOWN;
+  if (probed) {
     cached_sensor_mode = detectSensorMode();
   }
   sensor_mode = cached_sensor_mode;
+  Serial.printf("sensor_mode: %s (%s)%s%s\n",
+                sensorModeIsMagnets() ? "magnets" : "nfc",
+                probed ? "probed" : "cached",
+                sensor_probe_report[0] ? " " : "", sensor_probe_report);
   initialiseNeighbourSensor();
 
   Serial.print("mac_address: ");
