@@ -29,8 +29,8 @@ inline uint8_t hallDrivenHighMask(uint8_t active_mask) {
 }
 
 // Measured on slot 1, 2026-08-10.
-inline constexpr uint8_t PN5180_PRODUCT_VERSION_0 = 0x00;
-inline constexpr uint8_t PN5180_PRODUCT_VERSION_1 = 0x04;
+static constexpr uint8_t PN5180_PRODUCT_VERSION_0 = 0x00;
+static constexpr uint8_t PN5180_PRODUCT_VERSION_1 = 0x04;
 
 // Stage 2, reached only when stage 1 found no hall board.
 //
