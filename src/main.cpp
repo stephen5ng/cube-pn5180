@@ -50,12 +50,6 @@ static SensorMode sensor_mode = SENSOR_MODE_NFC;
 
 static bool sensorModeIsMagnets() { return sensor_mode == SENSOR_MODE_MAGNETS; }
 
-// Off is what the fleet runs today, so a cube that boots before the admin
-// server publishes, or reconnects after a broker restart drops the retained
-// value, lands in the known-good configuration rather than a gated one
-// nobody chose.
-static bool presence_gate_enabled = false;
-
 // Function to configure pins based on board type (compile-time)
 void configurePins(int cube_id) {
 #ifdef BOARD_V6
@@ -1354,9 +1348,6 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
-  mqtt_client.subscribe("cube/config/presence_gate", [](const String& payload) {
-    presence_gate_enabled = (payload == "1");
-  });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
@@ -2077,8 +2068,8 @@ void loop() {
 
       // Always publish NFC tag IDs (needed for nfc_control_daemon).
       // Only gate neighbor observations on hall sensor state.
-      bool hall_allows_neighbor = !presence_gate_enabled || last_hall_present;
-      bool hall_says_present = presence_gate_enabled && last_hall_present;
+      bool hall_allows_neighbor = !HAS_HALL_SENSOR || last_hall_present || HAS_HALL_ANALOG;
+      bool hall_says_present = HAS_HALL_SENSOR && last_hall_present;
       char neighbor_id[NFCID_LENGTH * 2 + 1] = "";
 
       if (read_result == ISO15693_EC_OK) {
