@@ -44,8 +44,8 @@ extern PN5180ISO15693* nfc_reader;
 void initializeNfcReader();
 void publishPresence(const char* state);
 
-// Which neighbour sensor this cube carries. Task 3 detects it; until then both
-// paths are compiled and this selects between them.
+// Which neighbour sensor this cube carries. Both paths are compiled in;
+// detectSensorMode() sets this at boot and it selects between them.
 static SensorMode sensor_mode = SENSOR_MODE_NFC;
 
 static bool sensorModeIsMagnets() { return sensor_mode == SENSOR_MODE_MAGNETS; }
@@ -889,6 +889,53 @@ void setupNfcReader() {
   nfc_reader->setupRF();
 }
 
+// Set by detectSensorMode() when stage 2 rejects a reader; published from
+// subscribeSlotTopics() once mqtt_topic_cube exists.
+static char sensor_probe_report[64] = "";
+
+// Survives deep sleep, cleared by a power cycle. The cable cannot change while
+// the cube is powered, and setup() re-runs on every timer wake, so probing once
+// per power session is both sufficient and necessary: stage 2 drives four lines
+// that are open-drain sensors on the other board.
+RTC_DATA_ATTR SensorMode cached_sensor_mode = SENSOR_MODE_UNKNOWN;
+
+static SensorMode detectSensorMode() {
+  uint8_t high_mask = 0;
+  for (uint8_t i = 0; i < 4; i++) {
+    pinMode(HALL_ID_PINS[i], INPUT_PULLDOWN);
+  }
+  delay(2);  // let the ~45k internal pulldown settle against stray capacitance
+  for (uint8_t i = 0; i < 4; i++) {
+    if (digitalRead(HALL_ID_PINS[i]) == HIGH) high_mask |= (1 << i);
+  }
+  if (!shouldRunActiveProbe(high_mask)) {
+    return SENSOR_MODE_MAGNETS;
+  }
+
+  // No open-drain sensors on the connector, so driving it is safe.
+  initializeNfcReader();
+  SPI.begin(SCK, miso_pin, MOSI, SS);
+  nfc_reader->begin();
+  nfc_reader->reset();
+
+  uint8_t version[2] = {0, 0};
+  uint8_t die[16] = {0};
+  nfc_reader->readEEprom(PRODUCT_VERSION, version, sizeof(version));
+  nfc_reader->readEEprom(DIE_IDENTIFIER, die, sizeof(die));
+  if (pn5180ReaderPresent(version, die, sizeof(die))) {
+    return SENSOR_MODE_NFC;
+  }
+
+  // Only slot 1's reader was measured. A different production lot reports a
+  // different version and lands here, so record what was read rather than
+  // leaving it to be guessed from a cube that says "magnets".
+  // subscribeSlotTopics() publishes this once there is a topic to publish to.
+  snprintf(sensor_probe_report, sizeof(sensor_probe_report),
+           "ver=%02X%02X die=%02X%02X%02X%02X",
+           version[0], version[1], die[0], die[1], die[2], die[3]);
+  return SENSOR_MODE_MAGNETS;
+}
+
 // ============= Network Functions =============
 uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
@@ -906,6 +953,10 @@ uint8_t getCubeIpOctet() {
 
   // Configure pins based on cube ID
   configurePins(cube_id);
+  if (cached_sensor_mode == SENSOR_MODE_UNKNOWN) {
+    cached_sensor_mode = detectSensorMode();
+  }
+  sensor_mode = cached_sensor_mode;
   initialiseNeighbourSensor();
 
   Serial.print("mac_address: ");
@@ -1281,6 +1332,15 @@ void subscribeSlotTopics() {
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
     mqtt_client.publish(createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_VERSION), GIT_VERSION, true);  // retained
+  }
+
+  // A cube waking from sleep still needs to report its mode, so this sits
+  // outside the is_first_boot guard above.
+  mqtt_client.publish(mqtt_topic_cube + "/sensor_mode",
+                      sensorModeIsMagnets() ? "magnets" : "nfc", true);
+  if (sensor_probe_report[0] != '\0') {
+    mqtt_client.publish(mqtt_topic_cube + "/sensor_probe",
+                        sensor_probe_report, true);
   }
 
   auto resetActivityTimer = []() { last_activity_time = millis(); };
