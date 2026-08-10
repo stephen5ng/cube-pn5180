@@ -1393,14 +1393,24 @@ void subscribeSlotTopics() {
   // Publish initial "no neighbor" state so game server sees all cubes on startup
   mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
   if (sensorModeIsMagnets()) {
-    // Only the magnet-neighbor path owns the cube/right protocol. The NFC
-    // path announces itself through cube/device/{MAC}/nfc instead --
-    // publishing "-" here would retained-clobber the edge the observation
-    // path just established, and nothing in that path re-establishes it
-    // until the observed tag changes.
     mqtt_client.publish(mqtt_topic_cube_right, "-", true);
     strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
     last_right_published[sizeof(last_right_published) - 1] = '\0';
+  } else {
+    // cube/right is retained, so the last edge a hall board reported outlives
+    // the swap back to a reader. The game server applies every cube/right
+    // payload without consulting sensor_mode, so the broker replays that edge
+    // on its next subscribe and a word can form around a neighbour that has
+    // not existed since the cable changed.
+    //
+    // Empty, not "-": an empty payload deletes the retained record rather than
+    // leaving a standing "no neighbour" assertion, and it is already how a
+    // cleared edge is expressed. The NFC path re-announces its own observation
+    // right after this -- last_observation_published is reset just before
+    // subscribeSlotTopics() runs -- so clearing here cannot strand the edge
+    // the observation path owns.
+    mqtt_client.publish(mqtt_topic_cube_right, "", true);
+    last_right_published[0] = '\0';
   }
 }
 
