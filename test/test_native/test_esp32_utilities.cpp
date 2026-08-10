@@ -123,6 +123,101 @@ void test_presence_delta_is_monotonic_with_approach() {
     TEST_ASSERT_TRUE(near_mid < near_close);
 }
 
+// ---------------------------------------------------------------------------
+// Sensor-mode discriminator
+// ---------------------------------------------------------------------------
+
+#include "../../src/sensor_mode.h"
+
+static uint8_t popcount4(uint8_t mask) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < 4; i++) if (mask & (1 << i)) n++;
+    return n;
+}
+
+// The invariant the whole safety argument rests on: the encoding is 2-of-6, so
+// whatever neighbour is docked, at least two of P1-P4 stay pulled high and
+// stage 1 still sees the board. Measured at its minimum on slot 1 (mask
+// 1 0 0 1 1 1, two lines high); this asserts it for all 15 masks.
+void test_hall_board_is_seen_under_every_2_of_6_mask(void) {
+    for (uint8_t a = 0; a < 6; a++) {
+        for (uint8_t b = a + 1; b < 6; b++) {
+            uint8_t active = (uint8_t)((1 << a) | (1 << b));
+            uint8_t high = hallDrivenHighMask(active);
+            TEST_ASSERT_TRUE_MESSAGE(popcount4(high) >= 2, "invariant broken");
+            TEST_ASSERT_TRUE_MESSAGE(hallBoardPresent(high), "board missed");
+        }
+    }
+}
+
+void test_hall_board_is_seen_when_idle(void) {
+    TEST_ASSERT_TRUE(hallBoardPresent(hallDrivenHighMask(0x00)));
+}
+
+// A PN5180 leaves all four floating, so the pulldowns win and nothing reads
+// high. Measured on slot 1.
+void test_no_hall_board_when_every_driven_line_floats(void) {
+    TEST_ASSERT_FALSE(hallBoardPresent(0x00));
+}
+
+void test_one_high_line_is_enough_to_report_a_hall_board(void) {
+    TEST_ASSERT_TRUE(hallBoardPresent(0x01));
+    TEST_ASSERT_TRUE(hallBoardPresent(0x08));
+}
+
+static const uint8_t LIVE_VERSION[2] = {0x00, 0x04};
+static const uint8_t EMPTY_VERSION[2] = {0x00, 0x00};
+static const uint8_t LIVE_DIE[16] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xFC, 0x14,
+    0xD6, 0x76, 0x70, 0x50, 0xCA, 0x76, 0x22, 0x12};
+static const uint8_t ZERO_DIE[16] = {0};
+static const uint8_t ONES_DIE[16] = {
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+void test_reader_present_for_the_measured_live_pair(void) {
+    TEST_ASSERT_TRUE(pn5180ReaderPresent(LIVE_VERSION, LIVE_DIE, 16));
+}
+
+// The measured empty connector. Both halves are degenerate, and readEEprom
+// reported success for all of it, which is why the return value is not an
+// input to this function.
+void test_reader_absent_for_the_measured_empty_pair(void) {
+    TEST_ASSERT_FALSE(pn5180ReaderPresent(EMPTY_VERSION, ZERO_DIE, 16));
+}
+
+// Each half alone would pass a weaker check, so each is asserted alone.
+void test_right_version_with_a_zero_die_is_not_a_reader(void) {
+    TEST_ASSERT_FALSE(pn5180ReaderPresent(LIVE_VERSION, ZERO_DIE, 16));
+}
+
+void test_live_die_with_the_wrong_version_is_not_a_reader(void) {
+    TEST_ASSERT_FALSE(pn5180ReaderPresent(EMPTY_VERSION, LIVE_DIE, 16));
+}
+
+void test_all_ones_die_is_not_a_reader(void) {
+    TEST_ASSERT_FALSE(pn5180ReaderPresent(LIVE_VERSION, ONES_DIE, 16));
+}
+
+// The property that keeps the probe off the sensor lines, asserted rather than
+// left to the ordering of statements inside detectSensorMode(). Stage 2 drives
+// four lines that are open-drain sensors on the hall board, so "unreachable
+// when a hall board is present" is a safety claim, not an optimisation.
+void test_the_active_probe_is_unreachable_when_a_hall_board_is_present(void) {
+    for (uint8_t a = 0; a < 6; a++) {
+        for (uint8_t b = a + 1; b < 6; b++) {
+            uint8_t high = hallDrivenHighMask((uint8_t)((1 << a) | (1 << b)));
+            TEST_ASSERT_FALSE_MESSAGE(shouldRunActiveProbe(high),
+                                      "probe armed with a hall board fitted");
+        }
+    }
+    TEST_ASSERT_FALSE(shouldRunActiveProbe(hallDrivenHighMask(0x00)));
+}
+
+void test_the_active_probe_runs_when_every_line_floats(void) {
+    TEST_ASSERT_TRUE(shouldRunActiveProbe(0x00));
+}
+
 // Test functions
 void setUp(void) {}
 void tearDown(void) {}
@@ -875,6 +970,19 @@ int main(void) {
     RUN_TEST(test_presence_is_fooled_by_a_fast_rail_step);
     RUN_TEST(test_presence_freezes_the_baseline_while_a_neighbour_is_present);
     RUN_TEST(test_presence_delta_is_monotonic_with_approach);
+
+    // Sensor-mode discriminator
+    RUN_TEST(test_hall_board_is_seen_under_every_2_of_6_mask);
+    RUN_TEST(test_hall_board_is_seen_when_idle);
+    RUN_TEST(test_no_hall_board_when_every_driven_line_floats);
+    RUN_TEST(test_one_high_line_is_enough_to_report_a_hall_board);
+    RUN_TEST(test_reader_present_for_the_measured_live_pair);
+    RUN_TEST(test_reader_absent_for_the_measured_empty_pair);
+    RUN_TEST(test_right_version_with_a_zero_die_is_not_a_reader);
+    RUN_TEST(test_live_die_with_the_wrong_version_is_not_a_reader);
+    RUN_TEST(test_all_ones_die_is_not_a_reader);
+    RUN_TEST(test_the_active_probe_is_unreachable_when_a_hall_board_is_present);
+    RUN_TEST(test_the_active_probe_runs_when_every_line_floats);
 
     return UNITY_END();
 }
