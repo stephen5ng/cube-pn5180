@@ -18,8 +18,8 @@
    ```bash
    ~/.platformio/penv/bin/platformio run -e v6
    ```
-   Environments are `v1`, `v6`, `v6_with_hall`, `v6_with_hall_analog`,
-   `v6_with_hall_neighbor` and `native` — there is no `esp32dev` environment
+   Environments are `v1`, `v6`, `v6_with_hall`, `v6_with_hall_analog`
+   and `native` — there is no `esp32dev` environment
    (`esp32dev` is the *board*, set inside `[env:v1]`). `v6` is what the Pi
    builds for production.
    - Verify code compiles for target hardware
