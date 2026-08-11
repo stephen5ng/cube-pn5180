@@ -1952,10 +1952,35 @@ void setup() {
   mqtt_client.enableLastWillMessage(
       mqtt_topic_presence.c_str(), last_will_payload.c_str(), true);
 
-  // Decide whether this wake is a keep-alive check-in or a real wake BEFORE any
-  // display work. On a check-in that stays asleep this re-enters deep sleep and
-  // never returns, so the panel, DisplayManager, and debug paints below are all
-  // skipped — that is what makes the keep-alive pulse cheap.
+  String cube_id = String(compiled_cube_id);
+
+  // A power cycle is someone picking the cube up, and it gets an answer before
+  // the check-in below can send it back to sleep. Without this a cold boot that
+  // finds a retained auto_sleep flag never reaches any display code, so a
+  // working cube is indistinguishable from dead hardware — which is exactly how
+  // a stale cube/N/auto_sleep once read as bad firmware.
+  //
+  // Power-on only, which is narrower than is_first_boot: that covers every
+  // non-deep-sleep reset, so a brownout or watchdog on a stored cube would
+  // light the panel, dwell 2s on "sleep..." and tear DMA down again on each
+  // glitch -- the battery burn runWakeCheckIn() re-reads the flag to avoid.
+  // esp_reset_reason() separates the two, and an EN-pin reset reports
+  // ESP_RST_POWERON, so a bench reset still exercises this path.
+  //
+  // A timer wake stays dark: skipping the panel is what makes the keep-alive
+  // pulse cheap, and the rail is still held off up here. On a power-on the rail
+  // is already up and setupWiFiConnection() above gave it time to settle, so no
+  // settle delay is needed.
+  if (is_first_boot && esp_reset_reason() == ESP_RST_POWERON) {
+    display_manager = new DisplayManager(cube_id);
+    display_manager->clearDebugDisplay();
+    display_manager->displayDebugMessage(GIT_TIMESTAMP);
+  }
+
+  // Decide whether this wake is a keep-alive check-in or a real wake. On a
+  // check-in that stays asleep this re-enters deep sleep and never returns, so
+  // the debug paints below are skipped; enterSleepMode() paints "sleep..." and
+  // tears the panel down when the block above has already built it.
   handleWakeUp();
 
   // Reaching here means we are fully waking: first boot, button wake, or a
@@ -1973,10 +1998,13 @@ void setup() {
 
   debugSend("setup: continuing normally");
 
-  String cube_id = String(compiled_cube_id);
-  display_manager = new DisplayManager(cube_id);
-  display_manager->clearDebugDisplay();
-  display_manager->displayDebugMessage(GIT_TIMESTAMP);
+  // Already built above on a first boot; a timer or button wake arrives here
+  // with nothing on the panel.
+  if (display_manager == nullptr) {
+    display_manager = new DisplayManager(cube_id);
+    display_manager->clearDebugDisplay();
+    display_manager->displayDebugMessage(GIT_TIMESTAMP);
+  }
   delay(DISPLAY_STARTUP_DELAY_MS);
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
   Serial.println(cube_id);
