@@ -9,20 +9,22 @@ static const char* KEY_AUTHORITY = "auth";
 static const char* KEY_PRESENCE_BASELINE = "presbase";
 static const char* KEY_VACATED_SLOT = "vacslot";
 
-int loadVacatedSlot() {
+VacatedSlots loadVacatedSlots() {
   Preferences prefs;
-  int slot = 0;
+  VacatedSlots set = {};
   if (prefs.begin(NVS_NAMESPACE, true)) {
-    slot = prefs.getInt(KEY_VACATED_SLOT, 0);
+    // A short read leaves the remainder zeroed, which reads as empty.
+    prefs.getBytes(KEY_VACATED_SLOT, set.slots, sizeof(set.slots));
     prefs.end();
   }
-  return slot;
+  return set;
 }
 
-bool saveVacatedSlot(int slot) {
+bool saveVacatedSlots(const VacatedSlots& set) {
   Preferences prefs;
   if (!prefs.begin(NVS_NAMESPACE, false)) return false;
-  const bool written = prefs.putInt(KEY_VACATED_SLOT, slot) != 0;
+  const bool written =
+      prefs.putBytes(KEY_VACATED_SLOT, set.slots, sizeof(set.slots)) == sizeof(set.slots);
   prefs.end();
   return written;
 }

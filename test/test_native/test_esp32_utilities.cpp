@@ -2,6 +2,7 @@
 #include "../../src/cube_utilities.h"
 #include "../../src/cube_tags.h"
 #include "../../src/hall_presence.h"
+#include "../../src/vacated_slots.h"
 
 // For testing, include the implementation directly
 #include "../../src/cube_utilities.cpp"
@@ -168,6 +169,48 @@ void test_baseline_saves_when_nothing_is_stored_yet() {
     // 0 is the unset marker, and is further from any real baseline than the
     // threshold, so a first write needs no special case.
     TEST_ASSERT_TRUE(shouldSavePresenceBaseline(0, false, 1771, 0));
+}
+
+// The vacated set is the only handle on a retained record once its cube has
+// rebooted into another slot, so losing an entry loses the record for good.
+void test_vacated_slots_keeps_every_distinct_slot() {
+    VacatedSlots set = {};
+    addVacatedSlot(&set, 1);
+    addVacatedSlot(&set, 11);
+    TEST_ASSERT_TRUE(vacatedSlotsContain(set, 1));
+    TEST_ASSERT_TRUE(vacatedSlotsContain(set, 11));
+}
+
+void test_vacated_slots_ignores_repeats_and_non_slots() {
+    VacatedSlots set = {};
+    addVacatedSlot(&set, 3);
+    addVacatedSlot(&set, 3);
+    addVacatedSlot(&set, 0);   // the empty marker is not a slot
+    addVacatedSlot(&set, -1);  // nor is an unassigned cube
+    TEST_ASSERT_EQUAL(3, set.slots[0]);
+    TEST_ASSERT_EQUAL(0, set.slots[1]);
+}
+
+void test_vacated_slots_evicts_the_oldest_when_full() {
+    VacatedSlots set = {};
+    for (int slot = 1; slot <= (int)VACATED_SLOT_CAPACITY; slot++) addVacatedSlot(&set, slot);
+    addVacatedSlot(&set, 99);
+    TEST_ASSERT_FALSE(vacatedSlotsContain(set, 1));
+    TEST_ASSERT_TRUE(vacatedSlotsContain(set, 2));
+    TEST_ASSERT_TRUE(vacatedSlotsContain(set, 99));
+}
+
+void test_vacated_slots_removal_keeps_the_rest_packed() {
+    VacatedSlots set = {};
+    addVacatedSlot(&set, 1);
+    addVacatedSlot(&set, 11);
+    addVacatedSlot(&set, 12);
+    removeVacatedSlot(&set, 11);
+    TEST_ASSERT_FALSE(vacatedSlotsContain(set, 11));
+    // Packed, so a later add still fills a real gap rather than evicting.
+    TEST_ASSERT_EQUAL(1, set.slots[0]);
+    TEST_ASSERT_EQUAL(12, set.slots[1]);
+    TEST_ASSERT_EQUAL(0, set.slots[2]);
 }
 
 // Distance and closeness exist so a consumer never has to know the cube law. These
@@ -1081,6 +1124,10 @@ int main(void) {
     RUN_TEST(test_baseline_is_not_saved_while_presence_is_asserted);
     RUN_TEST(test_baseline_saves_only_on_a_move_worth_a_flash_write);
     RUN_TEST(test_baseline_saves_when_nothing_is_stored_yet);
+    RUN_TEST(test_vacated_slots_keeps_every_distinct_slot);
+    RUN_TEST(test_vacated_slots_ignores_repeats_and_non_slots);
+    RUN_TEST(test_vacated_slots_evicts_the_oldest_when_full);
+    RUN_TEST(test_vacated_slots_removal_keeps_the_rest_packed);
     RUN_TEST(test_distance_falls_as_the_cube_root_of_field);
     RUN_TEST(test_distance_reports_out_of_range_behind_the_baseline);
     RUN_TEST(test_closeness_spans_nothing_to_docked);

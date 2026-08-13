@@ -361,8 +361,10 @@ int published_proximity = -1;      // -1 forces the next poll to publish
 // that strands a record indefinitely.
 static constexpr size_t PROXIMITY_PENDING_CLEARS = 4;
 String mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS];
-// The slot left behind by a reassignment, held in NVS until its delete lands.
-int vacated_slot_awaiting_clear = 0;
+// Slots left behind by reassignments whose deletes were queued this boot. NVS
+// holds the durable copy; this mirrors it so the entries can only be forgotten
+// once their deletes have actually landed.
+VacatedSlots vacated_awaiting_clear = {};
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1464,13 +1466,12 @@ void subscribeSlotTopics() {
   // A reassignment reboots, so this is the only place the slot just left can
   // still be named. Held in NVS until the delete is accepted, for the same
   // reason the pending set exists: forgetting it strands the record.
-  const int vacated = loadVacatedSlot();
-  if (vacated > 0 && String(vacated) != cube_identifier) {
-    vacated_slot_awaiting_clear = vacated;
-    requestProximityClear(proximityTopicForSlot(String(vacated)));
-  } else if (vacated != 0) {
-    saveVacatedSlot(0);
+  VacatedSlots vacated = loadVacatedSlots();
+  removeVacatedSlot(&vacated, cube_identifier.toInt());  // the slot now bound is not vacant
+  for (int slot : vacated.slots) {
+    if (slot > 0) requestProximityClear(proximityTopicForSlot(String(slot)));
   }
+  vacated_awaiting_clear = vacated;
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
@@ -1627,7 +1628,9 @@ void handleAssignmentRecord(const String& message) {
     // Recorded before the restart because the restart is what loses it: the
     // topic names live in RAM, so nothing after the reboot could name the slot
     // being left, and its retained records would stay behind forever.
-    saveVacatedSlot(applied_slot);
+    VacatedSlots vacated = loadVacatedSlots();
+    addVacatedSlot(&vacated, applied_slot);
+    saveVacatedSlots(vacated);
     debugSend("slot changed: rebooting");
     delay(200);
     ESP.restart();
@@ -2258,10 +2261,17 @@ void loop() {
   // here: the assignment arrives as a retained message, so the first loops run
   // before anything has been queued and would read "not pending" as "already
   // delivered".
-  if (vacated_slot_awaiting_clear > 0 &&
-      !proximityClearIsPending(proximityTopicForSlot(String(vacated_slot_awaiting_clear))) &&
-      saveVacatedSlot(0)) {
-    vacated_slot_awaiting_clear = 0;
+  VacatedSlots settled = vacated_awaiting_clear;
+  for (int slot : vacated_awaiting_clear.slots) {
+    if (slot > 0 && !proximityClearIsPending(proximityTopicForSlot(String(slot)))) {
+      removeVacatedSlot(&settled, slot);
+    }
+  }
+  // The mirror only advances on a confirmed NVS write, so a failed one is
+  // retried rather than assumed.
+  if (memcmp(&settled, &vacated_awaiting_clear, sizeof(settled)) != 0 &&
+      saveVacatedSlots(settled)) {
+    vacated_awaiting_clear = settled;
   }
 
   if (!slot_resolved && assignment_wait_started != 0 &&
