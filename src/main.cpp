@@ -174,6 +174,14 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_FAST_SHIFT       3    // ~8 samples at the 1kHz poll
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
+
+// Presence telemetry. The ID sensors are digital, so cube/N/hall_debug shows
+// whether a magnet tripped them but nothing shows how much margin the analog
+// presence reading has over HALL_PRESENCE_ON_DELTA. Rate-limited and
+// change-gated: retained, so the last value is always readable, and quiet while
+// a docked cube sits still.
+#define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
+#define HALL_PRESENCE_PUBLISH_MIN_CHANGE  8
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
 // hall_debug: idle mask reads 111111 with HIGH as the reference level).
@@ -2201,6 +2209,11 @@ void loop() {
       static int candidate_raw_count = 0;
       static uint8_t stable_raw = 0xFF;
 
+      static unsigned long last_presence_publish = 0;
+      static int published_presence_delta = 0;
+      static bool published_presence_active = false;
+      static bool presence_ever_published = false;
+
       if (current_time - last_hall_poll >= HALL_POLL_INTERVAL_MS) {
         last_hall_poll = current_time;
       
@@ -2257,6 +2270,30 @@ void loop() {
             last_right_published[sizeof(last_right_published) - 1] = '\0';
             stable_id = candidate_id;
             Serial.printf("Hall neighbor -> %s\n", buf);
+          }
+        }
+
+        // readHallNeighborId() above fed the tracker this sample, so the
+        // accessors describe the reading the id decision was just made on.
+        const int presence_delta = hall_presence.delta();
+        const bool presence_state = hall_presence.active();
+        const bool presence_changed =
+            !presence_ever_published || presence_state != published_presence_active ||
+            abs(presence_delta - published_presence_delta) >= HALL_PRESENCE_PUBLISH_MIN_CHANGE;
+
+        if (presence_changed &&
+            current_time - last_presence_publish >= HALL_PRESENCE_PUBLISH_INTERVAL_MS &&
+            mqtt_client.isConnected()) {
+          char presence_buf[64];
+          snprintf(presence_buf, sizeof(presence_buf),
+                   "delta=%d on=%d off=%d base=%d raw=%d active=%d", presence_delta,
+                   HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
+                   hall_presence.baseline(), hall_presence.filtered(), presence_state);
+          if (mqtt_client.publish(mqtt_topic_cube + "/hall_presence", presence_buf, true)) {
+            last_presence_publish = current_time;
+            published_presence_delta = presence_delta;
+            published_presence_active = presence_state;
+            presence_ever_published = true;
           }
         }
       }
