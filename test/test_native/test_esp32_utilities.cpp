@@ -240,10 +240,11 @@ static uint8_t popcount4(uint8_t mask) {
     return n;
 }
 
-// The invariant the whole safety argument rests on: the encoding is 2-of-6, so
-// whatever neighbour is docked, at least two of P1-P4 stay pulled high and
-// stage 1 still sees the board. Measured at its minimum on slot 1 (mask
+// Every pattern the encoding can intend leaves at least two of P1-P4 pulled
+// high, so stage 1 sees the board. Measured at its minimum on slot 1 (mask
 // 1 0 0 1 1 1, two lines high); this asserts it for all 15 masks.
+//
+// This covers the encoding, not the reading -- see the crosstalk case below.
 void test_hall_board_is_seen_under_every_2_of_6_mask(void) {
     for (uint8_t a = 0; a < 6; a++) {
         for (uint8_t b = a + 1; b < 6; b++) {
@@ -253,6 +254,23 @@ void test_hall_board_is_seen_under_every_2_of_6_mask(void) {
             TEST_ASSERT_TRUE_MESSAGE(hallBoardPresent(high), "board missed");
         }
     }
+}
+
+void test_crosstalk_hides_the_hall_board(void) {
+    // KNOWN HAZARD, asserted so it is visible in the suite rather than only in
+    // a comment. Measured on slot 1, 2026-08-13, with two stacked presence
+    // magnets: the presence magnet sits 32.3mm from U1, U2, U4 and U5 on
+    // hall-sensor v2.2 and drove all four active, while U3 carried a real ID
+    // magnet -- hall_debug read 1 1 1 1 1 0. Every one of P1-P4 is then low,
+    // which is exactly what a floating PN5180 reads, so the board is missed and
+    // stage 2 drives SPI into its open-drain outputs.
+    //
+    // Not fixable by reading: floating-with-pulldown and driven-low are the
+    // same level. The guard is magnetic -- one presence magnet, never a stack.
+    const uint8_t crosstalk_plus_id = 0b011111;  // U1,U2,U4,U5 leaked; U3 real
+    const uint8_t high = hallDrivenHighMask(crosstalk_plus_id);
+    TEST_ASSERT_FALSE(hallBoardPresent(high));
+    TEST_ASSERT_TRUE(shouldRunActiveProbe(high));
 }
 
 void test_hall_board_is_seen_when_idle(void) {
@@ -1089,6 +1107,7 @@ int main(void) {
 
     // Sensor-mode discriminator
     RUN_TEST(test_hall_board_is_seen_under_every_2_of_6_mask);
+    RUN_TEST(test_crosstalk_hides_the_hall_board);
     RUN_TEST(test_hall_board_is_seen_when_idle);
     RUN_TEST(test_no_hall_board_when_every_driven_line_floats);
     RUN_TEST(test_one_high_line_is_enough_to_report_a_hall_board);
