@@ -1430,10 +1430,23 @@ void clearRetainedProximity() {
 }
 
 void subscribeSlotTopics() {
-  // Retained, so the value outlives the slot it described. Cleared before the
-  // topic is rebound, or a reassigned cube leaves the old slot reading as
-  // permanently docked.
-  clearRetainedProximity();
+  // Retained, so the value outlives the slot it described: it is cleared before
+  // the topic is rebound. This also runs on every MQTT reconnect with the slot
+  // unchanged, though, where deleting the cube's own live value and writing it
+  // straight back is pure churn.
+  //
+  // The publish cache is invalidated either way, because the broker runs with
+  // persistence off -- a reconnect may be to a broker that has forgotten every
+  // retained record, and publish-on-change alone would leave the topic empty
+  // until the neighbour physically moved.
+  // Built from cube_identifier, not from mqtt_topic_cube, which still holds the
+  // slot being left at this point.
+  if (mqtt_topic_cube_proximity ==
+      String(MQTT_TOPIC_PREFIX_CUBE) + cube_identifier + "/proximity") {
+    published_proximity = -1;
+  } else {
+    clearRetainedProximity();
+  }
 
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
