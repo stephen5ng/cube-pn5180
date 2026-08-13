@@ -183,24 +183,18 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
 #define HALL_PRESENCE_PUBLISH_MIN_CHANGE  8
 
-// delta is a field strength, which falls off as the cube of distance, so it is
-// a badly misleading gauge of how well a magnet is seated: the 176 -> 148 drop
-// measured while re-seating slot 1 looks like losing a sixth of the signal and
-// is under 6% of extra gap. hall_presence therefore also reports distance, in
-// units where 100 is the gap at which presence latches on, so that seating
-// changes read at the scale the hand actually moves.
+// cube/N/proximity is the 0..100 closeness of the neighbour, for driving an
+// animation or any other control. Smoothed harder than the detection path,
+// which is deliberately quick so a docking cube latches promptly: at the ~1kHz
+// poll a shift of 7 is roughly 128ms, slow enough that the +/-13 counts of ADC
+// noise measured on slot 1 do not show as jitter.
 //
-// Calibration-free by construction: only the ratio to HALL_PRESENCE_ON_DELTA
-// matters, so no bench measurement of a real gap is needed. The cost is that
-// the number is relative, not millimetres, and the inverse-cube law holds in
-// the far field -- across a gap comparable to the magnet the true exponent is
-// smaller, so a distance change is somewhat larger than reported.
-#define HALL_PRESENCE_DISTANCE_REFERENCE 100
-static inline int hallPresenceDistance(int delta) {
-  if (delta < 1) return 999;  // at or behind the baseline: no magnet in range
-  return (int)lroundf(HALL_PRESENCE_DISTANCE_REFERENCE *
-                      cbrtf((float)HALL_PRESENCE_ON_DELTA / (float)delta));
-}
+// 10Hz is a compromise against MQTT volume, which is this firmware's documented
+// bottleneck -- six cubes streaming during a game is real traffic. Publishing
+// only on a change keeps a still cube silent, so the cost is only paid while
+// something is actually moving.
+#define HALL_PROXIMITY_SHIFT           7
+#define HALL_PROXIMITY_INTERVAL_MS     100
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
 // hall_debug: idle mask reads 111111 with HIGH as the reference level).
@@ -2332,6 +2326,30 @@ void loop() {
         // accessors describe the reading the id decision was just made on.
         const int presence_delta = hall_presence.delta();
         const bool presence_state = hall_presence.active();
+
+        static int32_t proximity_filter = 0;
+        static bool proximity_primed = false;
+        if (!proximity_primed) {
+          proximity_filter = (int32_t)presence_delta << HALL_PROXIMITY_SHIFT;
+          proximity_primed = true;
+        } else {
+          proximity_filter += presence_delta - (proximity_filter >> HALL_PROXIMITY_SHIFT);
+        }
+        const int proximity = hallPresenceCloseness(
+            (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
+
+        static unsigned long last_proximity_publish = 0;
+        static int published_proximity = -1;
+        if (proximity != published_proximity &&
+            current_time - last_proximity_publish >= HALL_PROXIMITY_INTERVAL_MS &&
+            mqtt_client.isConnected()) {
+          char proximity_buf[8];
+          snprintf(proximity_buf, sizeof(proximity_buf), "%d", proximity);
+          if (mqtt_client.publish(mqtt_topic_cube + "/proximity", proximity_buf, true)) {
+            last_proximity_publish = current_time;
+            published_proximity = proximity;
+          }
+        }
         saved_presence_baseline = hall_presence.baseline();
         saved_presence_magic = PRESENCE_BASELINE_MAGIC;
 
@@ -2364,8 +2382,8 @@ void loop() {
           snprintf(presence_buf, sizeof(presence_buf),
                    "delta=%d on=%d off=%d dist=%d drop=%d base=%d raw=%d active=%d",
                    presence_delta, HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
-                   hallPresenceDistance(presence_delta),
-                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA),
+                   hallPresenceDistance(presence_delta, HALL_PRESENCE_ON_DELTA),
+                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA, HALL_PRESENCE_ON_DELTA),
                    hall_presence.baseline(), hall_presence.filtered(), presence_state);
           if (mqtt_client.publish(mqtt_topic_cube + "/hall_presence", presence_buf, true)) {
             last_presence_publish = current_time;
