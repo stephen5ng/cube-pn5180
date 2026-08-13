@@ -1616,6 +1616,34 @@ static uint8_t hallCubeIdForMask(uint8_t id_mask) {
 
 static HallPresenceTracker hall_presence;
 
+// The tracker primes its baseline from its first sample, which is blind to a
+// magnet that is already there: a cube that wakes docked subtracts the
+// neighbour into its own baseline and reports no neighbour until it is pulled
+// away for the ~32s the baseline needs to decay. Carrying the baseline across
+// the wake removes the guess.
+//
+// RTC_NOINIT_ATTR, not RTC_DATA_ATTR: the bootloader re-initialises .rtc.data
+// on every reset except a deep-sleep wake, so an OTA reboot lands docked with
+// nothing saved -- measured on slot 1, which primed to 1954 against a true
+// baseline of 1771. The noinit segment is left alone and survives a software
+// reset too. Nothing initialises it on a cold boot, hence the magic word:
+// unset reads as garbage rather than as zero.
+#define PRESENCE_BASELINE_MAGIC 0x48414c42u  // "HALB"
+#define PRESENCE_BASELINE_MIN   100
+#define PRESENCE_BASELINE_MAX   4000
+RTC_NOINIT_ATTR static uint32_t saved_presence_magic;
+RTC_NOINIT_ATTR static int32_t saved_presence_baseline;
+
+// 0 tells the tracker to prime from its first sample, as on a cold boot.
+static int restoredPresenceBaseline() {
+  if (saved_presence_magic != PRESENCE_BASELINE_MAGIC) return 0;
+  if (saved_presence_baseline < PRESENCE_BASELINE_MIN ||
+      saved_presence_baseline > PRESENCE_BASELINE_MAX) {
+    return 0;
+  }
+  return (int)saved_presence_baseline;
+}
+
 void setupHallSensors() {
   for (uint8_t i = 0; i < 6; i++) {
     pinMode(HALL_ID_PINS[i], INPUT);
@@ -1626,7 +1654,8 @@ void setupHallSensors() {
                        HALL_PRESENCE_OFF_DELTA,
                        HALL_PRESENCE_FAST_SHIFT,
                        HALL_PRESENCE_BASE_SHIFT,
-                       HALL_PRESENCE_BASE_INTERVAL_MS});
+                       HALL_PRESENCE_BASE_INTERVAL_MS},
+                      restoredPresenceBaseline());
 
   Serial.println(F("Hall neighbor sensors initialized"));
 }
@@ -2296,6 +2325,8 @@ void loop() {
         // accessors describe the reading the id decision was just made on.
         const int presence_delta = hall_presence.delta();
         const bool presence_state = hall_presence.active();
+        saved_presence_baseline = hall_presence.baseline();
+        saved_presence_magic = PRESENCE_BASELINE_MAGIC;
         const bool presence_changed =
             !presence_ever_published || presence_state != published_presence_active ||
             abs(presence_delta - published_presence_delta) >= HALL_PRESENCE_PUBLISH_MIN_CHANGE;
