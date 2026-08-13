@@ -19,17 +19,23 @@ struct HallPresenceConfig {
 
 class HallPresenceTracker {
  public:
-  void begin(const HallPresenceConfig& cfg) {
+  // saved_baseline carries a baseline across a wake. Priming from the first sample
+  // is blind to a magnet that is already there: the magnet gets subtracted into the
+  // baseline and the neighbour is never seen. 0 means nothing was saved -- a cold
+  // boot re-initialises RTC memory -- and the first sample primes as before.
+  void begin(const HallPresenceConfig& cfg, int saved_baseline = 0) {
     cfg_ = cfg;
     primed_ = false;
     active_ = false;
     delta_ = 0;
+    base_primed_ = saved_baseline > 0;
+    if (base_primed_) base_ = (int32_t)saved_baseline << cfg_.base_shift;
   }
 
   bool update(int raw, uint32_t now_ms) {
     if (!primed_) {
       fast_ = (int32_t)raw << cfg_.fast_shift;
-      base_ = (int32_t)raw << cfg_.base_shift;
+      if (!base_primed_) base_ = (int32_t)raw << cfg_.base_shift;
       last_base_ms_ = now_ms;
       primed_ = true;
     } else {
@@ -67,4 +73,5 @@ class HallPresenceTracker {
   int      delta_ = 0;
   bool     active_ = false;
   bool     primed_ = false;
+  bool     base_primed_ = false;
 };

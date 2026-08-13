@@ -174,6 +174,33 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_FAST_SHIFT       3    // ~8 samples at the 1kHz poll
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
+
+// Presence telemetry. The ID sensors are digital, so cube/N/hall_debug shows
+// whether a magnet tripped them but nothing shows how much margin the analog
+// presence reading has over HALL_PRESENCE_ON_DELTA. Rate-limited and
+// change-gated: retained, so the last value is always readable, and quiet while
+// a docked cube sits still.
+#define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
+#define HALL_PRESENCE_PUBLISH_MIN_CHANGE  8
+
+// delta is a field strength, which falls off as the cube of distance, so it is
+// a badly misleading gauge of how well a magnet is seated: the 176 -> 148 drop
+// measured while re-seating slot 1 looks like losing a sixth of the signal and
+// is under 6% of extra gap. hall_presence therefore also reports distance, in
+// units where 100 is the gap at which presence latches on, so that seating
+// changes read at the scale the hand actually moves.
+//
+// Calibration-free by construction: only the ratio to HALL_PRESENCE_ON_DELTA
+// matters, so no bench measurement of a real gap is needed. The cost is that
+// the number is relative, not millimetres, and the inverse-cube law holds in
+// the far field -- across a gap comparable to the magnet the true exponent is
+// smaller, so a distance change is somewhat larger than reported.
+#define HALL_PRESENCE_DISTANCE_REFERENCE 100
+static inline int hallPresenceDistance(int delta) {
+  if (delta < 1) return 999;  // at or behind the baseline: no magnet in range
+  return (int)lroundf(HALL_PRESENCE_DISTANCE_REFERENCE *
+                      cbrtf((float)HALL_PRESENCE_ON_DELTA / (float)delta));
+}
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
 // hall_debug: idle mask reads 111111 with HIGH as the reference level).
@@ -1589,6 +1616,34 @@ static uint8_t hallCubeIdForMask(uint8_t id_mask) {
 
 static HallPresenceTracker hall_presence;
 
+// The tracker primes its baseline from its first sample, which is blind to a
+// magnet that is already there: a cube that wakes docked subtracts the
+// neighbour into its own baseline and reports no neighbour until it is pulled
+// away for the ~32s the baseline needs to decay. Carrying the baseline across
+// the wake removes the guess.
+//
+// RTC_NOINIT_ATTR, not RTC_DATA_ATTR: the bootloader re-initialises .rtc.data
+// on every reset except a deep-sleep wake, so an OTA reboot lands docked with
+// nothing saved -- measured on slot 1, which primed to 1954 against a true
+// baseline of 1771. The noinit segment is left alone and survives a software
+// reset too. Nothing initialises it on a cold boot, hence the magic word:
+// unset reads as garbage rather than as zero.
+#define PRESENCE_BASELINE_MAGIC 0x48414c42u  // "HALB"
+#define PRESENCE_BASELINE_MIN   100
+#define PRESENCE_BASELINE_MAX   4000
+RTC_NOINIT_ATTR static uint32_t saved_presence_magic;
+RTC_NOINIT_ATTR static int32_t saved_presence_baseline;
+
+// 0 tells the tracker to prime from its first sample, as on a cold boot.
+static int restoredPresenceBaseline() {
+  if (saved_presence_magic != PRESENCE_BASELINE_MAGIC) return 0;
+  if (saved_presence_baseline < PRESENCE_BASELINE_MIN ||
+      saved_presence_baseline > PRESENCE_BASELINE_MAX) {
+    return 0;
+  }
+  return (int)saved_presence_baseline;
+}
+
 void setupHallSensors() {
   for (uint8_t i = 0; i < 6; i++) {
     pinMode(HALL_ID_PINS[i], INPUT);
@@ -1599,7 +1654,8 @@ void setupHallSensors() {
                        HALL_PRESENCE_OFF_DELTA,
                        HALL_PRESENCE_FAST_SHIFT,
                        HALL_PRESENCE_BASE_SHIFT,
-                       HALL_PRESENCE_BASE_INTERVAL_MS});
+                       HALL_PRESENCE_BASE_INTERVAL_MS},
+                      restoredPresenceBaseline());
 
   Serial.println(F("Hall neighbor sensors initialized"));
 }
@@ -2201,6 +2257,11 @@ void loop() {
       static int candidate_raw_count = 0;
       static uint8_t stable_raw = 0xFF;
 
+      static unsigned long last_presence_publish = 0;
+      static int published_presence_delta = 0;
+      static bool published_presence_active = false;
+      static bool presence_ever_published = false;
+
       if (current_time - last_hall_poll >= HALL_POLL_INTERVAL_MS) {
         last_hall_poll = current_time;
       
@@ -2257,6 +2318,34 @@ void loop() {
             last_right_published[sizeof(last_right_published) - 1] = '\0';
             stable_id = candidate_id;
             Serial.printf("Hall neighbor -> %s\n", buf);
+          }
+        }
+
+        // readHallNeighborId() above fed the tracker this sample, so the
+        // accessors describe the reading the id decision was just made on.
+        const int presence_delta = hall_presence.delta();
+        const bool presence_state = hall_presence.active();
+        saved_presence_baseline = hall_presence.baseline();
+        saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+        const bool presence_changed =
+            !presence_ever_published || presence_state != published_presence_active ||
+            abs(presence_delta - published_presence_delta) >= HALL_PRESENCE_PUBLISH_MIN_CHANGE;
+
+        if (presence_changed &&
+            current_time - last_presence_publish >= HALL_PRESENCE_PUBLISH_INTERVAL_MS &&
+            mqtt_client.isConnected()) {
+          char presence_buf[96];
+          snprintf(presence_buf, sizeof(presence_buf),
+                   "delta=%d on=%d off=%d dist=%d drop=%d base=%d raw=%d active=%d",
+                   presence_delta, HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
+                   hallPresenceDistance(presence_delta),
+                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA),
+                   hall_presence.baseline(), hall_presence.filtered(), presence_state);
+          if (mqtt_client.publish(mqtt_topic_cube + "/hall_presence", presence_buf, true)) {
+            last_presence_publish = current_time;
+            published_presence_delta = presence_delta;
+            published_presence_active = presence_state;
+            presence_ever_published = true;
           }
         }
       }

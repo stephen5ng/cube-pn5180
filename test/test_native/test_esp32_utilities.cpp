@@ -110,6 +110,32 @@ void test_presence_freezes_the_baseline_while_a_neighbour_is_present() {
     TEST_ASSERT_EQUAL(base_at_assert, t.baseline());
 }
 
+void test_presence_boots_blind_to_a_magnet_it_woke_up_next_to() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    // Waking already docked primes the baseline from a magnet-present sample, so the
+    // magnet is subtracted out and never seen. Measured on slot 1 after an OTA flash:
+    // the neighbour id collapsed while hall_debug still read the right ID pattern.
+    settle(t, 2035 + 120, now);
+    TEST_ASSERT_FALSE(t.active());
+}
+
+void test_presence_restores_a_saved_baseline_instead_of_priming_from_a_magnet() {
+    HallPresenceTracker t; t.begin(test_presence_config(), 2035);
+    uint32_t now = 0;
+    settle(t, 2035 + 120, now, 200);
+    TEST_ASSERT_TRUE(t.active());
+}
+
+void test_presence_ignores_an_absent_saved_baseline() {
+    // 0 means nothing was saved -- a cold boot re-initialises RTC memory -- so the
+    // first sample must still prime the baseline.
+    HallPresenceTracker t; t.begin(test_presence_config(), 0);
+    uint32_t now = 0;
+    TEST_ASSERT_FALSE(t.update(2035, now));
+    TEST_ASSERT_EQUAL(2035, t.baseline());
+}
+
 void test_presence_delta_is_monotonic_with_approach() {
     HallPresenceTracker t; t.begin(test_presence_config());
     uint32_t now = 0;
@@ -969,6 +995,9 @@ int main(void) {
     RUN_TEST(test_presence_tracks_slow_rail_drift_without_asserting);
     RUN_TEST(test_presence_is_fooled_by_a_fast_rail_step);
     RUN_TEST(test_presence_freezes_the_baseline_while_a_neighbour_is_present);
+    RUN_TEST(test_presence_boots_blind_to_a_magnet_it_woke_up_next_to);
+    RUN_TEST(test_presence_restores_a_saved_baseline_instead_of_priming_from_a_magnet);
+    RUN_TEST(test_presence_ignores_an_absent_saved_baseline);
     RUN_TEST(test_presence_delta_is_monotonic_with_approach);
 
     // Sensor-mode discriminator
