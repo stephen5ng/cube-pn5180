@@ -345,9 +345,16 @@ String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
 String mqtt_topic_cube_proximity;  // publishes 0-100 closeness to cube/<id>/proximity
 int published_proximity = -1;      // -1 forces the next poll to publish
-// A topic whose retained delete has not been accepted yet. The topic name is
-// the only handle on the stale value, so it is held rather than dropped.
-String mqtt_topic_proximity_pending_clear;
+// Topics whose retained delete has not been accepted yet. The topic name is the
+// only handle on the stale value, so it is held rather than dropped.
+//
+// Several can be outstanding at once from a single rebinding: binding a slot
+// queues a delete for the topic being left, and resolving as a reader queues
+// another for the one just bound. One pending slot would let the second
+// overwrite the first while the broker is refusing writes, which is the case
+// that strands a record indefinitely.
+static constexpr size_t PROXIMITY_PENDING_CLEARS = 4;
+String mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS];
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1369,12 +1376,13 @@ void handleSleepIntervalCommand(const String& message) {
 // a second rebinding during a sustained outage drops the earlier tombstone, and
 // that is bounded because a cube that cannot publish is not producing new
 // proximity values either, so the stale record can only predate the outage.
-void flushProximityClear() {
-  if (mqtt_topic_proximity_pending_clear.isEmpty() || !mqtt_client.isConnected()) {
-    return;
-  }
-  if (mqtt_client.publish(mqtt_topic_proximity_pending_clear, "", true)) {
-    mqtt_topic_proximity_pending_clear = "";
+void flushProximityClears() {
+  if (!mqtt_client.isConnected()) return;
+  for (String& pending : mqtt_topic_proximity_pending_clear) {
+    if (pending.isEmpty()) continue;
+    if (mqtt_client.publish(pending, "", true)) {
+      pending = "";
+    }
   }
 }
 
@@ -1385,9 +1393,28 @@ void flushProximityClear() {
 // nothing, and the new topic would stay empty.
 void requestProximityClear(const String& topic) {
   if (topic.isEmpty()) return;
-  flushProximityClear();  // settle any earlier delete before taking the slot
-  mqtt_topic_proximity_pending_clear = topic;
-  flushProximityClear();
+  flushProximityClears();
+
+  for (const String& pending : mqtt_topic_proximity_pending_clear) {
+    if (pending == topic) return;
+  }
+  for (String& pending : mqtt_topic_proximity_pending_clear) {
+    if (pending.isEmpty()) {
+      pending = topic;
+      flushProximityClears();
+      return;
+    }
+  }
+
+  // Every slot taken means as many distinct topics have gone un-deleted as a
+  // cube has bindings to give, so the oldest is the one whose slot is least
+  // likely to be looked at again. Reaching here at all needs the broker to
+  // reject writes across that many rebindings.
+  for (size_t i = 1; i < PROXIMITY_PENDING_CLEARS; i++) {
+    mqtt_topic_proximity_pending_clear[i - 1] = mqtt_topic_proximity_pending_clear[i];
+  }
+  mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS - 1] = topic;
+  flushProximityClears();
 }
 
 void clearRetainedProximity() {
@@ -2181,7 +2208,7 @@ void loop() {
 
   // Outside the magnets branch: a cube that resolved as a reader is exactly the
   // one whose stale proximity needs deleting, and it never enters that branch.
-  flushProximityClear();
+  flushProximityClears();
 
   if (!slot_resolved && assignment_wait_started != 0 &&
       millis() - assignment_wait_started >= ASSIGNMENT_WAIT_MS) {
