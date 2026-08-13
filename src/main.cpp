@@ -361,6 +361,8 @@ int published_proximity = -1;      // -1 forces the next poll to publish
 // that strands a record indefinitely.
 static constexpr size_t PROXIMITY_PENDING_CLEARS = 4;
 String mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS];
+// The slot left behind by a reassignment, held in NVS until its delete lands.
+int vacated_slot_awaiting_clear = 0;
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1382,6 +1384,17 @@ void handleSleepIntervalCommand(const String& message) {
 // a second rebinding during a sustained outage drops the earlier tombstone, and
 // that is bounded because a cube that cannot publish is not producing new
 // proximity values either, so the stale record can only predate the outage.
+String proximityTopicForSlot(const String& slot) {
+  return String(MQTT_TOPIC_PREFIX_CUBE) + slot + "/proximity";
+}
+
+bool proximityClearIsPending(const String& topic) {
+  for (const String& pending : mqtt_topic_proximity_pending_clear) {
+    if (pending == topic) return true;
+  }
+  return false;
+}
+
 void flushProximityClears() {
   if (!mqtt_client.isConnected()) return;
   for (String& pending : mqtt_topic_proximity_pending_clear) {
@@ -1430,17 +1443,34 @@ void clearRetainedProximity() {
 }
 
 void subscribeSlotTopics() {
-  // Retained, so the value outlives the slot it described. Cleared before the
-  // topic is rebound, or a reassigned cube leaves the old slot reading as
-  // permanently docked.
-  clearRetainedProximity();
+  // Also runs on every MQTT reconnect with the slot unchanged, where deleting
+  // the cube's own live value and writing it straight back is pure churn. The
+  // cache is still invalidated so the value is re-announced: the broker has
+  // persistence off, so a reconnect may be a reconnect to a broker that has
+  // forgotten every retained record.
+  if (mqtt_topic_cube_proximity == proximityTopicForSlot(cube_identifier)) {
+    published_proximity = -1;
+  } else {
+    clearRetainedProximity();
+  }
 
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
-  mqtt_topic_cube_proximity = mqtt_topic_cube + "/proximity";
+  mqtt_topic_cube_proximity = proximityTopicForSlot(cube_identifier);
+
+  // A reassignment reboots, so this is the only place the slot just left can
+  // still be named. Held in NVS until the delete is accepted, for the same
+  // reason the pending set exists: forgetting it strands the record.
+  const int vacated = loadVacatedSlot();
+  if (vacated > 0 && String(vacated) != cube_identifier) {
+    vacated_slot_awaiting_clear = vacated;
+    requestProximityClear(proximityTopicForSlot(String(vacated)));
+  } else if (vacated != 0) {
+    saveVacatedSlot(0);
+  }
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
@@ -1594,6 +1624,10 @@ void handleAssignmentRecord(const String& message) {
 
   if (slot != applied_slot) {
     saveStoredSlot(slot, assignment.generation);
+    // Recorded before the restart because the restart is what loses it: the
+    // topic names live in RAM, so nothing after the reboot could name the slot
+    // being left, and its retained records would stay behind forever.
+    saveVacatedSlot(applied_slot);
     debugSend("slot changed: rebooting");
     delay(200);
     ESP.restart();
@@ -2215,6 +2249,20 @@ void loop() {
   // Outside the magnets branch: a cube that resolved as a reader is exactly the
   // one whose stale proximity needs deleting, and it never enters that branch.
   flushProximityClears();
+
+  // Only forgotten once its delete has actually landed. Dropping it on an
+  // unconfirmed write is what strands the record, and NVS is the only thing
+  // that survives to retry on the next boot.
+  //
+  // Driven by what subscribeSlotTopics() queued rather than by reading NVS
+  // here: the assignment arrives as a retained message, so the first loops run
+  // before anything has been queued and would read "not pending" as "already
+  // delivered".
+  if (vacated_slot_awaiting_clear > 0 &&
+      !proximityClearIsPending(proximityTopicForSlot(String(vacated_slot_awaiting_clear))) &&
+      saveVacatedSlot(0)) {
+    vacated_slot_awaiting_clear = 0;
+  }
 
   if (!slot_resolved && assignment_wait_started != 0 &&
       millis() - assignment_wait_started >= ASSIGNMENT_WAIT_MS) {

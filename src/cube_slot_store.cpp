@@ -7,6 +7,25 @@ static const char* KEY_SLOT = "slot";
 static const char* KEY_GENERATION = "gen";
 static const char* KEY_AUTHORITY = "auth";
 static const char* KEY_PRESENCE_BASELINE = "presbase";
+static const char* KEY_VACATED_SLOT = "vacslot";
+
+int loadVacatedSlot() {
+  Preferences prefs;
+  int slot = 0;
+  if (prefs.begin(NVS_NAMESPACE, true)) {
+    slot = prefs.getInt(KEY_VACATED_SLOT, 0);
+    prefs.end();
+  }
+  return slot;
+}
+
+bool saveVacatedSlot(int slot) {
+  Preferences prefs;
+  if (!prefs.begin(NVS_NAMESPACE, false)) return false;
+  const bool written = prefs.putInt(KEY_VACATED_SLOT, slot) != 0;
+  prefs.end();
+  return written;
+}
 
 int loadPresenceBaseline() {
   Preferences prefs;
