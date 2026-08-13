@@ -365,6 +365,10 @@ String mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS];
 // holds the durable copy; this mirrors it so the entries can only be forgotten
 // once their deletes have actually landed.
 VacatedSlots vacated_awaiting_clear = {};
+// A slot change held back because its outgoing slot could not be persisted. 0
+// when there is none. Retried from loop() until the write lands.
+int restart_pending_vacated_slot = 0;
+#define VACATED_SLOT_RETRY_MS 1000
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1386,15 +1390,14 @@ void handleSleepIntervalCommand(const String& message) {
 // a second rebinding during a sustained outage drops the earlier tombstone, and
 // that is bounded because a cube that cannot publish is not producing new
 // proximity values either, so the stale record can only predate the outage.
-String proximityTopicForSlot(const String& slot) {
-  return String(MQTT_TOPIC_PREFIX_CUBE) + slot + "/proximity";
+bool persistVacatedSlot(int slot) {
+  VacatedSlots vacated = loadVacatedSlots();
+  addVacatedSlot(&vacated, slot);
+  return saveVacatedSlots(vacated);
 }
 
-bool proximityClearIsPending(const String& topic) {
-  for (const String& pending : mqtt_topic_proximity_pending_clear) {
-    if (pending == topic) return true;
-  }
-  return false;
+String proximityTopicForSlot(const String& slot) {
+  return String(MQTT_TOPIC_PREFIX_CUBE) + slot + "/proximity";
 }
 
 void flushProximityClears() {
@@ -1466,12 +1469,15 @@ void subscribeSlotTopics() {
   // A reassignment reboots, so this is the only place the slot just left can
   // still be named. Held in NVS until the delete is accepted, for the same
   // reason the pending set exists: forgetting it strands the record.
-  VacatedSlots vacated = loadVacatedSlots();
-  removeVacatedSlot(&vacated, cube_identifier.toInt());  // the slot now bound is not vacant
-  for (int slot : vacated.slots) {
-    if (slot > 0) requestProximityClear(proximityTopicForSlot(String(slot)));
+  // Deleted from loop() straight off this set rather than through the RAM
+  // pending queue: that queue can evict, and an evicted entry looks identical
+  // to a delivered one, which would drop the durable record for good.
+  const VacatedSlots loaded_vacated = loadVacatedSlots();
+  vacated_awaiting_clear = loaded_vacated;
+  removeVacatedSlot(&vacated_awaiting_clear, cube_identifier.toInt());
+  if (memcmp(&vacated_awaiting_clear, &loaded_vacated, sizeof(loaded_vacated)) != 0) {
+    saveVacatedSlots(vacated_awaiting_clear);  // best effort; pruned again next boot
   }
-  vacated_awaiting_clear = vacated;
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
@@ -1628,9 +1634,16 @@ void handleAssignmentRecord(const String& message) {
     // Recorded before the restart because the restart is what loses it: the
     // topic names live in RAM, so nothing after the reboot could name the slot
     // being left, and its retained records would stay behind forever.
-    VacatedSlots vacated = loadVacatedSlots();
-    addVacatedSlot(&vacated, applied_slot);
-    saveVacatedSlots(vacated);
+    // The restart is what destroys the outgoing topic name, so it must not
+    // happen until the name is durable. Staying on the old slot until then is
+    // safe -- the assignment simply has not been applied yet -- where
+    // restarting regardless recreates the permanent retained record this whole
+    // path exists to prevent.
+    if (!persistVacatedSlot(applied_slot)) {
+      restart_pending_vacated_slot = applied_slot;
+      debugSend("slot changed: vacated slot unsaved, deferring reboot");
+      return;
+    }
     debugSend("slot changed: rebooting");
     delay(200);
     ESP.restart();
@@ -2257,21 +2270,34 @@ void loop() {
   // unconfirmed write is what strands the record, and NVS is the only thing
   // that survives to retry on the next boot.
   //
-  // Driven by what subscribeSlotTopics() queued rather than by reading NVS
-  // here: the assignment arrives as a retained message, so the first loops run
-  // before anything has been queued and would read "not pending" as "already
-  // delivered".
-  VacatedSlots settled = vacated_awaiting_clear;
-  for (int slot : vacated_awaiting_clear.slots) {
-    if (slot > 0 && !proximityClearIsPending(proximityTopicForSlot(String(slot)))) {
-      removeVacatedSlot(&settled, slot);
+  const unsigned long vacated_now = millis();
+  static unsigned long last_vacated_attempt = 0;
+  if (restart_pending_vacated_slot > 0 &&
+      vacated_now - last_vacated_attempt >= VACATED_SLOT_RETRY_MS) {
+    last_vacated_attempt = vacated_now;
+    if (persistVacatedSlot(restart_pending_vacated_slot)) {
+      debugSend("slot changed: vacated slot saved, rebooting");
+      delay(200);
+      ESP.restart();
     }
   }
-  // The mirror only advances on a confirmed NVS write, so a failed one is
-  // retried rather than assumed.
-  if (memcmp(&settled, &vacated_awaiting_clear, sizeof(settled)) != 0 &&
-      saveVacatedSlots(settled)) {
-    vacated_awaiting_clear = settled;
+
+  // Driven by what publish() actually returned, never by absence from a queue.
+  if (mqtt_client.isConnected() &&
+      vacated_now - last_vacated_attempt >= VACATED_SLOT_RETRY_MS) {
+    last_vacated_attempt = vacated_now;
+    VacatedSlots settled = vacated_awaiting_clear;
+    for (int slot : vacated_awaiting_clear.slots) {
+      if (slot > 0 && mqtt_client.publish(proximityTopicForSlot(String(slot)), "", true)) {
+        removeVacatedSlot(&settled, slot);
+      }
+    }
+    // The mirror only advances on a confirmed NVS write, so a failed one is
+    // retried rather than assumed.
+    if (memcmp(&settled, &vacated_awaiting_clear, sizeof(settled)) != 0 &&
+        saveVacatedSlots(settled)) {
+      vacated_awaiting_clear = settled;
+    }
   }
 
   if (!slot_resolved && assignment_wait_started != 0 &&
