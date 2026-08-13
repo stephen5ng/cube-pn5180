@@ -180,8 +180,14 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // presence reading has over HALL_PRESENCE_ON_DELTA. Rate-limited and
 // change-gated: retained, so the last value is always readable, and quiet while
 // a docked cube sits still.
+//
+// The change threshold has to clear the ADC noise or "sits still" never
+// happens. delta idles across a band of roughly 36 counts -- measured on slot 1
+// both undocked (-13..+35) and docked (135..171) -- so a smaller gate is always
+// open and the topic streams at the rate cap forever. An assert or release is
+// published regardless of size, so the events still land immediately.
 #define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
-#define HALL_PRESENCE_PUBLISH_MIN_CHANGE  8
+#define HALL_PRESENCE_PUBLISH_MIN_CHANGE  40
 
 // delta is a field strength, which falls off as the cube of distance, so it is
 // a badly misleading gauge of how well a magnet is seated: the 176 -> 148 drop
