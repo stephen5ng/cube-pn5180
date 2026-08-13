@@ -182,6 +182,25 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // a docked cube sits still.
 #define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
 #define HALL_PRESENCE_PUBLISH_MIN_CHANGE  8
+
+// delta is a field strength, which falls off as the cube of distance, so it is
+// a badly misleading gauge of how well a magnet is seated: the 176 -> 148 drop
+// measured while re-seating slot 1 looks like losing a sixth of the signal and
+// is under 6% of extra gap. hall_presence therefore also reports distance, in
+// units where 100 is the gap at which presence latches on, so that seating
+// changes read at the scale the hand actually moves.
+//
+// Calibration-free by construction: only the ratio to HALL_PRESENCE_ON_DELTA
+// matters, so no bench measurement of a real gap is needed. The cost is that
+// the number is relative, not millimetres, and the inverse-cube law holds in
+// the far field -- across a gap comparable to the magnet the true exponent is
+// smaller, so a distance change is somewhat larger than reported.
+#define HALL_PRESENCE_DISTANCE_REFERENCE 100
+static inline int hallPresenceDistance(int delta) {
+  if (delta < 1) return 999;  // at or behind the baseline: no magnet in range
+  return (int)lroundf(HALL_PRESENCE_DISTANCE_REFERENCE *
+                      cbrtf((float)HALL_PRESENCE_ON_DELTA / (float)delta));
+}
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
 // hall_debug: idle mask reads 111111 with HIGH as the reference level).
@@ -2284,10 +2303,12 @@ void loop() {
         if (presence_changed &&
             current_time - last_presence_publish >= HALL_PRESENCE_PUBLISH_INTERVAL_MS &&
             mqtt_client.isConnected()) {
-          char presence_buf[64];
+          char presence_buf[96];
           snprintf(presence_buf, sizeof(presence_buf),
-                   "delta=%d on=%d off=%d base=%d raw=%d active=%d", presence_delta,
-                   HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
+                   "delta=%d on=%d off=%d dist=%d drop=%d base=%d raw=%d active=%d",
+                   presence_delta, HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
+                   hallPresenceDistance(presence_delta),
+                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA),
                    hall_presence.baseline(), hall_presence.filtered(), presence_state);
           if (mqtt_client.publish(mqtt_topic_cube + "/hall_presence", presence_buf, true)) {
             last_presence_publish = current_time;
