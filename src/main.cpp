@@ -1629,19 +1629,26 @@ static HallPresenceTracker hall_presence;
 // reset too. Nothing initialises it on a cold boot, hence the magic word:
 // unset reads as garbage rather than as zero.
 #define PRESENCE_BASELINE_MAGIC 0x48414c42u  // "HALB"
+#define PRESENCE_BASELINE_SAVE_RETRY_MS 1000
 #define PRESENCE_BASELINE_MIN   100
 #define PRESENCE_BASELINE_MAX   4000
 RTC_NOINIT_ATTR static uint32_t saved_presence_magic;
 RTC_NOINIT_ATTR static int32_t saved_presence_baseline;
 
-// 0 tells the tracker to prime from its first sample, as on a cold boot.
+static bool plausiblePresenceBaseline(int baseline) {
+  return baseline >= PRESENCE_BASELINE_MIN && baseline <= PRESENCE_BASELINE_MAX;
+}
+
+// 0 tells the tracker to prime from its first sample. RTC first because it is
+// current to the last poll; NVS is the cold-boot fallback, stale by however
+// long the cube sat powered off but still taken with no magnet in range.
 static int restoredPresenceBaseline() {
-  if (saved_presence_magic != PRESENCE_BASELINE_MAGIC) return 0;
-  if (saved_presence_baseline < PRESENCE_BASELINE_MIN ||
-      saved_presence_baseline > PRESENCE_BASELINE_MAX) {
-    return 0;
+  if (saved_presence_magic == PRESENCE_BASELINE_MAGIC &&
+      plausiblePresenceBaseline(saved_presence_baseline)) {
+    return (int)saved_presence_baseline;
   }
-  return (int)saved_presence_baseline;
+  const int stored = loadPresenceBaseline();
+  return plausiblePresenceBaseline(stored) ? stored : 0;
 }
 
 void setupHallSensors() {
@@ -2327,6 +2334,25 @@ void loop() {
         const bool presence_state = hall_presence.active();
         saved_presence_baseline = hall_presence.baseline();
         saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+
+        static int nvs_presence_baseline = loadPresenceBaseline();
+        static unsigned long last_presence_save_attempt = 0;
+        // stable_raw holds its 0xFF sentinel until the ID lines have debounced, and
+        // an unknown mask must not read as an undocked one.
+        //
+        // The cache only advances on a confirmed write, so a failed one is retried
+        // rather than assumed: dropping the seed silently costs a cold boot, which
+        // is the whole point of storing it. Retries are spaced because this runs at
+        // the poll rate and a durably unavailable NVS would otherwise be hammered.
+        if (stable_raw != 0xFF &&
+            current_time - last_presence_save_attempt >= PRESENCE_BASELINE_SAVE_RETRY_MS &&
+            shouldSavePresenceBaseline(stable_raw, presence_state, saved_presence_baseline,
+                                       nvs_presence_baseline)) {
+          last_presence_save_attempt = current_time;
+          if (savePresenceBaseline(saved_presence_baseline)) {
+            nvs_presence_baseline = saved_presence_baseline;
+          }
+        }
         const bool presence_changed =
             !presence_ever_published || presence_state != published_presence_active ||
             abs(presence_delta - published_presence_delta) >= HALL_PRESENCE_PUBLISH_MIN_CHANGE;
