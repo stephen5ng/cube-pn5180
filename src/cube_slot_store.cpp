@@ -6,6 +6,25 @@ static const char* NVS_NAMESPACE = "cubepool";
 static const char* KEY_SLOT = "slot";
 static const char* KEY_GENERATION = "gen";
 static const char* KEY_AUTHORITY = "auth";
+static const char* KEY_PRESENCE_BASELINE = "presbase";
+
+int loadPresenceBaseline() {
+  Preferences prefs;
+  int baseline = 0;
+  if (prefs.begin(NVS_NAMESPACE, true)) {
+    baseline = prefs.getInt(KEY_PRESENCE_BASELINE, 0);
+    prefs.end();
+  }
+  return baseline;
+}
+
+void savePresenceBaseline(int baseline) {
+  Preferences prefs;
+  if (prefs.begin(NVS_NAMESPACE, false)) {
+    prefs.putInt(KEY_PRESENCE_BASELINE, baseline);
+    prefs.end();
+  }
+}
 
 StoredSlot loadStoredSlot() {
   Preferences prefs;

@@ -136,6 +136,40 @@ void test_presence_ignores_an_absent_saved_baseline() {
     TEST_ASSERT_EQUAL(2035, t.baseline());
 }
 
+// Seeding a cold boot from NVS is only as good as what gets written, and the value
+// worth writing is a baseline taken with nothing magnetic nearby. These pin the
+// guard that decides that, because a poisoned seed is permanent where a poisoned
+// RTC value lasts one wake.
+void test_baseline_is_worth_saving_only_with_no_magnet_in_sight() {
+    // id_mask 0 is the physical proof of an undocked cube: no ID magnet is in range.
+    TEST_ASSERT_TRUE(shouldSavePresenceBaseline(0, false, 1771, 1900));
+    // Any ID magnet means a neighbour is docked, so its presence magnet is skewing
+    // the reading even if the tracker has not asserted yet.
+    TEST_ASSERT_FALSE(shouldSavePresenceBaseline(0b000101, false, 1771, 1900));
+    TEST_ASSERT_FALSE(shouldSavePresenceBaseline(0b000001, false, 1771, 1900));
+}
+
+void test_baseline_is_not_saved_while_presence_is_asserted() {
+    // The baseline is frozen while active, so it describes the moment the neighbour
+    // arrived rather than the current rail.
+    TEST_ASSERT_FALSE(shouldSavePresenceBaseline(0, true, 1771, 1900));
+}
+
+void test_baseline_saves_only_on_a_move_worth_a_flash_write() {
+    // NVS erases a sector per write. The baseline wanders by a count or two a second,
+    // so writing every change would burn the part out.
+    TEST_ASSERT_FALSE(shouldSavePresenceBaseline(0, false, 1771, 1771));
+    TEST_ASSERT_FALSE(shouldSavePresenceBaseline(0, false, 1780, 1771));
+    TEST_ASSERT_TRUE(shouldSavePresenceBaseline(0, false, 1790, 1771));
+    TEST_ASSERT_TRUE(shouldSavePresenceBaseline(0, false, 1750, 1771));
+}
+
+void test_baseline_saves_when_nothing_is_stored_yet() {
+    // 0 is the unset marker, and is further from any real baseline than the
+    // threshold, so a first write needs no special case.
+    TEST_ASSERT_TRUE(shouldSavePresenceBaseline(0, false, 1771, 0));
+}
+
 void test_presence_delta_is_monotonic_with_approach() {
     HallPresenceTracker t; t.begin(test_presence_config());
     uint32_t now = 0;
@@ -998,6 +1032,10 @@ int main(void) {
     RUN_TEST(test_presence_boots_blind_to_a_magnet_it_woke_up_next_to);
     RUN_TEST(test_presence_restores_a_saved_baseline_instead_of_priming_from_a_magnet);
     RUN_TEST(test_presence_ignores_an_absent_saved_baseline);
+    RUN_TEST(test_baseline_is_worth_saving_only_with_no_magnet_in_sight);
+    RUN_TEST(test_baseline_is_not_saved_while_presence_is_asserted);
+    RUN_TEST(test_baseline_saves_only_on_a_move_worth_a_flash_write);
+    RUN_TEST(test_baseline_saves_when_nothing_is_stored_yet);
     RUN_TEST(test_presence_delta_is_monotonic_with_approach);
 
     // Sensor-mode discriminator

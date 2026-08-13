@@ -17,6 +17,24 @@ struct HallPresenceConfig {
   uint16_t base_interval_ms;  // how often the baseline may adapt
 };
 
+// A baseline is only worth writing to flash when it was taken with nothing
+// magnetic nearby, because an NVS seed outlives the mistake: a poisoned RTC
+// value costs one wake, a poisoned seed costs every cold boot until something
+// overwrites it. An id_mask of 0 is the physical proof -- no ID magnet is in
+// range, so no neighbour is docked and its presence magnet cannot be skewing
+// the reading, whether or not the tracker has asserted.
+//
+// The move threshold is what keeps this off the flash: the baseline wanders a
+// count or two a second, and NVS erases a sector per write.
+static constexpr int PRESENCE_BASELINE_SAVE_DELTA = 16;
+
+inline bool shouldSavePresenceBaseline(uint8_t id_mask, bool active, int baseline,
+                                       int stored) {
+  if (id_mask != 0 || active) return false;
+  const int move = baseline > stored ? baseline - stored : stored - baseline;
+  return move > PRESENCE_BASELINE_SAVE_DELTA;
+}
+
 class HallPresenceTracker {
  public:
   // saved_baseline carries a baseline across a wake. Priming from the first sample
