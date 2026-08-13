@@ -189,24 +189,24 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
 #define HALL_PRESENCE_PUBLISH_MIN_CHANGE  40
 
-// delta is a field strength, which falls off as the cube of distance, so it is
-// a badly misleading gauge of how well a magnet is seated: the 176 -> 148 drop
-// measured while re-seating slot 1 looks like losing a sixth of the signal and
-// is under 6% of extra gap. hall_presence therefore also reports distance, in
-// units where 100 is the gap at which presence latches on, so that seating
-// changes read at the scale the hand actually moves.
+// cube/N/proximity is the 0..100 closeness of the neighbour, for driving an
+// animation or any other control. Smoothed harder than the detection path,
+// which is deliberately quick so a docking cube latches promptly: at the ~1kHz
+// poll a shift of 7 is roughly 128ms, slow enough that the +/-13 counts of ADC
+// noise measured on slot 1 do not show as jitter.
 //
-// Calibration-free by construction: only the ratio to HALL_PRESENCE_ON_DELTA
-// matters, so no bench measurement of a real gap is needed. The cost is that
-// the number is relative, not millimetres, and the inverse-cube law holds in
-// the far field -- across a gap comparable to the magnet the true exponent is
-// smaller, so a distance change is somewhat larger than reported.
-#define HALL_PRESENCE_DISTANCE_REFERENCE 100
-static inline int hallPresenceDistance(int delta) {
-  if (delta < 1) return 999;  // at or behind the baseline: no magnet in range
-  return (int)lroundf(HALL_PRESENCE_DISTANCE_REFERENCE *
-                      cbrtf((float)HALL_PRESENCE_ON_DELTA / (float)delta));
-}
+// 10Hz is a compromise against MQTT volume, which is this firmware's documented
+// bottleneck -- six cubes streaming during a game is real traffic. Publishing
+// only on a change keeps a still cube silent, so the cost is only paid while
+// something is actually moving.
+// A docked neighbour clamps to 100 and so goes silent on its own, but one
+// parked mid-scale -- a loose magnet, a cube not fully seated -- sits on the
+// residual wander of the reading and would otherwise publish at the cap
+// indefinitely. Measured on slot 1 in that state: 278 messages in 35s across a
+// span of 9. A deadband costs an animation nothing at this scale.
+#define HALL_PROXIMITY_SHIFT           7
+#define HALL_PROXIMITY_INTERVAL_MS     100
+#define HALL_PROXIMITY_MIN_CHANGE      3
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
 // hall_debug: idle mask reads 111111 with HIGH as the reference level).
@@ -349,6 +349,18 @@ String mqtt_topic_cube_nfc;
 String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
+String mqtt_topic_cube_proximity;  // publishes 0-100 closeness to cube/<id>/proximity
+int published_proximity = -1;      // -1 forces the next poll to publish
+// Topics whose retained delete has not been accepted yet. The topic name is the
+// only handle on the stale value, so it is held rather than dropped.
+//
+// Several can be outstanding at once from a single rebinding: binding a slot
+// queues a delete for the topic being left, and resolving as a reader queues
+// another for the one just bound. One pending slot would let the second
+// overwrite the first while the broker is refusing writes, which is the case
+// that strands a record indefinitely.
+static constexpr size_t PROXIMITY_PENDING_CLEARS = 4;
+String mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS];
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1366,12 +1378,69 @@ void handleSleepIntervalCommand(const String& message) {
 }
 
 
+// Retried from loop() until the broker accepts it. Only one delete is tracked:
+// a second rebinding during a sustained outage drops the earlier tombstone, and
+// that is bounded because a cube that cannot publish is not producing new
+// proximity values either, so the stale record can only predate the outage.
+void flushProximityClears() {
+  if (!mqtt_client.isConnected()) return;
+  for (String& pending : mqtt_topic_proximity_pending_clear) {
+    if (pending.isEmpty()) continue;
+    if (mqtt_client.publish(pending, "", true)) {
+      pending = "";
+    }
+  }
+}
+
+// Deletes the retained record rather than writing 0, which would be a standing
+// "nothing near me" assertion from a cube that is no longer reporting at all.
+// Invalidating the cache matters as much as the delete: without it a cube
+// rebound to another slot whose closeness happens to match would publish
+// nothing, and the new topic would stay empty.
+void requestProximityClear(const String& topic) {
+  if (topic.isEmpty()) return;
+  flushProximityClears();
+
+  for (const String& pending : mqtt_topic_proximity_pending_clear) {
+    if (pending == topic) return;
+  }
+  for (String& pending : mqtt_topic_proximity_pending_clear) {
+    if (pending.isEmpty()) {
+      pending = topic;
+      flushProximityClears();
+      return;
+    }
+  }
+
+  // Every slot taken means as many distinct topics have gone un-deleted as a
+  // cube has bindings to give, so the oldest is the one whose slot is least
+  // likely to be looked at again. Reaching here at all needs the broker to
+  // reject writes across that many rebindings.
+  for (size_t i = 1; i < PROXIMITY_PENDING_CLEARS; i++) {
+    mqtt_topic_proximity_pending_clear[i - 1] = mqtt_topic_proximity_pending_clear[i];
+  }
+  mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS - 1] = topic;
+  flushProximityClears();
+}
+
+void clearRetainedProximity() {
+  requestProximityClear(mqtt_topic_cube_proximity);
+  mqtt_topic_cube_proximity = "";
+  published_proximity = -1;
+}
+
 void subscribeSlotTopics() {
+  // Retained, so the value outlives the slot it described. Cleared before the
+  // topic is rebound, or a reassigned cube leaves the old slot reading as
+  // permanently docked.
+  clearRetainedProximity();
+
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
+  mqtt_topic_cube_proximity = mqtt_topic_cube + "/proximity";
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
@@ -1444,6 +1513,9 @@ void subscribeSlotTopics() {
     // the observation path owns.
     mqtt_client.publish(mqtt_topic_cube_right, "", true);
     last_right_published[0] = '\0';
+    // Nothing writes proximity outside the magnets loop, so a cube that reported
+    // a docked neighbour and came back as a reader would keep asserting it.
+    requestProximityClear(mqtt_topic_cube_proximity);
   }
 }
 
@@ -1476,6 +1548,7 @@ void applySlot(int slot) {
     if (!mqtt_topic_device_nfc.isEmpty()) {
       mqtt_client.publish(mqtt_topic_device_nfc, "", true);
     }
+    clearRetainedProximity();
     publishPresence("online");
     return;
   }
@@ -2139,6 +2212,10 @@ void loop() {
   unsigned long mqtt_end = micros();
   unsigned long mqtt_us = mqtt_end - section_start;
 
+  // Outside the magnets branch: a cube that resolved as a reader is exactly the
+  // one whose stale proximity needs deleting, and it never enters that branch.
+  flushProximityClears();
+
   if (!slot_resolved && assignment_wait_started != 0 &&
       millis() - assignment_wait_started >= ASSIGNMENT_WAIT_MS) {
     assignment_wait_started = 0;
@@ -2338,6 +2415,36 @@ void loop() {
         // accessors describe the reading the id decision was just made on.
         const int presence_delta = hall_presence.delta();
         const bool presence_state = hall_presence.active();
+
+        static int32_t proximity_filter = 0;
+        static bool proximity_primed = false;
+        if (!proximity_primed) {
+          proximity_filter = (int32_t)presence_delta << HALL_PROXIMITY_SHIFT;
+          proximity_primed = true;
+        } else {
+          proximity_filter += presence_delta - (proximity_filter >> HALL_PROXIMITY_SHIFT);
+        }
+        const int proximity = hallPresenceCloseness(
+            (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
+
+        static unsigned long last_proximity_publish = 0;
+        // The endpoints are exact: 0 and 100 must land even if the last publish was
+        // within the deadband, or an animation never fully arrives or clears.
+        const bool proximity_changed =
+            published_proximity < 0 ||
+            ((proximity == 0 || proximity == 100) ? proximity != published_proximity
+                                                  : abs(proximity - published_proximity) >=
+                                                        HALL_PROXIMITY_MIN_CHANGE);
+        if (proximity_changed &&
+            current_time - last_proximity_publish >= HALL_PROXIMITY_INTERVAL_MS &&
+            mqtt_client.isConnected()) {
+          char proximity_buf[8];
+          snprintf(proximity_buf, sizeof(proximity_buf), "%d", proximity);
+          if (mqtt_client.publish(mqtt_topic_cube_proximity, proximity_buf, true)) {
+            last_proximity_publish = current_time;
+            published_proximity = proximity;
+          }
+        }
         saved_presence_baseline = hall_presence.baseline();
         saved_presence_magic = PRESENCE_BASELINE_MAGIC;
 
@@ -2370,8 +2477,8 @@ void loop() {
           snprintf(presence_buf, sizeof(presence_buf),
                    "delta=%d on=%d off=%d dist=%d drop=%d base=%d raw=%d active=%d",
                    presence_delta, HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
-                   hallPresenceDistance(presence_delta),
-                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA),
+                   hallPresenceDistance(presence_delta, HALL_PRESENCE_ON_DELTA),
+                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA, HALL_PRESENCE_ON_DELTA),
                    hall_presence.baseline(), hall_presence.filtered(), presence_state);
           if (mqtt_client.publish(mqtt_topic_cube + "/hall_presence", presence_buf, true)) {
             last_presence_publish = current_time;

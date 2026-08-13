@@ -170,6 +170,51 @@ void test_baseline_saves_when_nothing_is_stored_yet() {
     TEST_ASSERT_TRUE(shouldSavePresenceBaseline(0, false, 1771, 0));
 }
 
+// Distance and closeness exist so a consumer never has to know the cube law. These
+// use the shipped on_delta of 95 and the readings measured on slot 1.
+void test_distance_falls_as_the_cube_root_of_field() {
+    // Reference point: at on_delta the cube is exactly at the latch distance.
+    TEST_ASSERT_EQUAL(100, hallPresenceDistance(95, 95));
+    // Eight times the field is half the distance, which is the whole point of the
+    // conversion -- delta alone would read as an eightfold change.
+    TEST_ASSERT_EQUAL(50, hallPresenceDistance(95 * 8, 95));
+    TEST_ASSERT_EQUAL(200, hallPresenceDistance(95, 95 * 8));
+}
+
+void test_distance_reports_out_of_range_behind_the_baseline() {
+    // A negative delta is the rail below its baseline, not a very distant magnet.
+    TEST_ASSERT_EQUAL(999, hallPresenceDistance(0, 95));
+    TEST_ASSERT_EQUAL(999, hallPresenceDistance(-30, 95));
+}
+
+void test_closeness_spans_nothing_to_docked() {
+    // Nothing in range, including the out-of-range sentinel, must read as 0 rather
+    // than leak 999 into an animation.
+    TEST_ASSERT_EQUAL(0, hallPresenceCloseness(0, 95));
+    TEST_ASSERT_EQUAL(0, hallPresenceCloseness(-30, 95));
+    // 35 counts is the measured ADC noise floor: the first delta worth believing.
+    TEST_ASSERT_EQUAL(0, hallPresenceCloseness(35, 95));
+    // 127 is the docked reading measured on slot 1.
+    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(127, 95));
+    // Closer still stays pinned rather than running over 100.
+    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(400, 95));
+}
+
+void test_closeness_rises_smoothly_between_the_endpoints() {
+    // An animation needs every step of the approach, not just a jump at the trip
+    // point, so assert it is strictly increasing across the usable span.
+    int previous = -1;
+    for (int delta = 36; delta <= 127; delta++) {
+        const int closeness = hallPresenceCloseness(delta, 95);
+        TEST_ASSERT_TRUE(closeness >= previous);
+        TEST_ASSERT_TRUE(closeness >= 0 && closeness <= 100);
+        previous = closeness;
+    }
+    // Latching happens partway up, not at the top: most of the travel is before it.
+    const int at_latch = hallPresenceCloseness(95, 95);
+    TEST_ASSERT_TRUE(at_latch > 50 && at_latch < 100);
+}
+
 void test_presence_delta_is_monotonic_with_approach() {
     HallPresenceTracker t; t.begin(test_presence_config());
     uint32_t now = 0;
@@ -1036,6 +1081,10 @@ int main(void) {
     RUN_TEST(test_baseline_is_not_saved_while_presence_is_asserted);
     RUN_TEST(test_baseline_saves_only_on_a_move_worth_a_flash_write);
     RUN_TEST(test_baseline_saves_when_nothing_is_stored_yet);
+    RUN_TEST(test_distance_falls_as_the_cube_root_of_field);
+    RUN_TEST(test_distance_reports_out_of_range_behind_the_baseline);
+    RUN_TEST(test_closeness_spans_nothing_to_docked);
+    RUN_TEST(test_closeness_rises_smoothly_between_the_endpoints);
     RUN_TEST(test_presence_delta_is_monotonic_with_approach);
 
     // Sensor-mode discriminator
