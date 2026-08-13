@@ -16,8 +16,22 @@ enum SensorMode {
 // 10k, which beats the ~45k internal pulldown; a PN5180 leaves all four
 // floating, so the pulldown wins and nothing reads high.
 //
-// One high line is enough. The encoding is 2-of-6, so at most two sensors are
-// ever active and at least two of P1-P4 stay high whatever is docked.
+// One high line is enough, and a docked cube normally leaves several: the
+// encoding is 2-of-6, so an intended pattern pulls at most two of P1-P4 low.
+//
+// The *reading* is not 2-of-6 though, only the encoding is. Magnetic crosstalk
+// adds sensors, and on hall-sensor v2.2 a presence magnet 32.3mm from U1, U2,
+// U4 and U5 drove all four low at once -- measured on slot 1, 2026-08-13, with
+// two stacked presence magnets. Every ID line low is indistinguishable from a
+// PN5180 leaving them floating, so such a cube booted docked detects as a
+// reader and stage 2 then drives SPI into the hall board's open-drain outputs.
+//
+// Unfixable by reading harder: floating-with-pulldown and driven-low are the
+// same level, and P5/P6 are on GPIO 34/35, which have no internal pulldown to
+// test with. The guard against it is magnetic -- one presence magnet, not a
+// stack -- which is why the strength is a bench decision rather than firmware.
+// Detecting undocked, which a cold boot after a power cycle normally is, avoids
+// it entirely.
 inline bool hallBoardPresent(uint8_t driven_high_mask) {
   return (driven_high_mask & 0x0F) != 0;
 }
