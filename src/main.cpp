@@ -193,8 +193,14 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // bottleneck -- six cubes streaming during a game is real traffic. Publishing
 // only on a change keeps a still cube silent, so the cost is only paid while
 // something is actually moving.
+// A docked neighbour clamps to 100 and so goes silent on its own, but one
+// parked mid-scale -- a loose magnet, a cube not fully seated -- sits on the
+// residual wander of the reading and would otherwise publish at the cap
+// indefinitely. Measured on slot 1 in that state: 278 messages in 35s across a
+// span of 9. A deadband costs an animation nothing at this scale.
 #define HALL_PROXIMITY_SHIFT           7
 #define HALL_PROXIMITY_INTERVAL_MS     100
+#define HALL_PROXIMITY_MIN_CHANGE      3
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
 // hall_debug: idle mask reads 111111 with HIGH as the reference level).
@@ -2340,7 +2346,14 @@ void loop() {
 
         static unsigned long last_proximity_publish = 0;
         static int published_proximity = -1;
-        if (proximity != published_proximity &&
+        // The endpoints are exact: 0 and 100 must land even if the last publish was
+        // within the deadband, or an animation never fully arrives or clears.
+        const bool proximity_changed =
+            published_proximity < 0 ||
+            ((proximity == 0 || proximity == 100) ? proximity != published_proximity
+                                                  : abs(proximity - published_proximity) >=
+                                                        HALL_PROXIMITY_MIN_CHANGE);
+        if (proximity_changed &&
             current_time - last_proximity_publish >= HALL_PROXIMITY_INTERVAL_MS &&
             mqtt_client.isConnected()) {
           char proximity_buf[8];
