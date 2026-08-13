@@ -18,12 +18,12 @@ int loadPresenceBaseline() {
   return baseline;
 }
 
-void savePresenceBaseline(int baseline) {
+bool savePresenceBaseline(int baseline) {
   Preferences prefs;
-  if (prefs.begin(NVS_NAMESPACE, false)) {
-    prefs.putInt(KEY_PRESENCE_BASELINE, baseline);
-    prefs.end();
-  }
+  if (!prefs.begin(NVS_NAMESPACE, false)) return false;
+  const bool written = prefs.putInt(KEY_PRESENCE_BASELINE, baseline) != 0;
+  prefs.end();
+  return written;
 }
 
 StoredSlot loadStoredSlot() {

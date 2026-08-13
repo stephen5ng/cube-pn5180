@@ -13,7 +13,7 @@ struct StoredSlot {
 // docked on the shelf would otherwise prime its baseline onto its neighbour's
 // magnet. 0 means nothing stored.
 int loadPresenceBaseline();
-void savePresenceBaseline(int baseline);
+bool savePresenceBaseline(int baseline);
 
 StoredSlot loadStoredSlot();
 void saveStoredSlot(int slot, uint32_t generation);
