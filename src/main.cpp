@@ -343,6 +343,8 @@ String mqtt_topic_cube_nfc;
 String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
+String mqtt_topic_cube_proximity;  // publishes 0-100 closeness to cube/<id>/proximity
+int published_proximity = -1;      // -1 forces the next poll to publish
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1360,12 +1362,31 @@ void handleSleepIntervalCommand(const String& message) {
 }
 
 
+// Deletes the retained record rather than writing 0, which would be a standing
+// "nothing near me" assertion from a cube that is no longer reporting at all.
+// Invalidating the cache matters as much as the delete: without it a cube
+// rebound to another slot whose closeness happens to match would publish
+// nothing, and the new topic would stay empty.
+void clearRetainedProximity() {
+  if (!mqtt_topic_cube_proximity.isEmpty()) {
+    mqtt_client.publish(mqtt_topic_cube_proximity, "", true);
+    mqtt_topic_cube_proximity = "";
+  }
+  published_proximity = -1;
+}
+
 void subscribeSlotTopics() {
+  // Retained, so the value outlives the slot it described. Cleared before the
+  // topic is rebound, or a reassigned cube leaves the old slot reading as
+  // permanently docked.
+  clearRetainedProximity();
+
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
+  mqtt_topic_cube_proximity = mqtt_topic_cube + "/proximity";
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
@@ -1438,6 +1459,9 @@ void subscribeSlotTopics() {
     // the observation path owns.
     mqtt_client.publish(mqtt_topic_cube_right, "", true);
     last_right_published[0] = '\0';
+    // Nothing writes proximity outside the magnets loop, so a cube that reported
+    // a docked neighbour and came back as a reader would keep asserting it.
+    mqtt_client.publish(mqtt_topic_cube_proximity, "", true);
   }
 }
 
@@ -1470,6 +1494,7 @@ void applySlot(int slot) {
     if (!mqtt_topic_device_nfc.isEmpty()) {
       mqtt_client.publish(mqtt_topic_device_nfc, "", true);
     }
+    clearRetainedProximity();
     publishPresence("online");
     return;
   }
@@ -2345,7 +2370,6 @@ void loop() {
             (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
 
         static unsigned long last_proximity_publish = 0;
-        static int published_proximity = -1;
         // The endpoints are exact: 0 and 100 must land even if the last publish was
         // within the deadband, or an animation never fully arrives or clears.
         const bool proximity_changed =
@@ -2358,7 +2382,7 @@ void loop() {
             mqtt_client.isConnected()) {
           char proximity_buf[8];
           snprintf(proximity_buf, sizeof(proximity_buf), "%d", proximity);
-          if (mqtt_client.publish(mqtt_topic_cube + "/proximity", proximity_buf, true)) {
+          if (mqtt_client.publish(mqtt_topic_cube_proximity, proximity_buf, true)) {
             last_proximity_publish = current_time;
             published_proximity = proximity;
           }
