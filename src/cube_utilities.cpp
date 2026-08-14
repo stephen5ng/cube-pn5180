@@ -36,7 +36,7 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"8C:4F:00:36:7A:88", 15, RGB_ORDER_RGB, 35},  // 30-pin
   {"D8:BC:38:F9:39:30", 16, RGB_ORDER_RGB, 36},  // 30-pin
   {"80:F3:DA:54:53:B8",  1, RGB_ORDER_BGR, 41},  // backup slot 1
-  {"5C:01:3B:65:46:2C",  2, RGB_ORDER_RGB, 42},  // backup slot 2
+  {"3C:8A:1F:A2:9C:C0",  2, RGB_ORDER_RGB, 42},  // backup slot 2
   {"5C:01:3B:64:E2:84",  3, RGB_ORDER_RGB, 43},  // backup slot 3
   {"D4:8A:FC:9F:B0:C0",  4, RGB_ORDER_BGR, 44},  // backup slot 4
   {"D8:BC:38:E5:A8:38",  5, RGB_ORDER_RGB, 45},  // backup slot 5
