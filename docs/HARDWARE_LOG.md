@@ -97,3 +97,25 @@ Tracking hardware modifications, replacements, and issues to identify patterns.
 - **Symptom**: Repeated PN5180 failures across multiple cubes — erratic reads before full failure
 - **Root cause**: Cable between PCB and PN5180 module introduces noise pickup from HUB75 switching currents, ESD exposure, and connector intermittency. Decoupling cap on main PCB doesn't help with 10cm of wire to the chip.
 - **Fix for next revision**: Move PN5180 onto the main PCB to eliminate cable entirely. If cable is retained, add 100nF decoupling cap at the PN5180 end of the cable.
+
+---
+
+## 2026-08-13
+
+### Cube 2 (backup board, octet 42) - ESP32 Replacement
+
+- **Action**: Replacement
+- **Reason**: Radio collapsed under sustained transmission while short bursts were fine. Six OTA attempts never got past the address probe. Measured back to back against three cubes on the same AP: 93.3% packet loss and 1947ms average, against 0-7% and 20-35ms. Keep-alive check-ins were flawless -- four in a row at 21s cadence -- which is the low-power path with the panel dark, so the fault only showed at high draw. **A battery swap changed nothing**, ruling out the cell.
+- **Old Hardware**: 38-pin ESP32
+  - MAC: 5C:01:3B:65:46:2C
+- **New Hardware**: 38-pin ESP32
+  - MAC: B4:BF:E9:60:C0:68
+  - Board version: v6 (requires the `v6` environment)
+- **Result**: Flashed over USB, hash verified. Boots, joins WiFi, holds a stable MQTT session where the old board's LWT kept firing.
+
+**Notes**:
+
+- **A 30-pin was tried first** (MAC 3C:8A:1F:A2:9C:C0) and abandoned before installation, because this cube has a documented history of 30-pin modules failing to drive HUB75 -- see Cube 2 Attempt 1 (2026-03-02). Not a firmware setting: `CubeMacEntry` has no pin-count field and the `// 30-pin` comments are documentation only. The only compile-time pin difference is `BOARD_V6` in `configurePins()`, which selects the *carrier board* generation, not the module.
+- **The first 38-pin module was dead on arrival**: no serial data at all, including after a BOOT + power-cycle and a reset-line pulse. Zero bytes back is upstream of bootloader mode -- a chip that is merely not in bootloader still emits the ROM banner on reset. The CP2102 enumerates on its own USB power, so a healthy port list says nothing about the ESP32.
+- **Publish a retained `slot: null` assignment for the new MAC *before* first boot.** With no assignment record the firmware falls back to its compiled slot, so the replacement claimed slot 2 on the network while another board held it, and overwrote `cube/2/version` and `cube/2/sensor_mode` from a bare chip on a bench. Doing this first made the second attempt clean.
+- **ICMP is not a health signal on these boards.** All six cubes read 100% packet loss on three separate occasions while demonstrably running a game. WiFi power-save drops pings while keeping the TCP session alive. Use OTA success and MQTT session stability instead.
