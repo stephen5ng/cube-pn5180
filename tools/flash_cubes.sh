@@ -7,6 +7,12 @@ FW_DIR="$(dirname "$0")/.."
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 PYTHON="${PYTHON:-python3}"
 
+# One settling window for the whole fleet before the "all" sweep probes it. A
+# sleeping cube answers on its next check-in -- sleep_interval_s, 20 by default
+# -- and then needs a full boot, so this covers both, once, rather than per
+# cube.
+FLEET_SETTLE_S="${FLEET_SETTLE_S:-45}"
+
 if ! python3 "$(dirname "$0")/validate_mac_table.py"; then
     echo "MAC table validation failed; aborting." >&2
     exit 1
@@ -319,6 +325,40 @@ if [ "$1" = "all" ]; then
 
     failed=0
     all_cubes=(1 2 3 4 5 6 11 12 13 14 15 16)
+
+    # Wake the fleet once and wait once, then ask each slot whether anything
+    # answers. flash_cube waits a full wake window per cube it cannot reach,
+    # so a bench holding half the fleet spends minutes discovering the same
+    # thing a 3s probe already knows. An assignment record cannot stand in for
+    # this: every slot has one whether or not its board is powered.
+    #
+    # Word splitting rather than mapfile: this runs under macOS's bash 3.2.
+    keep_awake "${all_cubes[@]}"
+    echo "Waiting ${FLEET_SETTLE_S}s for woken cubes to come up..."
+    sleep "$FLEET_SETTLE_S"
+
+    present=()
+    absent=()
+    for cube_id in "${all_cubes[@]}"; do
+        if is_cube_online "$cube_id"; then
+            present+=("$cube_id")
+        else
+            absent+=("$cube_id")
+        fi
+    done
+
+    # Named rather than silently dropped: a shortened run must not read as a
+    # whole-fleet one.
+    if [ ${#absent[@]} -gt 0 ]; then
+        echo "⏭️  No cube answering on ${#absent[@]} slot(s), skipping: ${absent[*]}"
+    fi
+    if [ ${#present[@]} -eq 0 ]; then
+        echo "❌ No cubes answered; nothing to flash."
+        exit 1
+    fi
+    echo "Flashing ${#present[@]} cube(s): ${present[*]}"
+    echo ""
+    all_cubes=("${present[@]}")
     for index in "${!all_cubes[@]}"; do
         keep_awake "${all_cubes[@]:$index}"
         flash_cube "${all_cubes[$index]}" || failed=1
