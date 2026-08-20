@@ -15,7 +15,6 @@ typedef struct MessageNfcId {
 #include "cube_slot_store.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
-#include <Easing.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <EspMQTTClient.h>
 #include <PN5180ISO15693.h>
@@ -434,7 +433,19 @@ private:
   uint8_t vline_height;
   uint16_t hline_color_top;
   uint16_t hline_color_bottom;
-  EasingFunc<Ease::BounceOut> letter_animation;
+  //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
+  //: above it they have arrived and the settle tail rebounds three times.
+  //:
+  //: SET BY THE SERVER over `<cube>/rise_ms`, because the number depends on
+  //: things this firmware cannot see: when the tile actually changes hands,
+  //: and whether a remote match held the announcement for its revocation gate.
+  //: The server solves it so the two glyphs trade dominance on exactly the
+  //: millisecond the tile becomes the player's -- the same instant the screen
+  //: hands over -- and sends the answer rather than the inputs.
+  //:
+  //: DEFAULTS TO THE STOCK 4/11, so a cube that is never told still animates
+  //: correctly, just on the library curve it used before.
+  uint16_t rise_ms;
   const GFXfont* current_font;
   uint8_t text_size;
   uint8_t rotation;
@@ -442,6 +453,49 @@ private:
   bool is_dirty;
   char previous_letter;
   char current_letter;
+
+  // `Ease::BounceOut`, re-proportioned so the travel segment lasts `rise_ms`
+  // instead of the library's fixed 4/11 of the duration. Mirrors
+  // `bounce_out` in cubes/src/game/landing_transition.py -- the two must agree
+  // or the cube and the screen stop meaning the same thing.
+  //
+  // TWO PARTS. Below `rise` the glyphs travel, on the parabola (t/rise)^2;
+  // above it they have arrived and the settle tail rebounds. The tail is
+  // REMAPPED rather than rewritten: `u` carries [rise, 1] back onto the stock
+  // [1/2.75, 1], so the three rebounds keep their shape and their relative
+  // depths and merely occupy whatever time is left. Continuous at the seam by
+  // construction -- at t == rise, u == 1/2.75, where the stock curve is 1.0.
+  uint8_t bounceOut(unsigned long elapsed) const {
+    if (elapsed >= ANIMATION_DURATION_MS) {
+      return ANIMATION_SCALE;
+    }
+    const float n = 7.5625f, d = 2.75f;
+    float t = (float)elapsed / (float)ANIMATION_DURATION_MS;
+    float rise = (float)rise_ms / (float)ANIMATION_DURATION_MS;
+    if (rise < 0.000001f) rise = 0.000001f;
+    if (rise > 1.0f) rise = 1.0f;
+
+    float v;
+    if (t < rise) {
+      float u = t / rise;
+      v = u * u;
+    } else {
+      float u = 1.0f / d + (t - rise) / (1.0f - rise) * (1.0f - 1.0f / d);
+      if (u < 2.0f / d) {
+        u -= 1.5f / d;
+        v = n * u * u + 0.75f;
+      } else if (u < 2.5f / d) {
+        u -= 2.25f / d;
+        v = n * u * u + 0.9375f;
+      } else {
+        u -= 2.625f / d;
+        v = n * u * u + 0.984375f;
+      }
+    }
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return (uint8_t)(v * ANIMATION_SCALE + 0.5f);
+  }
 
 public:
   DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true),
@@ -458,8 +512,7 @@ public:
     int cube_id_int = cube_id.toInt();    
     rotation = (cube_id_int <= 6) ? 2 : 0;
     setupDisplay();
-    letter_animation.duration(ANIMATION_DURATION_MS);
-    letter_animation.scale(ANIMATION_SCALE);
+    rise_ms = (uint16_t)(ANIMATION_DURATION_MS * 4.0f / 11.0f);
 
     // Allocate image buffers. Failure is fatal.
     image = image1 = new uint16_t[PIXEL_COUNT];
@@ -540,7 +593,7 @@ public:
 
     if (previous_letter != current_letter || previous_image != image) {
       static uint8_t previous_percent_complete = -1;
-      if (current_time - animation_start_time >= letter_animation.duration()) {
+      if (current_time - animation_start_time >= ANIMATION_DURATION_MS) {
         // complete animation
         previous_image = image;
         previous_letter = current_letter;
@@ -549,7 +602,7 @@ public:
       } 
       else {
         // animation in progress
-        percent_complete = letter_animation.get(current_time - animation_start_time);
+        percent_complete = bounceOut(current_time - animation_start_time);
         if (percent_complete != previous_percent_complete) {
             previous_percent_complete = percent_complete;
             is_dirty = true;
@@ -652,6 +705,23 @@ public:
     int size = max(0L, message.toInt());
     font_size = size;
     is_dirty = true;
+  }
+
+  void handleRiseMsCommand(const String& message) {
+    if (message.length() <= 0) {
+      return;
+    }
+    long value = message.toInt();
+    // Clamped rather than rejected: a travel segment longer than the whole
+    // animation degrades to "travels the entire time and never rebounds",
+    // which is a worse-looking landing but still a correct one.
+    if (value < 1) value = 1;
+    if (value > ANIMATION_DURATION_MS) value = ANIMATION_DURATION_MS;
+    rise_ms = (uint16_t)value;
+    Serial.printf("[%lu] landing rise set to %u ms\n", millis(), rise_ms);
+    // NOT is_dirty: this changes the shape of the NEXT landing, not anything
+    // on screen right now. Marking dirty here would redraw the current frame
+    // at a phase the running animation was not computed against.
   }
 
   void handleLockCommand(const String& message) {
@@ -1503,6 +1573,7 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/power_test", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePowerTestCommand(msg); });
 #endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/rise_ms", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleRiseMsCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
   // Publish initial "no neighbor" state so game server sees all cubes on startup
