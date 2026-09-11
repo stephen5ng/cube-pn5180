@@ -41,9 +41,12 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"D4:8A:FC:9F:B0:C0",  4, RGB_ORDER_BGR, 44},  // backup slot 4
   {"D8:BC:38:E5:A8:38",  5, RGB_ORDER_RGB, 45},  // backup slot 5
   {"5C:01:3B:4A:87:4C",  6, RGB_ORDER_RGB, 46},  // backup slot 6
+  // Slot 11: the former spare takes over the slot whose original chip moved
+  // to cube 4. Its octet stays 47, so the fleet flash needs its retained
+  // assignment record to find it.
+  {"20:50:0D:19:FB:C8", 11, RGB_ORDER_RGB, 47},  // slot 11 (RGB panel)
   // Unassigned spare: the roster holds it at slot null, so it displays
   // NO SLOT until an operator assigns it a slot from the admin page.
-  {"20:50:0D:19:FB:C8", CUBE_ID_NONE, RGB_ORDER_RGB, 47},  // spare (RGB panel)
   {"5C:01:3B:65:F2:74", CUBE_ID_NONE, RGB_ORDER_RGB, 48},  // spare
 };
 #endif
