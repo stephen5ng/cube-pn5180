@@ -43,7 +43,7 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"5C:01:3B:4A:87:4C",  6, RGB_ORDER_RGB, 46},  // backup slot 6
   // Unassigned spare: the roster holds it at slot null, so it displays
   // NO SLOT until an operator assigns it a slot from the admin page.
-  {"20:50:0D:19:FB:C8", CUBE_ID_NONE, RGB_ORDER_BGR, 47},  // spare
+  {"20:50:0D:19:FB:C8", CUBE_ID_NONE, RGB_ORDER_RGB, 47},  // spare (RGB panel)
   {"5C:01:3B:65:F2:74", CUBE_ID_NONE, RGB_ORDER_RGB, 48},  // spare
 };
 #endif
