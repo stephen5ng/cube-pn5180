@@ -73,6 +73,25 @@ AssignmentParseResult parseAssignmentRecord(const char* json, CubeAssignment* ou
 bool assignmentRecordIsActionable(AssignmentParseResult result);
 int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
                         bool authority_latched, int compiled_cube_id);
+
+// The boot screen's identity line: "c12 ip32".
+//
+// Both numbers are needed because neither alone identifies a cube. The slot is
+// what the admin page calls it; the octet is what the network calls it; and for
+// a spare the two are unrelated -- one sitting at .47 with a stored slot of 1
+// reads "c1 ip47", which is precisely the pairing that cannot be guessed from
+// either number on its own.
+//
+// The slot argument order mirrors the fallback in setup()'s assignment-wait
+// path: a stored slot wins over the compiled one, because that is what a spare
+// assigned from the admin page is running as. With neither, the cube does not
+// yet know its slot and prints "c?" rather than a wrong number -- applySlot()
+// paints NO SLOT a moment later.
+//
+// Output stays inside the ~10 characters displayDebugMessage() fits at size 1
+// on a 64px panel, above which it wraps onto a second line.
+void formatBootIdentity(char* out, size_t out_size, int stored_slot,
+                        int compiled_slot, int ip_octet);
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer);
 
 enum NfcObservationAction {

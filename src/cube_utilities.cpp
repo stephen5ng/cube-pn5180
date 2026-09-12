@@ -159,6 +159,16 @@ int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
   }
 }
 
+void formatBootIdentity(char* out, size_t out_size, int stored_slot,
+                        int compiled_slot, int ip_octet) {
+  int slot = stored_slot > 0 ? stored_slot : compiled_slot;
+  if (slot > 0) {
+    snprintf(out, out_size, "c%d ip%d", slot, ip_octet);
+  } else {
+    snprintf(out, out_size, "c? ip%d", ip_octet);
+  }
+}
+
 WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
                              bool has_slot_topic,
                              bool device_requests_sleep,

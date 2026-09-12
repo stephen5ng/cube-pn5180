@@ -1001,6 +1001,65 @@ void test_buildObservationPayload_has_no_provenance_fields() {
     TEST_ASSERT_NULL(strstr(buf, "sequence"));
 }
 
+// ---------------------------------------------------------------------------
+// Boot screen identity line
+// ---------------------------------------------------------------------------
+// A cube in the slot its octet was chosen for makes the two numbers look
+// redundant. The spare is why they are not.
+
+void test_boot_identity_pairs_slot_with_octet() {
+    char buf[64];
+    formatBootIdentity(buf, sizeof(buf), 12, 12, 32);
+    TEST_ASSERT_EQUAL_STRING("c12 ip32", buf);
+}
+
+void test_boot_identity_prefers_the_stored_slot_over_the_compiled_one() {
+    // The spare: octet 47 from its MAC, slot 1 from the admin page. Showing the
+    // compiled CUBE_ID_NONE here would print "c?" for a cube that is playing as
+    // cube 1, which is the confusion this line exists to end.
+    char buf[64];
+    formatBootIdentity(buf, sizeof(buf), 1, CUBE_ID_NONE, 47);
+    TEST_ASSERT_EQUAL_STRING("c1 ip47", buf);
+}
+
+void test_boot_identity_falls_back_to_the_compiled_slot() {
+    // No stored assignment yet: a cube sitting in its own slot still names
+    // itself correctly from the compiled table.
+    char buf[64];
+    formatBootIdentity(buf, sizeof(buf), CUBE_ID_NONE, 12, 32);
+    TEST_ASSERT_EQUAL_STRING("c12 ip32", buf);
+}
+
+void test_boot_identity_admits_an_unknown_slot() {
+    // An unassigned spare knows its octet and nothing else. "c?" is honest;
+    // any number here would be a guess, and applySlot() paints NO SLOT next.
+    char buf[64];
+    formatBootIdentity(buf, sizeof(buf), CUBE_ID_NONE, CUBE_ID_NONE, 47);
+    TEST_ASSERT_EQUAL_STRING("c? ip47", buf);
+}
+
+void test_boot_identity_negative_stored_slot_is_not_treated_as_assigned() {
+    // resolveAssignedSlot() returns -1 for a deliberately unassigned cube, and
+    // that value reaches the stored record. It must not print as "c-1".
+    char buf[64];
+    formatBootIdentity(buf, sizeof(buf), -1, 16, 36);
+    TEST_ASSERT_EQUAL_STRING("c16 ip36", buf);
+}
+
+void test_boot_identity_fits_the_debug_line() {
+    // displayDebugMessage() wraps past 10 characters, which would push the
+    // nfc/hall line down and reflow the screen this is meant to clarify.
+    char buf[64];
+    for (int slot = 1; slot <= 16; slot++) {
+        for (int octet = 21; octet <= 48; octet++) {
+            formatBootIdentity(buf, sizeof(buf), slot, slot, octet);
+            TEST_ASSERT_TRUE_MESSAGE(strlen(buf) <= 10, buf);
+        }
+    }
+    formatBootIdentity(buf, sizeof(buf), CUBE_ID_NONE, CUBE_ID_NONE, 48);
+    TEST_ASSERT_TRUE_MESSAGE(strlen(buf) <= 10, buf);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -1118,6 +1177,14 @@ int main(void) {
     RUN_TEST(test_all_ones_die_is_not_a_reader);
     RUN_TEST(test_the_active_probe_is_unreachable_when_a_hall_board_is_present);
     RUN_TEST(test_the_active_probe_runs_when_every_line_floats);
+
+    // Boot screen identity line
+    RUN_TEST(test_boot_identity_pairs_slot_with_octet);
+    RUN_TEST(test_boot_identity_prefers_the_stored_slot_over_the_compiled_one);
+    RUN_TEST(test_boot_identity_falls_back_to_the_compiled_slot);
+    RUN_TEST(test_boot_identity_admits_an_unknown_slot);
+    RUN_TEST(test_boot_identity_negative_stored_slot_is_not_treated_as_assigned);
+    RUN_TEST(test_boot_identity_fits_the_debug_line);
 
     return UNITY_END();
 }

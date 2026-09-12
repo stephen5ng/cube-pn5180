@@ -2237,9 +2237,13 @@ void setup() {
   static String client_name = makeMqttClientId(WiFi.macAddress(), "");
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
+  // Both inputs are already resolved: loadStoredSlot() ran above and
+  // getCubeIpOctet() set compiled_cube_id before WiFi came up. Nothing here
+  // waits on the roster, so an authoritative assignment arriving later can
+  // still move the slot out from under this line.
   char ipDisplay[64];
-  snprintf(ipDisplay, sizeof(ipDisplay), "%d",
-    WiFi.localIP()[3]);
+  formatBootIdentity(ipDisplay, sizeof(ipDisplay), stored.slot,
+                     compiled_cube_id, WiFi.localIP()[3]);
   display_manager->displayDebugMessage(ipDisplay);
 
   debugPrintln(WiFi.macAddress().c_str());
