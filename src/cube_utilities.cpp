@@ -31,7 +31,7 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"EC:E3:34:79:8A:BC",  6, RGB_ORDER_BGR, 26},  // 30-pin
   {"94:54:C5:F1:AF:00", 11, RGB_ORDER_RGB, 31},  // 30-pin (EMPTY - chip moved to cube 4)
   {"EC:E3:34:79:9D:2C", 12, RGB_ORDER_RGB, 32},  // 30-pin
-  {"04:83:08:59:6E:74", 13, RGB_ORDER_RGB, 33},  // 30-pin
+  {"20:50:0D:0A:9F:A8", 13, RGB_ORDER_RGB, 33},  // 30-pin
   {"94:54:C5:EE:89:4C", 14, RGB_ORDER_RGB, 34},  // 30-pin
   {"8C:4F:00:36:7A:88", 15, RGB_ORDER_RGB, 35},  // 30-pin
   {"D8:BC:38:F9:39:30", 16, RGB_ORDER_RGB, 36},  // 30-pin
