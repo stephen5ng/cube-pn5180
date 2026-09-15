@@ -410,6 +410,34 @@ unsigned long max_letter_interval = 0;
 unsigned long nfc_read_max_us = 0;
 int nfc_reset_count = 0;
 
+// NFC read cost split by protocol outcome.
+//
+// `nfc=` in the diag string is the section average: total read time divided by
+// MAIN LOOP ITERATIONS, and most iterations dequeue no NFC result at all, so it
+// is diluted by an unknown factor and is NOT a per-read figure. Reading it as
+// one suggested reads cost ~0.12 ms; the duty cycle says otherwise. Measured
+// from `nfc` x `samples` against `loop` x `samples`, two cubes spent 38% and
+// 48% of wall-clock time inside NFC reads -- which at ISO15693 timings can only
+// mean tens of milliseconds per read, close to nfc_max rather than far below it.
+//
+// These are per-read: a count and a total for each outcome, so the average is
+// computable without guessing the divisor. Split by outcome because a
+// successful inventory and a no-card timeout are different fixed costs, and
+// nfc_max showed exactly two plateaus (~31 ms and ~47 ms) across the rig. The
+// no-card case is the one that matters most: most cubes have no neighbour most
+// of the time, so if it is the expensive branch it dominates the whole system.
+//
+// Reset per diag read, like the accumulators above.
+unsigned long nfc_ok_total_us = 0;
+unsigned long nfc_ok_max_us = 0;
+unsigned int nfc_ok_count = 0;
+unsigned long nfc_nocard_total_us = 0;
+unsigned long nfc_nocard_max_us = 0;
+unsigned int nfc_nocard_count = 0;
+unsigned long nfc_err_total_us = 0;
+unsigned long nfc_err_max_us = 0;
+unsigned int nfc_err_count = 0;
+
 // ============= DisplayManager Class =============
 class DisplayManager {
 private:
@@ -2007,7 +2035,9 @@ void handleUDP() {
       }
       // Check if message is "diag" - return detailed per-section timing breakdown
       else if (slotIsResolved() && strcmp(udpBuffer, "diag") == 0) {
-        char diagStr[320];
+        // 512, not 320: the per-outcome fields add ~165 chars to a string that was
+        // already ~180, and snprintf truncates silently rather than telling you.
+        char diagStr[512];
         unsigned long avg_mqtt = section_timing_count > 0 ? section_timing_accum.mqtt_us / section_timing_count : 0;
         unsigned long avg_display = section_timing_count > 0 ? section_timing_accum.display_us / section_timing_count : 0;
         unsigned long avg_udp = section_timing_count > 0 ? section_timing_accum.udp_us / section_timing_count : 0;
@@ -2023,10 +2053,16 @@ void handleUDP() {
           "v1";
 #endif
         snprintf(diagStr, sizeof(diagStr),
-          "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu",
+          "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu"
+          "|nfc_ok_n=%u|nfc_ok_us=%lu|nfc_ok_max=%lu"
+          "|nfc_nocard_n=%u|nfc_nocard_us=%lu|nfc_nocard_max=%lu"
+          "|nfc_err_n=%u|nfc_err_us=%lu|nfc_err_max=%lu",
           cube_identifier.c_str(), fw_board, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, nfc_reset_count, avg_letter_interval, max_letter_interval, letter_interval_count,
-          WiFi.RSSI(), section_timing_count, millis());
+          WiFi.RSSI(), section_timing_count, millis(),
+          nfc_ok_count, nfc_ok_total_us, nfc_ok_max_us,
+          nfc_nocard_count, nfc_nocard_total_us, nfc_nocard_max_us,
+          nfc_err_count, nfc_err_total_us, nfc_err_max_us);
 
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)diagStr, strlen(diagStr));
@@ -2042,6 +2078,9 @@ void handleUDP() {
         letter_interval_count = 0;
         max_letter_interval = 0;
         nfc_read_max_us = 0;
+        nfc_ok_total_us = 0; nfc_ok_max_us = 0; nfc_ok_count = 0;
+        nfc_nocard_total_us = 0; nfc_nocard_max_us = 0; nfc_nocard_count = 0;
+        nfc_err_total_us = 0; nfc_err_max_us = 0; nfc_err_count = 0;
       }
       // Check if message is "chip" - return ESP32 chip info
       else if (slotIsResolved() && strcmp(udpBuffer, "chip") == 0) {
@@ -2419,6 +2458,25 @@ void loop() {
 
       if (nfc_us > nfc_read_max_us) {
         nfc_read_max_us = nfc_us;
+      }
+
+      // Attribute this read to its outcome. read_us only -- recovery_us is
+      // excluded deliberately, because a recovery is a different event with
+      // its own counter (nfc_resets) and folding it in would make a rare
+      // 300 ms recovery masquerade as an expensive read.
+      unsigned long outcome_us = worker_result.read_us;
+      if (read_result == ISO15693_EC_OK) {
+        nfc_ok_total_us += outcome_us;
+        nfc_ok_count++;
+        if (outcome_us > nfc_ok_max_us) nfc_ok_max_us = outcome_us;
+      } else if (read_result == EC_NO_CARD) {
+        nfc_nocard_total_us += outcome_us;
+        nfc_nocard_count++;
+        if (outcome_us > nfc_nocard_max_us) nfc_nocard_max_us = outcome_us;
+      } else {
+        nfc_err_total_us += outcome_us;
+        nfc_err_count++;
+        if (outcome_us > nfc_err_max_us) nfc_err_max_us = outcome_us;
       }
     }
   } else {
