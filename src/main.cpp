@@ -1228,9 +1228,6 @@ void handleResetCommand(const String& message) {
 
 void publishAutoSleepFlag() {
   mqtt_client.publish("cube/device/" + mac_nocolons + "/auto_sleep", "1", true);
-  if (!mqtt_topic_cube.isEmpty()) {
-    mqtt_client.publish(mqtt_topic_cube + "/auto_sleep", "1", true);
-  }
   delay(100);  // Give MQTT time to flush before sleep
 }
 
@@ -1309,11 +1306,7 @@ void enterSleepMode() {
 class KeepAliveCheckInPorts : public WakeCheckInPorts {
  public:
   KeepAliveCheckInPorts() : mqtt_(tcp_) {
-    StoredSlot stored = loadStoredSlot();
     device_topic_ = "cube/device/" + mac_nocolons + "/auto_sleep";
-    slot_topic_ = stored.slot > 0
-        ? "cube/" + String(stored.slot) + "/auto_sleep"
-        : String("");
     status_topic_ = "cube/device/" + mac_nocolons + "/status";
     mqtt_.setServer(MQTT_SERVER_PI, MQTT_PORT);
     mqtt_.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
@@ -1352,8 +1345,6 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     return true;
   }
 
-  bool hasSlotTopic() override { return !slot_topic_.isEmpty(); }
-
   // An empty retained topic delivers nothing at all, so elapsed time cannot
   // tell "no flag is set" from "the flag has not arrived yet". The keep-alive
   // publish doubles as a round-trip marker: it is sent after the flag
@@ -1361,8 +1352,8 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
   // as it processes that SUBSCRIBE, so on one TCP connection the marker coming
   // back proves any retained flag was already delivered. Returns false when it
   // does not come back -- the caller must not read silence as "no flag".
-  bool readSleepFlags(SleepFlags* out) override {
-    flags_ = {false, false};
+  bool readSleepFlag(bool* out) override {
+    sleep_requested_ = false;
     marker_seen_ = false;
 
     // IMPORTANT: Read payload BEFORE any publish() calls — PubSubClient reuses
@@ -1371,9 +1362,7 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     mqtt_.setCallback([this](char* topic, byte* payload, unsigned int length) {
       bool requested = length == 1 && payload[0] == '1';
       if (device_topic_ == topic) {
-        flags_.device_requests_sleep = requested;
-      } else if (slot_topic_ == topic) {
-        flags_.slot_requests_sleep = requested;
+        sleep_requested_ = requested;
       } else if (status_topic_ == topic) {
         marker_seen_ = true;
       }
@@ -1381,9 +1370,6 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
 
     mqtt_.subscribe(status_topic_.c_str());
     mqtt_.subscribe(device_topic_.c_str());
-    if (hasSlotTopic()) {
-      mqtt_.subscribe(slot_topic_.c_str());
-    }
     mqtt_.publish(status_topic_.c_str(), "keep-alive");
 
     unsigned long check_start = millis();
@@ -1399,19 +1385,15 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     }
 
     char dbg[64];
-    snprintf(dbg, sizeof(dbg), "flags device=%d slot=%d confirmed=%d",
-             flags_.device_requests_sleep, flags_.slot_requests_sleep,
-             marker_seen_);
+    snprintf(dbg, sizeof(dbg), "sleep flag=%d confirmed=%d",
+             sleep_requested_, marker_seen_);
     debugSend(dbg);
-    *out = flags_;
+    *out = sleep_requested_;
     return marker_seen_;
   }
 
-  void clearSleepFlags() override {
+  void clearSleepFlag() override {
     mqtt_.publish(device_topic_.c_str(), "", true);
-    if (hasSlotTopic()) {
-      mqtt_.publish(slot_topic_.c_str(), "", true);
-    }
     delay(100);
     mqtt_.disconnect();
   }
@@ -1432,10 +1414,9 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
   WiFiClient tcp_;
   PubSubClient mqtt_;
   String device_topic_;
-  String slot_topic_;
   String status_topic_;
   bool marker_seen_ = false;
-  SleepFlags flags_ = {false, false};
+  bool sleep_requested_ = false;
 };
 
 void handleWakeUp() {
@@ -2240,7 +2221,7 @@ void setup() {
   // the check-in below can send it back to sleep. Without this a cold boot that
   // finds a retained auto_sleep flag never reaches any display code, so a
   // working cube is indistinguishable from dead hardware — which is exactly how
-  // a stale cube/N/auto_sleep once read as bad firmware.
+  // a stale auto_sleep flag once read as bad firmware.
   //
   // Power-on only, which is narrower than is_first_boot: that covers every
   // non-deep-sleep reset, so a brownout or watchdog on a stored cube would
