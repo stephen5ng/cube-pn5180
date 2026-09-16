@@ -755,30 +755,24 @@ void test_makeMqttClientId_full_and_keepalive() {
 
 void test_resolveWakeAction_network_failure_stays_asleep() {
     TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
-                      resolveWakeAction(false, false, false, true, true));
+                      resolveWakeAction(false, false, true));
     TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
-                      resolveWakeAction(true, false, false, true, true));
+                      resolveWakeAction(true, false, true));
 }
 
-void test_resolveWakeAction_assigned_cube_obeys_slot_flag() {
+// Every cube obeys the same flag, whether or not it holds a slot: the flag is
+// keyed by MAC, which a cube has before anyone assigns it anything.
+void test_resolveWakeAction_obeys_the_device_flag() {
     TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
-                      resolveWakeAction(true, true, true, false, true));
+                      resolveWakeAction(true, true, true));
     TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
-                      resolveWakeAction(true, true, true, true, false));
-}
-
-void test_resolveWakeAction_unassigned_cube_obeys_device_flag() {
-    TEST_ASSERT_EQUAL(WAKE_ACTION_STAY_ASLEEP,
-                      resolveWakeAction(true, true, false, true, false));
-    TEST_ASSERT_EQUAL(WAKE_ACTION_WAKE_FULL,
-                      resolveWakeAction(true, true, false, false, true));
+                      resolveWakeAction(true, true, false));
 }
 
 struct FakeWakeCheckInPorts : public WakeCheckInPorts {
   bool wifi_result = true;
   bool mqtt_result = true;
-  bool slot_topic_result = false;
-  SleepFlags flags = {false, false};
+  bool sleep_requested = false;
 
   char calls[128] = "";
   bool called_after_sleep = false;
@@ -796,14 +790,13 @@ struct FakeWakeCheckInPorts : public WakeCheckInPorts {
 
   bool awaitWifi() override { record("awaitWifi"); return wifi_result; }
   bool connectMqtt() override { record("connectMqtt"); return mqtt_result; }
-  bool hasSlotTopic() override { record("hasSlotTopic"); return slot_topic_result; }
-  bool flags_confirmed = true;
-  bool readSleepFlags(SleepFlags* out) override {
-    record("readSleepFlags");
-    *out = flags;
-    return flags_confirmed;
+  bool flag_confirmed = true;
+  bool readSleepFlag(bool* out) override {
+    record("readSleepFlag");
+    *out = sleep_requested;
+    return flag_confirmed;
   }
-  void clearSleepFlags() override { record("clearSleepFlags"); }
+  void clearSleepFlag() override { record("clearSleepFlag"); }
   void enterSleep() override { record("enterSleep"); }
   void stayAwake() override { record("stayAwake"); }
 };
@@ -815,8 +808,8 @@ void test_runWakeCheckIn_wifi_timeout() {
     TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
     TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.sawCall("connectMqtt"));
-    TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
-    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlag"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlag"));
     TEST_ASSERT_FALSE(ports.called_after_sleep);
 }
 
@@ -826,18 +819,18 @@ void test_runWakeCheckIn_mqtt_connect_fails() {
     runWakeCheckIn(WAKE_REASON_TIMER, ports);
     TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
     TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
-    TEST_ASSERT_FALSE(ports.sawCall("hasSlotTopic"));
-    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlags"));
-    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlag"));
+    TEST_ASSERT_FALSE(ports.sawCall("readSleepFlag"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlag"));
     TEST_ASSERT_FALSE(ports.called_after_sleep);
 }
 
 void test_runWakeCheckIn_flag_set_sleeps_without_clearing() {
     FakeWakeCheckInPorts ports;
-    ports.flags.device_requests_sleep = true;
+    ports.sleep_requested = true;
     runWakeCheckIn(WAKE_REASON_TIMER, ports);
     TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
-    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlag"));
     TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.called_after_sleep);
 }
@@ -846,19 +839,8 @@ void test_runWakeCheckIn_flag_clear_clears_then_stays_awake() {
     FakeWakeCheckInPorts ports;
     runWakeCheckIn(WAKE_REASON_TIMER, ports);
     TEST_ASSERT_EQUAL_STRING(
-        "awaitWifi,connectMqtt,hasSlotTopic,readSleepFlags,clearSleepFlags,stayAwake,",
+        "awaitWifi,connectMqtt,readSleepFlag,clearSleepFlag,stayAwake,",
         ports.calls);
-    TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
-}
-
-void test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag() {
-    FakeWakeCheckInPorts ports;
-    ports.slot_topic_result = true;
-    ports.flags.slot_requests_sleep = false;
-    ports.flags.device_requests_sleep = true;
-    runWakeCheckIn(WAKE_REASON_TIMER, ports);
-    TEST_ASSERT_TRUE(ports.sawCall("clearSleepFlags"));
-    TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
 }
 
@@ -880,11 +862,10 @@ void test_runWakeCheckIn_button_wake_ignores_network() {
 // and the weak battery causing the slow link is what pays for it.
 void test_runWakeCheckIn_unconfirmed_flag_read_does_not_clear_or_wake() {
     FakeWakeCheckInPorts ports;
-    ports.slot_topic_result = true;
-    ports.flags_confirmed = false;
+    ports.flag_confirmed = false;
     runWakeCheckIn(WAKE_REASON_TIMER, ports);
     TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
-    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlag"));
     TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
 }
 
@@ -892,18 +873,16 @@ void test_runWakeCheckIn_unconfirmed_flag_read_does_not_clear_or_wake() {
 // it cannot on an unreachable broker: it would make a working cube look dead.
 void test_runWakeCheckIn_reset_with_unconfirmed_flag_read_stays_awake() {
     FakeWakeCheckInPorts ports;
-    ports.slot_topic_result = true;
-    ports.flags_confirmed = false;
+    ports.flag_confirmed = false;
     runWakeCheckIn(WAKE_REASON_OTHER, ports);
     TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
-    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlags"));
+    TEST_ASSERT_FALSE(ports.sawCall("clearSleepFlag"));
 }
 
 void test_runWakeCheckIn_reset_obeys_a_set_sleep_flag() {
     FakeWakeCheckInPorts ports;
-    ports.slot_topic_result = true;
-    ports.flags = {false, true};
+    ports.sleep_requested = true;
     runWakeCheckIn(WAKE_REASON_OTHER, ports);
     TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
     TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
@@ -923,19 +902,15 @@ void test_runWakeCheckIn_reset_without_network_stays_awake() {
 
 void test_runWakeCheckIn_reset_with_no_flag_set_stays_awake() {
     FakeWakeCheckInPorts ports;
-    ports.slot_topic_result = true;
-    ports.flags = {false, false};
+    ports.sleep_requested = false;
     runWakeCheckIn(WAKE_REASON_OTHER, ports);
     TEST_ASSERT_TRUE(ports.sawCall("stayAwake"));
     TEST_ASSERT_FALSE(ports.sawCall("enterSleep"));
 }
 
-// An unassigned cube has no slot topic and falls back to the device flag, the
-// same rule the timer path uses.
-void test_runWakeCheckIn_reset_unassigned_cube_obeys_device_flag() {
+void test_runWakeCheckIn_reset_obeys_the_device_flag() {
     FakeWakeCheckInPorts ports;
-    ports.slot_topic_result = false;
-    ports.flags = {true, false};
+    ports.sleep_requested = true;
     runWakeCheckIn(WAKE_REASON_OTHER, ports);
     TEST_ASSERT_TRUE(ports.sawCall("enterSleep"));
     TEST_ASSERT_FALSE(ports.sawCall("stayAwake"));
@@ -1117,20 +1092,18 @@ int main(void) {
 
     // Wake decision tests
     RUN_TEST(test_resolveWakeAction_network_failure_stays_asleep);
-    RUN_TEST(test_resolveWakeAction_assigned_cube_obeys_slot_flag);
-    RUN_TEST(test_resolveWakeAction_unassigned_cube_obeys_device_flag);
+        RUN_TEST(test_resolveWakeAction_obeys_the_device_flag);
     RUN_TEST(test_runWakeCheckIn_wifi_timeout);
     RUN_TEST(test_runWakeCheckIn_mqtt_connect_fails);
     RUN_TEST(test_runWakeCheckIn_flag_set_sleeps_without_clearing);
     RUN_TEST(test_runWakeCheckIn_flag_clear_clears_then_stays_awake);
-    RUN_TEST(test_runWakeCheckIn_assigned_cube_wakes_on_stale_device_flag);
-    RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
+        RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
     RUN_TEST(test_runWakeCheckIn_unconfirmed_flag_read_does_not_clear_or_wake);
     RUN_TEST(test_runWakeCheckIn_reset_with_unconfirmed_flag_read_stays_awake);
     RUN_TEST(test_runWakeCheckIn_reset_obeys_a_set_sleep_flag);
     RUN_TEST(test_runWakeCheckIn_reset_without_network_stays_awake);
     RUN_TEST(test_runWakeCheckIn_reset_with_no_flag_set_stays_awake);
-    RUN_TEST(test_runWakeCheckIn_reset_unassigned_cube_obeys_device_flag);
+    RUN_TEST(test_runWakeCheckIn_reset_obeys_the_device_flag);
 
     // Neighbor observation protocol tests
     RUN_TEST(test_decideNfcObservation_publishes_a_new_tag);

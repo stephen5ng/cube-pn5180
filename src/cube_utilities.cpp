@@ -170,16 +170,9 @@ void formatBootIdentity(char* out, size_t out_size, int stored_slot,
 }
 
 WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
-                             bool has_slot_topic,
-                             bool device_requests_sleep,
-                             bool slot_requests_sleep) {
+                             bool device_requests_sleep) {
   if (!wifi_connected || !mqtt_connected) return WAKE_ACTION_STAY_ASLEEP;
-  // An assigned cube (has a slot topic) obeys the slot flag, so tools/wake.sh
-  // can wake it by clearing that topic; an unassigned cube has no slot topic
-  // and falls back to the device flag.
-  bool stay_asleep = has_slot_topic ? slot_requests_sleep
-                                    : device_requests_sleep;
-  return stay_asleep ? WAKE_ACTION_STAY_ASLEEP : WAKE_ACTION_WAKE_FULL;
+  return device_requests_sleep ? WAKE_ACTION_STAY_ASLEEP : WAKE_ACTION_WAKE_FULL;
 }
 
 void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
@@ -202,9 +195,8 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
     return;
   }
 
-  bool has_slot_topic = ports.hasSlotTopic();
-  SleepFlags flags = {false, false};
-  if (!ports.readSleepFlags(&flags)) {
+  bool sleep_requested = false;
+  if (!ports.readSleepFlag(&sleep_requested)) {
     // Unconfirmed is not "no flag". Treating it as one is how a cube that
     // merely had a slow link cleared its own sleep flag and stayed awake for
     // ten minutes -- and a weak battery, which causes the slow link, is
@@ -212,11 +204,9 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
     if (is_reset) ports.stayAwake(); else ports.enterSleep();
     return;
   }
-  WakeAction action = resolveWakeAction(wifi, mqtt, has_slot_topic,
-                                        flags.device_requests_sleep,
-                                        flags.slot_requests_sleep);
+  WakeAction action = resolveWakeAction(wifi, mqtt, sleep_requested);
   if (action == WAKE_ACTION_STAY_ASLEEP) { ports.enterSleep(); return; }
-  ports.clearSleepFlags();
+  ports.clearSleepFlag();
   ports.stayAwake();
 }
 

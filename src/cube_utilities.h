@@ -115,25 +115,20 @@ enum WakeAction { WAKE_ACTION_STAY_ASLEEP, WAKE_ACTION_WAKE_FULL };
 // there is no wake-reason parameter; runWakeCheckIn() dispatches on that.
 WakeAction resolveWakeAction(bool wifi_connected,
                              bool mqtt_connected,
-                             bool has_slot_topic,
-                             bool device_requests_sleep,
-                             bool slot_requests_sleep);
+                             bool device_requests_sleep);
 
 enum WakeReason { WAKE_REASON_TIMER, WAKE_REASON_BUTTON, WAKE_REASON_OTHER };
-
-struct SleepFlags { bool device_requests_sleep; bool slot_requests_sleep; };
 
 struct WakeCheckInPorts {
   virtual ~WakeCheckInPorts() {}
   virtual bool awaitWifi() = 0;
   virtual bool connectMqtt() = 0;
-  virtual bool hasSlotTopic() = 0;
-  // Reads the retained sleep flags into `out`. Returns false when the read
+  // Reads the retained sleep flag into `out`. Returns false when the read
   // could not be confirmed, which is not the same as "no flag is set": an
   // empty retained topic delivers nothing, so an unconfirmed read carries no
   // information at all.
-  virtual bool readSleepFlags(SleepFlags* out) = 0;
-  virtual void clearSleepFlags() = 0;
+  virtual bool readSleepFlag(bool* out) = 0;
+  virtual void clearSleepFlag() = 0;
   // Disconnects an active keep-alive client, then sleeps. Does not return on
   // hardware, so every call site returns immediately after it.
   virtual void enterSleep() = 0;
