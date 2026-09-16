@@ -18,7 +18,7 @@ EC:E3:34:79:8A:BC=v6
 5C:01:3B:65:F2:74=v6
 # Player 1 (slots 11-16). Slot 11 is absent on purpose: its chip moved to cube 4.
 20:50:0D:1A:04:AC=v6
-04:83:08:59:6E:74=v6
+20:50:0D:0A:9F:A8=v6
 94:54:C5:EE:89:4C=v6
 8C:4F:00:36:7A:88=v6
 D8:BC:38:F9:39:30=v6
