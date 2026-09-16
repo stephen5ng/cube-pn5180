@@ -1,62 +1,104 @@
-#!/bin/bash -e
-# Replace ESP32 chip for a given cube: read MAC, update source, test, compile, flash.
+#!/bin/bash
+# Point a cube's table entry at a replacement ESP32, then flash it over USB.
+#
 # Usage: ./replace_chip.sh <cube_number> [port]
+#        ./replace_chip.sh <cube_number> --backup [port]
+#
+# Cube ids 1-6 appear twice in the table: once for the primary board and once
+# for the backup board that can stand in for it. They are told apart by the
+# static-IP octet the entry carries (20+N primary, 40+N backup), so --backup
+# picks the second. Editing both is how a swap silently takes the spare with it.
+#
+# The flash itself is flash_cube_wired.sh's job; this script only gets the
+# tables right first.
 
-CUBE_NUM=${1:?Usage: replace_chip.sh <cube_number> [port]}
-PORT=${2:-/dev/cu.SLAB_USBtoUART}
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 MAC_FILE="$PROJECT_DIR/src/cube_utilities.cpp"
 BOARD_FILE="$PROJECT_DIR/config/cube_board_versions.txt"
-PIO=~/.platformio/penv/bin/platformio
-ESPTOOL="$HOME/.platformio/penv/bin/python -m esptool"
+PIO_PYTHON="${PIO_PYTHON:-$HOME/.platformio/penv/bin/python}"
 
-# Read MAC from new chip
-echo "Reading MAC from $PORT..."
-MAC=$($ESPTOOL --port "$PORT" read-mac 2>&1 | grep "^MAC:" | tail -1 | awk '{print toupper($2)}')
-if [ -z "$MAC" ]; then
-    echo "ERROR: Could not read MAC. Check USB connection."
-    exit 1
-fi
-echo "New MAC: $MAC"
+die() { echo "ERROR: $*" >&2; exit 1; }
 
-# Calculate array index (cube 1 = line with index 0, cube 7 = cube 11, etc.)
-if [ "$CUBE_NUM" -le 6 ]; then
-    INDEX=$((CUBE_NUM - 1))
+CUBE_NUM="${1:-}"
+[ -n "$CUBE_NUM" ] || die "usage: replace_chip.sh <cube_number> [--backup] [port]"
+shift
+WANT_BACKUP=false
+if [ "${1:-}" = "--backup" ]; then WANT_BACKUP=true; shift; fi
+PORT="${1:-}"
+
+[[ "$CUBE_NUM" =~ ^[0-9]+$ ]] || die "cube number must be numeric, got '$CUBE_NUM'"
+
+# The octet that distinguishes the primary entry from the backup one.
+# Player 0 is slots 1-6 at 20+N, player 1 is slots 11-16 at 30+(N-10), and the
+# backup boards that stand in for player 0 are at 40+N.
+if [ "$CUBE_NUM" -ge 11 ]; then
+    [ "$WANT_BACKUP" = false ] || die "only cubes 1-6 have a backup board entry."
+    WANT_OCTET=$((30 + CUBE_NUM - 10))
+elif [ "$WANT_BACKUP" = true ]; then
+    WANT_OCTET=$((40 + CUBE_NUM))
 else
-    INDEX=$((CUBE_NUM - 5))  # cube 11=6, 12=7, etc.
+    WANT_OCTET=$((20 + CUBE_NUM))
 fi
-LINE_NUM=$((23 + INDEX))  # line 23 is index 0 in production array
 
-# Show current MAC
-echo "Current entry (line $LINE_NUM):"
-sed -n "${LINE_NUM}p" "$MAC_FILE"
+# --- Locate the row -------------------------------------------------------------
+# Matched on the cube id and octet fields rather than on line number or comment
+# text: both of those have drifted before and a stale match rewrites the wrong
+# board.
+ROW_RE="^[[:space:]]*\{\"([0-9A-F:]{17})\"[[:space:]]*,[[:space:]]*$CUBE_NUM[[:space:]]*,[[:space:]]*[A-Za-z0-9_]+[[:space:]]*,[[:space:]]*$WANT_OCTET[[:space:]]*\},"
+OLD_MAC=$(sed -n '/^#else/,/^#endif/p' "$MAC_FILE" | sed -nE "s/$ROW_RE.*/\1/p")
+MATCH_COUNT=$(printf '%s\n' "$OLD_MAC" | grep -c . || true)
+[ "$MATCH_COUNT" -eq 1 ] \
+    || die "expected exactly one table row for cube $CUBE_NUM at octet $WANT_OCTET, found $MATCH_COUNT"
+echo "Current entry: cube $CUBE_NUM, octet $WANT_OCTET, MAC $OLD_MAC"
 
-# Update MAC in file, preserving comment after the MAC
-sed -i '' "s|\"[0-9A-F:]\{17\}\",\(.*// $CUBE_NUM \)|\"$MAC\",\1|" "$MAC_FILE"
-
-echo "Updated entry:"
-sed -n "${LINE_NUM}p" "$MAC_FILE"
-
-# Run tests
-echo ""
-echo "Running tests..."
-cd "$PROJECT_DIR"
-$PIO test -e native
-
-# Look up board version
-BOARD_ENV=$(grep "^${CUBE_NUM}=" "$BOARD_FILE" | cut -d= -f2)
-if [ -z "$BOARD_ENV" ]; then
-    echo "ERROR: No board version found for cube $CUBE_NUM in $BOARD_FILE"
-    exit 1
+# --- Read the new chip's MAC ----------------------------------------------------
+if [ -n "$PORT" ]; then
+    [ -c "$PORT" ] || die "not a serial device: $PORT"
+else
+    PORT=$(ls /dev/cu.usbserial-* /dev/cu.wchusbserial* /dev/cu.SLAB_USBtoUART* 2>/dev/null | head -1 || true)
+    [ -n "$PORT" ] || die "no serial port found. Plug the chip in or pass one: $0 $CUBE_NUM <port>"
 fi
-echo ""
-echo "Board version: $BOARD_ENV"
+echo "Reading MAC from $PORT..."
+NEW_MAC=$("$PIO_PYTHON" -m esptool --port "$PORT" read-mac 2>/dev/null \
+    | grep -i '^MAC:' | head -1 | awk '{print $2}' | tr 'a-f' 'A-F')
+[ -n "$NEW_MAC" ] || die "could not read MAC from $PORT. Check the USB connection."
+echo "New MAC:       $NEW_MAC"
 
-# Compile and flash
-echo "Compiling and flashing..."
-$PIO run -e "$BOARD_ENV" -t upload --upload-port "$PORT"
+if [ "$NEW_MAC" = "$OLD_MAC" ]; then
+    echo "Table already points cube $CUBE_NUM at $NEW_MAC; nothing to change."
+else
+    ! grep -q "\"$NEW_MAC\"" "$MAC_FILE" || die "$NEW_MAC is already in the table; refusing to duplicate it."
+
+    # --- Edit both tables -------------------------------------------------------
+    sed -i '' "s|{\"$OLD_MAC\"\(,[[:space:]]*$CUBE_NUM[[:space:]]*,\)|{\"$NEW_MAC\"\1|" "$MAC_FILE"
+    # A sed that matches nothing still exits 0, so the edit is read back rather
+    # than assumed.
+    grep -q "\"$NEW_MAC\"" "$MAC_FILE" || die "MAC table edit did not apply — $MAC_FILE is unchanged."
+    echo "Updated entry: $(sed -n "/\"$NEW_MAC\"/p" "$MAC_FILE")"
+
+    # The board version travels with the PCB, not the chip, so the new MAC
+    # inherits whatever the replaced one was registered as.
+    # Matched case-sensitively, as the rewrite below is: a read that finds a
+    # lowercase line the rewrite then misses would abort with the MAC table
+    # already edited and this file not.
+    OLD_VERSION=$(grep "^$OLD_MAC=" "$BOARD_FILE" | head -1 | cut -d= -f2 | tr -d '[:space:]')
+    if [ -n "$OLD_VERSION" ]; then
+        sed -i '' "s|^$OLD_MAC=.*|$NEW_MAC=$OLD_VERSION|" "$BOARD_FILE"
+        grep -q "^$NEW_MAC=" "$BOARD_FILE" || die "board version edit did not apply to $BOARD_FILE."
+        echo "Board version: $NEW_MAC=$OLD_VERSION (inherited from $OLD_MAC)"
+    else
+        echo "WARNING: $OLD_MAC had no entry in $BOARD_FILE, so none was inherited."
+        echo "         Add '$NEW_MAC=<v1|v6|v6_with_hall>' there before flashing."
+    fi
+fi
+
+# --- Validate -------------------------------------------------------------------
+echo ""
+python3 "$SCRIPT_DIR/validate_mac_table.py" || die "MAC table validation failed; fix before flashing."
 
 echo ""
-echo "Done! Cube $CUBE_NUM flashed with MAC $MAC"
-echo "Install in cube and verify on network."
+echo "Tables updated. Flash with:"
+echo "  $SCRIPT_DIR/flash_cube_wired.sh $PORT"
