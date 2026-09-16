@@ -33,7 +33,7 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"EC:E3:34:79:9D:2C", 12, RGB_ORDER_RGB, 32},  // 30-pin
   {"04:83:08:59:6E:74", 13, RGB_ORDER_RGB, 33},  // 30-pin
   {"94:54:C5:EE:89:4C", 14, RGB_ORDER_RGB, 34},  // 30-pin
-  {"8C:4F:00:36:7A:88", 15, RGB_ORDER_RGB, 35},  // 30-pin
+  {"20:50:0D:19:FB:C8", 15, RGB_ORDER_RGB, 35},
   {"D8:BC:38:F9:39:30", 16, RGB_ORDER_RGB, 36},  // 30-pin
   {"80:F3:DA:54:53:B8",  1, RGB_ORDER_BGR, 41},  // backup slot 1
   {"B4:BF:E9:60:C0:68",  2, RGB_ORDER_RGB, 42},  // backup slot 2
@@ -43,7 +43,7 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
   {"5C:01:3B:4A:87:4C",  6, RGB_ORDER_RGB, 46},  // backup slot 6
   // Unassigned spare: the roster holds it at slot null, so it displays
   // NO SLOT until an operator assigns it a slot from the admin page.
-  {"20:50:0D:19:FB:C8", CUBE_ID_NONE, RGB_ORDER_BGR, 47},  // spare
+  {"8C:4F:00:36:7A:88", CUBE_ID_NONE, RGB_ORDER_BGR, 47},  // spare
   {"5C:01:3B:65:F2:74", CUBE_ID_NONE, RGB_ORDER_RGB, 48},  // spare
 };
 #endif

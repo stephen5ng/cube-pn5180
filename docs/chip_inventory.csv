@@ -9,8 +9,9 @@ EC:E3:34:79:8A:BC,6,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,Genuine Espressif
 EC:E3:34:79:9D:2C,12,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
 04:83:08:59:6E:74,13,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
 94:54:C5:EE:89:4C,14,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
-8C:4F:00:36:7A:88,15,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
+20:50:0D:19:FB:C8,15,primary,v6_with_hall,ESP32-D0WD-V3,,,
 D8:BC:38:F9:39:30,16,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
 14:2B:2F:DA:FB:F4,1,backup,v6,ESP32-D0WD-V3,v3.1,,no hall sensor
 80:F3:DA:54:53:B8,,spare,,ESP32-D0WD-V3,v3.1,,
 CC:DB:A7:99:0F:E0,,spare,,ESP32-D0WD-V3,v3.0,,could not enter download mode
+8C:4F:00:36:7A:88,,spare,,ESP32-D0WD-V3,,,was slot 15; stopped answering
