@@ -12,7 +12,7 @@ LOOSE = re.compile(r'\{\s*"[^"]*"[^}]*\}')
 # cube_id is \w+ rather than \d+: a spare carries the CUBE_ID_NONE sentinel
 # instead of a literal. ip_octet stays numeric, since it is range-checked.
 STRICT = re.compile(
-    r'^\{\s*"((?:[0-9A-F]{2}:){5}[0-9A-F]{2})"\s*,\s*\w+\s*,\s*\w+\s*,\s*(\d+)\s*\}$'
+    r'^\{\s*"((?:[0-9A-F]{2}:){5}[0-9A-F]{2})"\s*,\s*(\w+)\s*,\s*\w+\s*,\s*(\d+)\s*\}$'
 )
 
 
@@ -25,16 +25,23 @@ def main():
     errors = []
     if len(rows) != EXPECTED_ROWS:
         errors.append(f"expected {EXPECTED_ROWS} rows, found {len(rows)}")
-    macs, octets = {}, {}
+    macs, octets, cube_ids = {}, {}, {}
     for raw in rows:
         match = STRICT.match(raw.strip())
         if not match:
             errors.append(f"malformed/non-canonical row: {raw.strip()}")
             continue
-        mac, octet = match.group(1), int(match.group(2))
+        mac, cube_id, octet = match.group(1), match.group(2), int(match.group(3))
         if mac in macs:
             errors.append(f"duplicate MAC {mac}")
         macs[mac] = True
+        if cube_id != "CUBE_ID_NONE":
+            if cube_id in cube_ids:
+                errors.append(
+                    f"duplicate cube_id {cube_id} "
+                    f"({cube_ids[cube_id]} and {mac})"
+                )
+            cube_ids[cube_id] = mac
         if octet in octets:
             errors.append(f"duplicate ip_octet {octet} ({octets[octet]} and {mac})")
         octets[octet] = mac
@@ -48,7 +55,8 @@ def main():
             print(f"  - {error}")
         return 1
     print(
-        f"MAC table OK: {len(rows)} rows, all MACs and octets unique and canonical."
+        f"MAC table OK: {len(rows)} rows, "
+        f"all MACs, cube_ids and octets unique and canonical."
     )
     return 0
 
