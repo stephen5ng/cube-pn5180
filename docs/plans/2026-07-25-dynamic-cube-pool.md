@@ -247,9 +247,15 @@ on every maintenance wake. The fix:
 
 ## NFC neighbor identity
 
-A cube reads the tag of its **right neighbor** and publishes it. Today it also
-resolves that tag to a cube number on-device via the compiled
-`lookupCubeNumberByTag` and publishes `cube/right/{id}`.
+A cube reads the tag of its **right neighbor** and publishes it. The on-device
+tag lookup this described is gone: a reader publishes the raw tag to
+`cube/device/{MAC}/nfc` and the server resolves it.
+
+`cube/right/{id}` outlived it, carrying a different payload. A hall board decodes
+its neighbour's id from the 2-of-6 magnet pattern, which needs no tag and no
+server lookup, and publishes that id there. So the topic is now the hall path's
+output rather than the NFC path's, and retiring it means giving that path the
+same MAC-scoped provenance rather than deleting a redundant publish.
 
 In the pool model the tag→slot mapping is dynamic, so resolution moves to the
 server. The raw observation must also be MAC-scoped and provenance-tagged — the
@@ -468,10 +474,8 @@ Non-goals:
 5. **Partial.** Move neighbor tag resolution to the server with provenance
    checks; retire compiled `lookupCubeNumberByTag` and `cube/right/{id}` for
    pooled identity. Server-side resolution shipped
-   (`src/hardware/neighbor_resolver.py`), but neither retirement did:
-   `cube/right/{id}` is still published, and `lookupCubeNumberByTag` has no
-   caller outside its own tests, whose expectations are now wrong — they asserted
-   tag `C1A81366080104E0` is cube 11 when the enclosure holding it is slot 13.
+   (`src/hardware/neighbor_resolver.py`), and the compiled tag table is gone with
+   it. `cube/right/{id}` is still published, so the topic half remains.
 
 Steps 1–3 preserve behavior, so there is no flag day. Mixed firmware is safe
 until step 4 (authority cutover), at which point every field cube must be on the
@@ -498,10 +502,13 @@ Settled while planning steps 2–3
 2. Confirm hardware-class metadata (small/large) per commissioned cube. The
    step-2 seed records `"standard"` for all 18 cubes; a second size needs real
    values before the console can enforce class matching.
-3. Confirm the `MAC → tag` pairing physically. The seed pairs each MAC with a
-   tag by slot from `src/cube_tags.cpp`, which only holds while each chip is
-   still in the enclosure whose tag it is paired with — chips have been moved
-   between cubes before. Unused until step 5.
+3. ~~Confirm the `MAC → tag` pairing physically.~~ **Done, and the warning was
+   right.** The pairing was seeded by slot from a compiled table, which held only
+   while each chip stayed in the enclosure whose tag it was paired with. Chips
+   moved, and every player-1 pairing was wrong by the time anyone checked. The
+   live pairing was measured instead — each cube reads its right neighbour, so a
+   row of six yields five tags and moving the leftmost cube to the far end yields
+   the sixth — and the roster now carries the measured values.
 4. Liveness-challenge bounds: nonce interval and response timeout that reliably
    cover a just-woken cube's Wi-Fi/MQTT startup on battery.
 5. Confirm which display state must be re-sent after a slot change (most
