@@ -7,7 +7,7 @@ CC:DB:A7:9B:5D:9C,4,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,moved from cube 1
 EC:E3:34:79:8A:BC,6,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,Genuine Espressif replacement
 EC:E3:34:79:9D:2C,11,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
 20:50:0D:1A:04:AC,12,primary,v6_with_hall,ESP32-D0WD-V3,,,
-20:50:0D:0A:9F:A8,13,primary,v6_with_hall,ESP32-D0WD-V3,,,
+20:50:0D:30:95:48,13,primary,v6_with_hall,ESP32-D0WD-V3,,,
 94:54:C5:EE:89:4C,14,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
 20:50:0D:19:FB:C8,15,primary,v6_with_hall,ESP32-D0WD-V3,,,
 D8:BC:38:F9:39:30,16,primary,v6_with_hall,ESP32-D0WD-V3,,30-pin,
@@ -18,3 +18,4 @@ CC:DB:A7:99:0F:E0,,spare,,ESP32-D0WD-V3,v3.0,,could not enter download mode
 04:83:08:59:6E:74,,spare,,ESP32-D0WD-V3,,30-pin,replaced in slot 13
 94:54:C5:F1:AF:00,,spare,,ESP32-D0WD-V3,,,whereabouts not recorded; held the slot 11 row until its board moved to cube 4
 5C:01:3B:4A:CB:D4,,spare,,ESP32-D0WD-V3,,38-pin,replaced in slot 5
+20:50:0D:0A:9F:A8,,spare,,ESP32-D0WD-V3,,,replaced in slot 13
