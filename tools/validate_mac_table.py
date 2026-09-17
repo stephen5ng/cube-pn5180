@@ -25,7 +25,7 @@ def main():
     errors = []
     if len(rows) != EXPECTED_ROWS:
         errors.append(f"expected {EXPECTED_ROWS} rows, found {len(rows)}")
-    macs, octets, cube_ids = {}, {}, {}
+    macs, octets = {}, {}
     for raw in rows:
         match = STRICT.match(raw.strip())
         if not match:
@@ -36,12 +36,10 @@ def main():
             errors.append(f"duplicate MAC {mac}")
         macs[mac] = True
         if cube_id != "CUBE_ID_NONE":
-            if cube_id in cube_ids:
-                errors.append(
-                    f"duplicate cube_id {cube_id} "
-                    f"({cube_ids[cube_id]} and {mac})"
-                )
-            cube_ids[cube_id] = mac
+            errors.append(
+                f"{mac} compiles in slot {cube_id}: the roster assigns slots, "
+                "so every row must be CUBE_ID_NONE"
+            )
         if octet in octets:
             errors.append(f"duplicate ip_octet {octet} ({octets[octet]} and {mac})")
         octets[octet] = mac
@@ -56,7 +54,7 @@ def main():
         return 1
     print(
         f"MAC table OK: {len(rows)} rows, "
-        f"all MACs, cube_ids and octets unique and canonical."
+        f"all MACs and octets unique and canonical, no compiled slots."
     )
     return 0
 

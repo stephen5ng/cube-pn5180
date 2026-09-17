@@ -18,8 +18,11 @@ enum RgbOrder {
   RGB_ORDER_RGB,
 };
 
-// MAC-to-cube mapping. ip_octet identifies the physical device and is
-// independent of cube_id, the logical/default slot.
+// Physical facts about a board, keyed by the MAC that never changes: which
+// static-IP octet it answers on and how its panel is wired. Which slot it plays
+// is not among them -- the roster assigns that at run time -- so cube_id is
+// CUBE_ID_NONE on every production row, and the field remains only as the
+// fallback's input while the authority marker is still unpublished.
 struct CubeMacEntry {
   const char *mac;
   int cube_id;
@@ -27,16 +30,12 @@ struct CubeMacEntry {
   int ip_octet;
 };
 
-// cube_id for a board with no default slot -- an uncommissioned spare.
-//
-// The fallback below hands back compiled_cube_id when no assignment record
-// arrives, which is a safety net for a fielded cube whose record was lost but
-// a live hazard for a spare: a freshly flashed board has blank NVS, so
-// authority_latched is false and it would adopt a real cube's slot on the
-// fleet network. Every consumer treats a non-positive slot as unassigned, so
-// this makes the fallback inert instead of a collision. A spare that has been
-// assigned keeps its own safety net, because the fallback prefers the stored
-// slot once it has one.
+// The absence of a slot. Every production row carries it, so the fallback
+// below has nothing to hand back and a board with no assignment stays
+// unassigned rather than adopting a slot someone else holds -- which is what a
+// compiled slot did once its board had moved. A board that has been assigned is
+// unaffected: the stored slot in NVS is preferred over this, and survives a
+// reboot without the broker.
 constexpr int CUBE_ID_NONE = 0;
 
 extern const CubeMacEntry CUBE_MAC_TABLE[];
