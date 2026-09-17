@@ -25,7 +25,6 @@ typedef struct MessageNfcId {
 #include <Wire.h>
 #include <secrets.h>
 #include "font.h"
-#include "cube_tags.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "driver/rtc_io.h"
@@ -1779,9 +1778,8 @@ uint8_t getWakeupReason() {
 
 // ============= Hall Neighbor Functions =============
 // Maps a 6-bit ID mask (bits P6 P5 P4 P3 P2 P1) to a neighbor cube id;
-// 0 = invalid pattern. Ids match the NFC tag table (cube_tags.cpp): player 0
-// is cubes 1-6, player 1 is cubes 11-16. Populate each cube's ID magnets with
-// the pattern that decodes to its game id.
+// 0 = invalid pattern. Player 0 is cubes 1-6, player 1 is cubes 11-16, and
+// each cube's ID magnets carry the pattern that decodes to its game id.
 static uint8_t hallCubeIdForMask(uint8_t id_mask) {
   switch (id_mask & 0x3F) {
     case 0b000011: return 1;
