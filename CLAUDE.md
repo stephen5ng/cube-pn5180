@@ -54,7 +54,7 @@
   git worktree has it empty and the build fails on `EspMQTTClient.h not found`;
   run `git submodule update --init --recursive` there first. `src/secrets.h` is
   gitignored, so a new worktree needs a copy of it too
-- `tools/` - Cube management: `flash_cubes.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `check_cubes.sh`, `show_cube_numbers.py`, diagnostics
+- `tools/` - Cube management: `flash_cubes.sh`, `flash_cube_wired.sh`, `replace_chip.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `check_cubes.sh`, `show_cube_numbers.py`, diagnostics
 - `docs/` - Planning docs, hardware debugging notes, analysis write-ups
 - `config/cube_board_versions.txt` - Maps MAC address to board version (v6/v6_with_hall); read by flashing/diagnostic scripts
 - Sleep mode wakes on GPIO 0, the boot button (`SLEEP_PIN`, `src/main.cpp`). GPIO 5 is `POWER_SWITCH_PIN`, the HUB75 power gate — see the sleep-mode section below
@@ -151,12 +151,15 @@ The v6 PCB has a TPS22975 load switch on GPIO5 that gates 5V to the HUB75 panel.
 - Native tests run utility functions without ESP32 dependencies
 - All tests must pass before deployment
 - Segfault protection implemented for unrecognized MAC addresses
-- Sleep mode implementation includes battery maintenance wake-up every hour
 - A sleeping cube checks in every `sleep_interval_s` seconds (default **20**,
   overridable via `cube/{id}/sleep_interval`), holding the radio up for
   `KEEPALIVE_CHECKIN_WINDOW_MS` each time. That dwell is also the current pulse
   that stops a USB-C power bank cutting off on low draw, so it is a power
   requirement, not just a timeout
+- Whether it goes back to sleep is decided by the retained
+  `cube/device/{MAC}/auto_sleep` flag, keyed by MAC so a board with no slot is
+  reachable too. `tools/wake.sh` clears it; publishing to a slot-numbered topic
+  does nothing at all, which is silent rather than an error
 - Comments should only refer to the current state of the code. They should not describe any changes from previous states ("More detailed error handling" or "code move to ...")
 - Any references to future state in the code should be in a TODO.
 - Do not comment code that is obvious. (And if code isn't obvious, try to rewrite it so that it is obvious)
