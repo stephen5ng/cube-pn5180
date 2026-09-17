@@ -1,6 +1,6 @@
 # Dynamic Cube Pool with Console Reassignment
 
-**Status:** Proposed design; no implementation
+**Status:** Rollout steps 1-3 shipped; step 4 not started, step 5 partial (see [Rollout](#rollout))
 **Date:** 2026-07-26
 **Owners:** `cube-pn5180` firmware, `cubes` game server, `pi-deploy`
 
@@ -440,21 +440,38 @@ Non-goals:
 
 ## Rollout
 
-1. Assign a unique `ip_octet` per commissioned MAC in `CubeMacEntry`, and switch
-   both MQTT clients to MAC-derived client IDs; ship it so every physical cube has
-   a distinct address and client ID (no shared-`cube_id` collisions).
-2. Add the server `MAC → {slot, generation}` map, `MAC → tag` inventory, and
-   retained `cube/assign` publishes, seeded to match today — no behavior change.
-   The authority marker stays off, so firmware fallback still applies.
-3. Ship firmware that reads its slot from the assignment (compiled `cube_id`
-   fallback until authority latches), persists `{slot, generation}` to NVS,
-   publishes MAC-scoped presence, answers liveness challenges, and uses MAC-scoped
-   keepalive on wake.
-4. Add the console assign/swap action and the MAC-verified, liveness-gated
-   game-start gate, then publish `cube/roster/authoritative` — after which every
-   cube latches it and fails closed instead of falling back.
-5. Move neighbor tag resolution to the server with provenance checks; retire
-   compiled `lookupCubeNumberByTag` and `cube/right/{id}` for pooled identity.
+1. **Shipped.** Assign a unique `ip_octet` per commissioned MAC in
+   `CubeMacEntry`, and switch both MQTT clients to MAC-derived client IDs; ship
+   it so every physical cube has a distinct address and client ID (no
+   shared-`cube_id` collisions). `findCubeIpOctet` and `makeMqttClientId` carry
+   this. The duplicate `cube_id`s the octets were meant to replace outlived it
+   and were removed later, under the same invariant `validate_mac_table.py`
+   now enforces.
+2. **Shipped.** Add the server `MAC → {slot, generation}` map, `MAC → tag`
+   inventory, and retained `cube/assign` publishes, seeded to match today — no
+   behavior change. The authority marker stays off, so firmware fallback still
+   applies. `src/hardware/cube_roster.py` in `cubes`, with the on-disk roster at
+   `/var/lib/lexacube/cube_roster.json` and its seed in `assets/data/`.
+3. **Shipped.** Ship firmware that reads its slot from the assignment (compiled
+   `cube_id` fallback until authority latches), persists `{slot, generation}` to
+   NVS, publishes MAC-scoped presence, answers liveness challenges, and uses
+   MAC-scoped keepalive on wake. The keepalive path is MAC-scoped throughout: the
+   sleep flag moved onto `cube/device/{MAC}/auto_sleep` alone, with no
+   slot-scoped counterpart.
+4. **Not started.** Add the console assign/swap action and the MAC-verified,
+   liveness-gated game-start gate, then publish `cube/roster/authoritative` —
+   after which every cube latches it and fails closed instead of falling back.
+   Firmware holds the whole consumer side (`resolveAssignedSlot`,
+   `handleAuthorityMarker`, the NVS latch) and nothing publishes the marker, so
+   the fleet runs permanently on the step-3 fallback. The precondition below —
+   every field cube on the assignment-aware build — now holds.
+5. **Partial.** Move neighbor tag resolution to the server with provenance
+   checks; retire compiled `lookupCubeNumberByTag` and `cube/right/{id}` for
+   pooled identity. Server-side resolution shipped
+   (`src/hardware/neighbor_resolver.py`), but neither retirement did:
+   `cube/right/{id}` is still published, and `lookupCubeNumberByTag` has no
+   caller outside its own tests, whose expectations are now wrong — they asserted
+   tag `C1A81366080104E0` is cube 11 when the enclosure holding it is slot 13.
 
 Steps 1–3 preserve behavior, so there is no flag day. Mixed firmware is safe
 until step 4 (authority cutover), at which point every field cube must be on the
