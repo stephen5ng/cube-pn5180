@@ -13,6 +13,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 MAC_FILE="$PROJECT_DIR/src/cube_utilities.cpp"
 BOARD_FILE="$PROJECT_DIR/config/cube_board_versions.txt"
 PIO_PYTHON="${PIO_PYTHON:-$HOME/.platformio/penv/bin/python}"
+MQTT_HOST="${MQTT_SERVER:-192.168.8.247}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -23,16 +24,26 @@ PORT="${1:-}"
 
 [[ "$CUBE_NUM" =~ ^[0-9]+$ ]] || die "cube number must be numeric, got '$CUBE_NUM'"
 
-# --- Locate the row -------------------------------------------------------------
-# Matched on the cube id field rather than on line number or comment text: both
-# of those have drifted before and a stale match rewrites the wrong board. One
-# slot is held by one board, which validate_mac_table.py enforces, so the id is
-# enough to identify a row on its own.
-ROW_RE="^[[:space:]]*\{\"([0-9A-F:]{17})\"[[:space:]]*,[[:space:]]*$CUBE_NUM[[:space:]]*,"
-OLD_MAC=$(sed -n '/^#else/,/^#endif/p' "$MAC_FILE" | sed -nE "s/$ROW_RE.*/\1/p")
-MATCH_COUNT=$(printf '%s\n' "$OLD_MAC" | grep -c . || true)
-[ "$MATCH_COUNT" -eq 1 ] \
-    || die "expected exactly one table row for cube $CUBE_NUM, found $MATCH_COUNT"
+# --- Find the board holding the slot ---------------------------------------------
+# The table compiles in no slot, so it cannot answer "which board is cube N".
+# The retained assignments can, and they are the same records the firmware
+# obeys, so the answer here matches what the cube itself believes.
+# Every owner, not the first: two records naming one slot is the collision this
+# is used to recover from, and picking either would rewrite a board's permanent
+# row -- its MAC, its address, its panel wiring -- for the wrong hardware.
+OWNERS=$(mosquitto_sub -h "$MQTT_HOST" -t 'cube/assign/+' -v -W 2 2>/dev/null \
+    | sed -nE "s#^cube/assign/([0-9A-Fa-f]{12})[[:space:]].*\"slot\"[[:space:]]*:[[:space:]]*${CUBE_NUM}[[:space:]]*[,}].*#\1#p" \
+    | tr 'a-f' 'A-F' | sort -u || true)
+OWNER_COUNT=$(printf '%s\n' "$OWNERS" | grep -c . || true)
+[ "$OWNER_COUNT" -ne 0 ] \
+    || die "no board holds slot $CUBE_NUM. The roster assigns slots; check the admin page."
+[ "$OWNER_COUNT" -eq 1 ] \
+    || die "slot $CUBE_NUM is claimed by $OWNER_COUNT boards ($(echo $OWNERS)). Resolve the
+duplicate assignment before replacing a chip: rewriting a row now could repoint
+the wrong board."
+OLD_MAC=$(printf '%s' "$OWNERS" | sed -E 's/(..)/\1:/g; s/:$//')
+grep -q "\"$OLD_MAC\"" "$MAC_FILE" \
+    || die "slot $CUBE_NUM is held by $OLD_MAC, which is not in $MAC_FILE."
 echo "Current entry: cube $CUBE_NUM, MAC $OLD_MAC"
 
 # --- Read the new chip's MAC ----------------------------------------------------
