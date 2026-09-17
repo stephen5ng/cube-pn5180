@@ -2,12 +2,6 @@
 # Point a cube's table entry at a replacement ESP32, then flash it over USB.
 #
 # Usage: ./replace_chip.sh <cube_number> [port]
-#        ./replace_chip.sh <cube_number> --backup [port]
-#
-# Cube ids 1-6 appear twice in the table: once for the primary board and once
-# for the backup board that can stand in for it. They are told apart by the
-# static-IP octet the entry carries (20+N primary, 40+N backup), so --backup
-# picks the second. Editing both is how a swap silently takes the spare with it.
 #
 # The flash itself is flash_cube_wired.sh's job; this script only gets the
 # tables right first.
@@ -23,36 +17,23 @@ PIO_PYTHON="${PIO_PYTHON:-$HOME/.platformio/penv/bin/python}"
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 CUBE_NUM="${1:-}"
-[ -n "$CUBE_NUM" ] || die "usage: replace_chip.sh <cube_number> [--backup] [port]"
+[ -n "$CUBE_NUM" ] || die "usage: replace_chip.sh <cube_number> [port]"
 shift
-WANT_BACKUP=false
-if [ "${1:-}" = "--backup" ]; then WANT_BACKUP=true; shift; fi
 PORT="${1:-}"
 
 [[ "$CUBE_NUM" =~ ^[0-9]+$ ]] || die "cube number must be numeric, got '$CUBE_NUM'"
 
-# The octet that distinguishes the primary entry from the backup one.
-# Player 0 is slots 1-6 at 20+N, player 1 is slots 11-16 at 30+(N-10), and the
-# backup boards that stand in for player 0 are at 40+N.
-if [ "$CUBE_NUM" -ge 11 ]; then
-    [ "$WANT_BACKUP" = false ] || die "only cubes 1-6 have a backup board entry."
-    WANT_OCTET=$((30 + CUBE_NUM - 10))
-elif [ "$WANT_BACKUP" = true ]; then
-    WANT_OCTET=$((40 + CUBE_NUM))
-else
-    WANT_OCTET=$((20 + CUBE_NUM))
-fi
-
 # --- Locate the row -------------------------------------------------------------
-# Matched on the cube id and octet fields rather than on line number or comment
-# text: both of those have drifted before and a stale match rewrites the wrong
-# board.
-ROW_RE="^[[:space:]]*\{\"([0-9A-F:]{17})\"[[:space:]]*,[[:space:]]*$CUBE_NUM[[:space:]]*,[[:space:]]*[A-Za-z0-9_]+[[:space:]]*,[[:space:]]*$WANT_OCTET[[:space:]]*\},"
+# Matched on the cube id field rather than on line number or comment text: both
+# of those have drifted before and a stale match rewrites the wrong board. One
+# slot is held by one board, which validate_mac_table.py enforces, so the id is
+# enough to identify a row on its own.
+ROW_RE="^[[:space:]]*\{\"([0-9A-F:]{17})\"[[:space:]]*,[[:space:]]*$CUBE_NUM[[:space:]]*,"
 OLD_MAC=$(sed -n '/^#else/,/^#endif/p' "$MAC_FILE" | sed -nE "s/$ROW_RE.*/\1/p")
 MATCH_COUNT=$(printf '%s\n' "$OLD_MAC" | grep -c . || true)
 [ "$MATCH_COUNT" -eq 1 ] \
-    || die "expected exactly one table row for cube $CUBE_NUM at octet $WANT_OCTET, found $MATCH_COUNT"
-echo "Current entry: cube $CUBE_NUM, octet $WANT_OCTET, MAC $OLD_MAC"
+    || die "expected exactly one table row for cube $CUBE_NUM, found $MATCH_COUNT"
+echo "Current entry: cube $CUBE_NUM, MAC $OLD_MAC"
 
 # --- Read the new chip's MAC ----------------------------------------------------
 if [ -n "$PORT" ]; then

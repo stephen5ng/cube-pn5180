@@ -23,28 +23,29 @@ const CubeMacEntry CUBE_MAC_TABLE[] = {
 #else
 // Production MAC addresses - actual hardware
 const CubeMacEntry CUBE_MAC_TABLE[] = {
-  {"CC:DB:A7:9F:C2:84",  1, RGB_ORDER_BGR, 21},  // 30-pin
-  {"3C:8A:1F:77:DF:8C",  2, RGB_ORDER_BGR, 22},  // 30-pin
-  {"8C:4F:00:37:7C:DC",  3, RGB_ORDER_BGR, 23},  // 30-pin
-  {"CC:DB:A7:9B:5D:9C",  4, RGB_ORDER_BGR, 24},  // 30-pin (moved from cube 11)
-  {"04:83:08:59:76:98",  5, RGB_ORDER_BGR, 25},
-  {"EC:E3:34:79:8A:BC",  6, RGB_ORDER_BGR, 26},  // 30-pin
+  {"CC:DB:A7:9F:C2:84",  CUBE_ID_NONE, RGB_ORDER_BGR, 21},  // 30-pin
+  {"3C:8A:1F:77:DF:8C",  CUBE_ID_NONE, RGB_ORDER_BGR, 22},  // 30-pin
+  {"8C:4F:00:37:7C:DC",  CUBE_ID_NONE, RGB_ORDER_BGR, 23},  // 30-pin
+  {"CC:DB:A7:9B:5D:9C",  CUBE_ID_NONE, RGB_ORDER_BGR, 24},  // 30-pin (moved from cube 11)
+  {"04:83:08:59:76:98",  CUBE_ID_NONE, RGB_ORDER_BGR, 25},
+  {"EC:E3:34:79:8A:BC",  CUBE_ID_NONE, RGB_ORDER_BGR, 26},  // 30-pin
   {"EC:E3:34:79:9D:2C", 11, RGB_ORDER_RGB, 31},
   {"20:50:0D:1A:04:AC", 12, RGB_ORDER_RGB, 32},  // 30-pin
   {"20:50:0D:30:95:48", 13, RGB_ORDER_RGB, 33},
   {"94:54:C5:EE:89:4C", 14, RGB_ORDER_RGB, 34},  // 30-pin
   {"20:50:0D:19:FB:C8", 15, RGB_ORDER_RGB, 35},
   {"D8:BC:38:F9:39:30", 16, RGB_ORDER_RGB, 36},  // 30-pin
-  {"80:F3:DA:54:53:B8",  1, RGB_ORDER_BGR, 41},  // backup slot 1
-  {"B4:BF:E9:60:C0:68",  2, RGB_ORDER_RGB, 42},  // backup slot 2
-  {"5C:01:3B:64:E2:84",  3, RGB_ORDER_RGB, 43},  // backup slot 3
-  {"D4:8A:FC:9F:B0:C0",  4, RGB_ORDER_BGR, 44},  // backup slot 4
-  {"D8:BC:38:E5:A8:38",  5, RGB_ORDER_RGB, 45},  // backup slot 5
-  {"5C:01:3B:4A:87:4C",  6, RGB_ORDER_RGB, 46},  // backup slot 6
-  // Unassigned spare: the roster holds it at slot null, so it displays
-  // NO SLOT until an operator assigns it a slot from the admin page.
+  {"80:F3:DA:54:53:B8",  1, RGB_ORDER_BGR, 41},
+  {"B4:BF:E9:60:C0:68",  2, RGB_ORDER_RGB, 42},
+  {"5C:01:3B:64:E2:84",  CUBE_ID_NONE, RGB_ORDER_RGB, 43},  // spare
+  {"D4:8A:FC:9F:B0:C0",  4, RGB_ORDER_BGR, 44},
+  {"D8:BC:38:E5:A8:38",  5, RGB_ORDER_RGB, 45},
+  {"5C:01:3B:4A:87:4C",  6, RGB_ORDER_RGB, 46},
+  // CUBE_ID_NONE is a board holding no slot. It displays NO SLOT until an
+  // operator assigns it one from the admin page, and the roster is what
+  // decides: a compiled id is only the fallback for a board no record covers.
   {"8C:4F:00:36:7A:88", CUBE_ID_NONE, RGB_ORDER_BGR, 47},  // spare
-  {"5C:01:3B:65:F2:74", CUBE_ID_NONE, RGB_ORDER_RGB, 48},  // spare
+  {"5C:01:3B:65:F2:74",  3, RGB_ORDER_RGB, 48},
   {"20:50:0D:0A:9F:A8", CUBE_ID_NONE, RGB_ORDER_RGB, 49},  // spare
 };
 #endif
