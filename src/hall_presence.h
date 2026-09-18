@@ -89,10 +89,14 @@ class HallPresenceTracker {
   void begin(const HallPresenceConfig& cfg, int saved_baseline = 0) {
     cfg_ = cfg;
     primed_ = false;
+    settle_started_ = false;
     active_ = false;
     delta_ = 0;
     base_primed_ = saved_baseline > 0;
-    if (base_primed_) base_ = (int32_t)saved_baseline << cfg_.base_shift;
+    // Set either way. Leaving the old value in place would let baseline() keep
+    // reporting a reference that begin() has just discarded, and anything that
+    // copies it out -- the RTC cache, the diagnostics -- would carry it forward.
+    base_ = (int32_t)(base_primed_ ? saved_baseline : 0) << cfg_.base_shift;
   }
 
   // id_mask is what the ID sensors read: non-zero means a neighbour is physically
@@ -117,15 +121,31 @@ class HallPresenceTracker {
     // reference, and nothing can be reported from it.
     if (!base_primed_) {
       if (id_mask != 0) {
+        settle_started_ = false;
         delta_ = 0;
         active_ = false;
         return false;
       }
-      // Both filters start from this sample. The fast one has been tracking the
-      // magnet all through the blind period, so carrying it over would prime the
-      // baseline high and leave the neighbour reading short of the threshold.
-      fast_ = (int32_t)raw << cfg_.fast_shift;
-      base_ = (int32_t)raw << cfg_.base_shift;
+      // A cold boot reaches here before the sensor output has settled. Slot 16
+      // primed from a first sample of 1702 against a true idle near 1850, latched
+      // on the difference, and had persisted the bad value to NVS before the
+      // activation closed the save gate -- so a power cycle restored it.
+      if (!settle_started_) {
+        settle_started_ = true;
+        settle_start_ms_ = now_ms;
+        // The fast filter carries whatever it tracked through the blind period,
+        // which may include a magnet that has since gone.
+        fast_ = (int32_t)raw << cfg_.fast_shift;
+      }
+      if ((uint32_t)(now_ms - settle_start_ms_) < PRIME_SETTLE_MS) {
+        delta_ = 0;
+        active_ = false;
+        return false;
+      }
+      // From the filtered value rather than this one sample: it has tracked only
+      // magnet-free samples since settling began, so it is the same reading with
+      // the noise taken out.
+      base_ = (int32_t)f << cfg_.base_shift;
       base_primed_ = true;
       last_base_ms_ = now_ms;
       delta_ = 0;
@@ -167,6 +187,10 @@ class HallPresenceTracker {
   uint32_t last_base_ms_ = 0;
   int      delta_ = 0;
   bool     active_ = false;
+  // How long the reading must be magnet-free before it is taken as the reference.
+  static const uint32_t PRIME_SETTLE_MS = 500;
+  bool     settle_started_ = false;
+  uint32_t settle_start_ms_ = 0;
   bool     primed_ = false;
   bool     base_primed_ = false;
 };

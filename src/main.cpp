@@ -1684,6 +1684,9 @@ void handleLivenessRequest(const String& nonce) {
   mqtt_client.publish(mqtt_topic_liveness_response, payload, false);
 }
 
+// Defined with the hall code below, which needs the tracker and its config.
+static void recalibratePresence();
+
 void onConnectionEstablished() {
   debugSend("MQTT connected");
 
@@ -1702,6 +1705,8 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBrightnessCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleRebootCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep_now", handleSleepNowCommand);
+  mqtt_client.subscribe("cube/device/" + mac_nocolons + "/recalibrate",
+                        [](const String&) { recalibratePresence(); });
   mqtt_client.subscribe("cube/resend", [](const String&) {
     // Re-announce what we see now. Publish-on-change alone would leave a
     // cleared record unrestored until the neighbor physically moved.
@@ -1802,6 +1807,25 @@ static int restoredPresenceBaseline() {
   }
   const int stored = loadPresenceBaseline();
   return plausiblePresenceBaseline(stored) ? stored : 0;
+}
+
+// Clears every stored reference so the tracker primes again from the current
+// reading. A baseline taken while something was in range latches active_ and is
+// then frozen by its own activation, and it reaches NVS in the moment between
+// priming and latching -- at which point nothing short of this can shift it.
+// Publish to cube/device/<mac>/recalibrate with no cube in range.
+static void recalibratePresence() {
+  saved_presence_magic = 0;
+  saved_presence_baseline = 0;
+  savePresenceBaseline(0);  // below PRESENCE_BASELINE_MIN, so it reads as absent
+  hall_presence.begin({HALL_PRESENCE_DIRECTION,
+                       HALL_PRESENCE_ON_DELTA,
+                       HALL_PRESENCE_OFF_DELTA,
+                       HALL_PRESENCE_FAST_SHIFT,
+                       HALL_PRESENCE_BASE_SHIFT,
+                       HALL_PRESENCE_BASE_INTERVAL_MS},
+                      0);
+  Serial.println(F("Presence baseline cleared; repriming"));
 }
 
 void setupHallSensors() {
@@ -2556,8 +2580,16 @@ void loop() {
             published_proximity = proximity;
           }
         }
-        saved_presence_baseline = hall_presence.baseline();
-        saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+        // Only once there is a reference to save. An unprimed tracker has no
+        // baseline worth carrying across a reset, and writing the magic anyway
+        // would resurrect a baseline that recalibratePresence() just cleared if
+        // the cube reset inside the settle window.
+        if (hall_presence.primed()) {
+          saved_presence_baseline = hall_presence.baseline();
+          saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+        } else {
+          saved_presence_magic = 0;
+        }
 
         static int nvs_presence_baseline = loadPresenceBaseline();
         static unsigned long last_presence_save_attempt = 0;
