@@ -2580,8 +2580,16 @@ void loop() {
             published_proximity = proximity;
           }
         }
-        saved_presence_baseline = hall_presence.baseline();
-        saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+        // Only once there is a reference to save. An unprimed tracker has no
+        // baseline worth carrying across a reset, and writing the magic anyway
+        // would resurrect a baseline that recalibratePresence() just cleared if
+        // the cube reset inside the settle window.
+        if (hall_presence.primed()) {
+          saved_presence_baseline = hall_presence.baseline();
+          saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+        } else {
+          saved_presence_magic = 0;
+        }
 
         static int nvs_presence_baseline = loadPresenceBaseline();
         static unsigned long last_presence_save_attempt = 0;

@@ -327,6 +327,9 @@ void test_begin_clears_a_latched_bad_baseline() {
 
     t.begin(test_presence_config(), 0);
     TEST_ASSERT_FALSE(t.primed());
+    // Nothing left to copy out: the RTC cache reads baseline() every poll, so a
+    // stale value here survives the recalibrate it was supposed to undo.
+    TEST_ASSERT_EQUAL(0, t.baseline());
     settle(t, 1850, now, 600, 0);
     TEST_ASSERT_TRUE(t.primed());
     TEST_ASSERT_FALSE(t.active());
