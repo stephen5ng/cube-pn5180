@@ -1751,18 +1751,25 @@ uint8_t getWakeupReason() {
 // each cube's ID magnets carry the pattern that decodes to its game id.
 static uint8_t hallCubeIdForMask(uint8_t id_mask) {
   switch (id_mask & 0x3F) {
-    case 0b000011: return 1;
-    case 0b000101: return 2;
-    case 0b001001: return 3;
-    case 0b010001: return 4;
-    case 0b100001: return 5;
-    case 0b000110: return 6;
-    case 0b001010: return 11;
-    case 0b010010: return 12;
-    case 0b100010: return 13;
-    case 0b001100: return 14;
-    case 0b010100: return 15;
-    case 0b100100: return 16;
+    // Player 1, read off the boards on 2026-09-18: each cube's mask is what its
+    // left-hand neighbour reported over cube/{id}/hall_debug with the row lined
+    // up, so these follow the magnets rather than the magnets following these.
+    case 0b000011: return 11;  // P1+P2
+    case 0b010010: return 12;  // P2+P5
+    case 0b001100: return 13;  // P3+P4
+    case 0b010001: return 14;  // P1+P5
+    case 0b000101: return 15;  // P1+P3
+    case 0b001001: return 16;  // P1+P4
+    // Player 0 has no magnets fitted -- those boards still run NFC -- so these are
+    // a free choice, taken from what player 1 left and preferring the pins that
+    // are not GPIO 34/35. Fit magnets to match, or renumber these to match the
+    // magnets, whichever comes first.
+    case 0b000110: return 1;   // P2+P3
+    case 0b001010: return 2;   // P2+P4
+    case 0b010100: return 3;   // P3+P5
+    case 0b011000: return 4;   // P4+P5
+    case 0b100001: return 5;   // P1+P6
+    case 0b100010: return 6;   // P2+P6
     default:       return 0;
   }
 }
