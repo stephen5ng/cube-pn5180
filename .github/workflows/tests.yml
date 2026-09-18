@@ -1,0 +1,79 @@
+# The firmware's host-side checks: the MAC table validator, the native unit
+# tests, and a compile of every environment that gets flashed.
+#
+# ON THE PULL REQUEST, because `pull_request` builds the MERGE of head into
+# base -- the tree that will exist after the button is pressed, which is the
+# only thing worth gating on. Two branches can each be green alone and red
+# together: the MAC table is one file that nearly every hardware change edits,
+# and `validate_mac_table.py` enforces uniqueness ACROSS rows, so two PRs each
+# adding a board can pass separately and collide on merge. Nothing about the
+# diffs would show it.
+#
+# A DIRECT PUSH TO main IS THEREFORE UNTESTED, which is the honest cost of this
+# shape. This repo has no commit hook -- nothing tracked, nothing installed --
+# so a push that bypasses a PR is checked by nothing at all. Land firmware
+# changes through a PR.
+#
+# NO `paths-ignore` FILTER, deliberately. A workflow skipped by a path filter
+# reports NO STATUS rather than a pass, so under branch protection a docs-only
+# PR waits forever for a check that never reports. The whole job runs in about
+# two minutes; paying that on a docs commit is cheaper than a filter that has
+# to stay correct forever about which paths can break a build.
+name: tests
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  # The only way to run this against main itself, which the trigger above
+  # deliberately does not cover.
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # SUBMODULES ARE NOT OPTIONAL. lib/EspMQTTClient is vendored as one, and
+      # without it every hardware environment fails at `EspMQTTClient.h not
+      # found`. The native environment builds without it, so a checkout that
+      # forgets this goes green on the tests and red on the compile.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The xtensa toolchain is ~100MB and dominates a cold run. Keyed on
+      # platformio.ini because that is what decides which platforms are pulled.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - run: pip install --upgrade platformio
+
+      # src/secrets.h is gitignored -- it holds real WiFi credentials -- and
+      # main.cpp includes it, so a hardware compile cannot start without one.
+      # The checked-in example carries the same #defines with placeholder
+      # values, which is all a compile needs; nothing here connects to
+      # anything.
+      - name: Provide placeholder secrets
+        run: cp src/secrets.h.example src/secrets.h
+
+      # Cheapest check and the one that catches the most: MAC and octet
+      # uniqueness, canonical formatting, the row count, and that no board
+      # compiles in a slot.
+      - run: python3 tools/validate_mac_table.py
+
+      - run: pio test -e native
+
+      # Every environment that is ever flashed. v6 is what the Pi builds for
+      # production; the two hall variants differ only in a build flag, which is
+      # exactly the kind of difference a compile catches and a test does not.
+      - run: pio run -e v1 -e v6 -e v6_with_hall -e v6_with_hall_analog
