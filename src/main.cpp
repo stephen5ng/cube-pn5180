@@ -337,13 +337,12 @@ static unsigned long wifi_connection_attempt_started = 0;
 static unsigned long next_wifi_connection_attempt = 0;
 
 // Animation
-char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value published to /nfc
+char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value read
 char last_right_published[8] = "INIT";                  // last value published to /right
 unsigned long last_nfc_publish_time = 0;
 
 // Pre-allocated MQTT topics
 String mqtt_topic_cube;
-String mqtt_topic_cube_nfc;
 String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
@@ -1541,7 +1540,6 @@ void subscribeSlotTopics() {
   }
 
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
-  mqtt_topic_cube_nfc = String(MQTT_TOPIC_PREFIX_CUBE) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
@@ -1598,8 +1596,6 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/rise_ms", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleRiseMsCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
-  // Publish initial "no neighbor" state so game server sees all cubes on startup
-  mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
   if (sensorModeIsMagnets()) {
     mqtt_client.publish(mqtt_topic_cube_right, "-", true);
     strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
@@ -2405,27 +2401,14 @@ void loop() {
         convertNfcIdToHexString(card_id, NFCID_LENGTH, neighbor_id);
         if (strcmp(neighbor_id, last_neighbor_id) != 0) {
           debugPrintln(F("New card"));
-          unsigned long publish_start = millis();
-          bool success = mqtt_client.publish(mqtt_topic_cube_nfc, neighbor_id, true);
-          unsigned long publish_end = millis();
-          Serial.printf("[%lu] MQTT publish took %lu ms - payload: %s - success: %d\n", publish_end, publish_end - publish_start, neighbor_id, success);
-          if (success) {
-            strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
-            last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-          }
+          strncpy(last_neighbor_id, neighbor_id, sizeof(last_neighbor_id) - 1);
+          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
         }
       } else if (read_result == EC_NO_CARD) {
-        // /nfc reflects raw NFC reads with no debouncing (debug-only topic).
         if (strcmp(last_neighbor_id, "-") != 0) {
           debugPrintln(F("No card detected"));
-          unsigned long publish_start = millis();
-          bool success = mqtt_client.publish(mqtt_topic_cube_nfc, "-", true);
-          unsigned long publish_end = millis();
-          Serial.printf("[%lu] MQTT publish took %lu ms - dash payload, success: %d\n", publish_end, publish_end - publish_start, success);
-          if (success) {
-            strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
-            last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
-          }
+          strncpy(last_neighbor_id, "-", sizeof(last_neighbor_id) - 1);
+          last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
         }
       } else {
         Serial.printf("NFC read failed with error code: %d\n", read_result);
