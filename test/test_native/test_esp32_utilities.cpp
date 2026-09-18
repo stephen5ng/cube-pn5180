@@ -275,6 +275,27 @@ void test_a_saved_baseline_sees_a_neighbour_present_at_boot() {
     TEST_ASSERT_TRUE(t.active());
 }
 
+// An unprimed tracker and a cube with no neighbour both report inactive with zero
+// delta, so from outside they are the same reading -- but one is a fault and the
+// other is not. primed() is what the diagnostics use to tell them apart.
+void test_primed_reports_whether_a_reference_exists() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    TEST_ASSERT_FALSE(t.primed());
+    uint32_t now = 0;
+    // A neighbour there from the first sample blocks priming entirely.
+    settle(t, 2035 + 200, now, 500, 0b010010);
+    TEST_ASSERT_FALSE(t.primed());
+    settle(t, 2035, now, 10, 0);
+    TEST_ASSERT_TRUE(t.primed());
+}
+
+// A saved baseline is a reference, so a cube restored from one is primed before
+// it has sampled anything.
+void test_a_saved_baseline_counts_as_primed() {
+    HallPresenceTracker t; t.begin(test_presence_config(), 2035);
+    TEST_ASSERT_TRUE(t.primed());
+}
+
 void test_presence_delta_is_monotonic_with_approach() {
     HallPresenceTracker t; t.begin(test_presence_config());
     uint32_t now = 0;
@@ -971,6 +992,8 @@ int main(void) {
     RUN_TEST(test_baseline_still_adapts_with_no_neighbour);
     RUN_TEST(test_priming_waits_for_a_sample_with_no_neighbour);
     RUN_TEST(test_a_saved_baseline_sees_a_neighbour_present_at_boot);
+    RUN_TEST(test_primed_reports_whether_a_reference_exists);
+    RUN_TEST(test_a_saved_baseline_counts_as_primed);
     RUN_TEST(test_presence_delta_is_monotonic_with_approach);
 
     // Sensor-mode discriminator

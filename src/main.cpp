@@ -1763,6 +1763,11 @@ static uint8_t hallCubeIdForMask(uint8_t id_mask) {
 }
 
 static HallPresenceTracker hall_presence;
+// Last values the poll saw, for the diag response. A neighbour that is present
+// but unreported can mean a missing magnet, a sensor reading nothing, or a
+// baseline that never primed, and those need different fixes.
+static uint8_t last_hall_id_mask = 0;
+static int last_hall_presence_raw = 0;
 
 // The tracker primes its baseline from its first sample, which is blind to a
 // magnet that is already there: a cube that wakes docked subtracts the
@@ -1827,7 +1832,11 @@ uint8_t readHallNeighborId() {
     }
   }
 
-  if (!hall_presence.update(analogRead(HALL_PRESENCE_PIN), millis(), id_mask)) {
+  const int presence_raw = analogRead(HALL_PRESENCE_PIN);
+  last_hall_id_mask = id_mask;
+  last_hall_presence_raw = presence_raw;
+
+  if (!hall_presence.update(presence_raw, millis(), id_mask)) {
     return 0;  // presence magnet absent -> no neighbor seated
   }
   if (__builtin_popcount(id_mask) != 2) {
@@ -2018,13 +2027,17 @@ void handleUDP() {
           "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu"
           "|nfc_ok_n=%u|nfc_ok_us=%llu|nfc_ok_max=%lu"
           "|nfc_nocard_n=%u|nfc_nocard_us=%llu|nfc_nocard_max=%lu"
-          "|nfc_err_n=%u|nfc_err_us=%llu|nfc_err_max=%lu",
+          "|nfc_err_n=%u|nfc_err_us=%llu|nfc_err_max=%lu"
+          "|hall_mask=%02X|hall_raw=%d|hall_base=%d|hall_delta=%d"
+          "|hall_active=%d|hall_primed=%d",
           cube_identifier.c_str(), fw_board, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, nfc_reset_count, avg_letter_interval, max_letter_interval, letter_interval_count,
           WiFi.RSSI(), section_timing_count, millis(),
           nfc_ok_count, nfc_ok_total_us, nfc_ok_max_us,
           nfc_nocard_count, nfc_nocard_total_us, nfc_nocard_max_us,
-          nfc_err_count, nfc_err_total_us, nfc_err_max_us);
+          nfc_err_count, nfc_err_total_us, nfc_err_max_us,
+          last_hall_id_mask, last_hall_presence_raw, hall_presence.baseline(),
+          hall_presence.delta(), hall_presence.active(), hall_presence.primed());
 
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)diagStr, strlen(diagStr));
