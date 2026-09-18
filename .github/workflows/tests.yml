@@ -40,17 +40,17 @@ jobs:
       # without it every hardware environment fails at `EspMQTTClient.h not
       # found`. The native environment builds without it, so a checkout that
       # forgets this goes green on the tests and red on the compile.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       # The xtensa toolchain is ~100MB and dominates a cold run. Keyed on
       # platformio.ini because that is what decides which platforms are pulled.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
