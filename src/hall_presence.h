@@ -95,10 +95,13 @@ class HallPresenceTracker {
     if (base_primed_) base_ = (int32_t)saved_baseline << cfg_.base_shift;
   }
 
-  bool update(int raw, uint32_t now_ms) {
+  // id_mask is what the ID sensors read: non-zero means a neighbour is physically
+  // there. Those sensors are digital and independent of this reading, so they can
+  // say so while the analog signal is still below the trip point -- which is the
+  // whole range the baseline must not adapt through.
+  bool update(int raw, uint32_t now_ms, uint8_t id_mask) {
     if (!primed_) {
       fast_ = (int32_t)raw << cfg_.fast_shift;
-      if (!base_primed_) base_ = (int32_t)raw << cfg_.base_shift;
       last_base_ms_ = now_ms;
       primed_ = true;
     } else {
@@ -106,6 +109,30 @@ class HallPresenceTracker {
     }
 
     const int f = (int)(fast_ >> cfg_.fast_shift);
+
+    // Priming from a sample taken with a neighbour present subtracts the magnet
+    // into the baseline and it is never seen again. Cubes are powered up in
+    // whatever arrangement they were left in, so that is a coin flip on every
+    // cold boot; wait for a clean sample instead. Until one arrives there is no
+    // reference, and nothing can be reported from it.
+    if (!base_primed_) {
+      if (id_mask != 0) {
+        delta_ = 0;
+        active_ = false;
+        return false;
+      }
+      // Both filters start from this sample. The fast one has been tracking the
+      // magnet all through the blind period, so carrying it over would prime the
+      // baseline high and leave the neighbour reading short of the threshold.
+      fast_ = (int32_t)raw << cfg_.fast_shift;
+      base_ = (int32_t)raw << cfg_.base_shift;
+      base_primed_ = true;
+      last_base_ms_ = now_ms;
+      delta_ = 0;
+      active_ = false;
+      return false;
+    }
+
     delta_ = cfg_.direction * (f - baseline());
 
     if (!active_) {
@@ -114,9 +141,10 @@ class HallPresenceTracker {
       if (delta_ < cfg_.off_delta) active_ = false;
     }
 
-    // Frozen while a neighbour is present: otherwise the baseline creeps up to the
-    // magnet and the cube forgets the neighbour is there.
-    if (!active_ && (uint32_t)(now_ms - last_base_ms_) >= cfg_.base_interval_ms) {
+    // Frozen while a neighbour is there, latched or not: otherwise the baseline
+    // creeps up to the magnet and the cube forgets the neighbour is there.
+    if (id_mask == 0 && !active_ &&
+        (uint32_t)(now_ms - last_base_ms_) >= cfg_.base_interval_ms) {
       base_ += f - (base_ >> cfg_.base_shift);
       last_base_ms_ = now_ms;
     }

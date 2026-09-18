@@ -470,6 +470,7 @@ private:
   uint16_t vline_color_left;
   uint8_t vline_height;
   uint16_t hline_color_top;
+  uint8_t presence_bar_height;
   uint16_t hline_color_bottom;
   //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
   //: above it they have arrived and the settle tail rebounds three times.
@@ -543,7 +544,7 @@ public:
                                 text_size(1), font_size(1), is_lock(false),
                                 vline_color_left(0), vline_color_right(0),
                                 vline_height(PANEL_RES),
-                                hline_color_top(0),
+                                hline_color_top(0), presence_bar_height(0),
                                 hline_color_bottom(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
@@ -663,6 +664,32 @@ public:
     drawBorders(true, false, hline_color_bottom);
     drawBorders(false, true, vline_color_left);
     drawBorders(false, false, vline_color_right);
+  }
+
+  // Debug aid for the hall presence sensor: a green bar up the left edge whose
+  // height is the neighbour's closeness, empty at 0 and PRESENCE_BAR_MAX px when
+  // seated. Nothing sets it on an NFC build, so it stays empty there.
+  static const uint8_t PRESENCE_BAR_MAX = 32;
+
+  void setPresencePercent(int percent) {
+    uint8_t height = percent <= 0    ? 0
+                   : percent >= 100  ? PRESENCE_BAR_MAX
+                   : (uint8_t)((percent * PRESENCE_BAR_MAX) / 100);
+    // Only a change the eye could see is worth a redraw: the sensor is polled
+    // at ~1 kHz and the bar has 33 distinct heights.
+    if (height == presence_bar_height) {
+      return;
+    }
+    presence_bar_height = height;
+    is_dirty = true;
+  }
+
+  void drawPresenceBar() {
+    if (presence_bar_height == 0) {
+      return;
+    }
+    led_display->drawFastVLine(0, PANEL_RES_Y - presence_bar_height,
+                               presence_bar_height, GREEN);
   }
 
   void drawOrientationIndicator() {
@@ -814,6 +841,7 @@ public:
     }
 
     drawBorderFrame();
+    drawPresenceBar();
     led_display->flipDMABuffer();
     led_display->clearScreen();
     is_dirty = false;
@@ -1789,16 +1817,18 @@ void setupHallSensors() {
 
 // Returns the neighbor's cube id, or 0 for no/invalid neighbor.
 uint8_t readHallNeighborId() {
-  bool presence_active = hall_presence.update(analogRead(HALL_PRESENCE_PIN), millis());
-
-  if (!presence_active) {
-    return 0;  // presence magnet absent -> no neighbor seated
-  }
+  // Read before the presence check rather than after it: the tracker needs to
+  // know a neighbour is there on every call, and the calls that matter for that
+  // are the ones where presence has not tripped.
   uint8_t id_mask = 0;
   for (uint8_t i = 0; i < 6; i++) {
     if (digitalRead(HALL_ID_PINS[i]) == HALL_ID_ACTIVE_LEVEL) {
       id_mask |= (1 << i);
     }
+  }
+
+  if (!hall_presence.update(analogRead(HALL_PRESENCE_PIN), millis(), id_mask)) {
+    return 0;  // presence magnet absent -> no neighbor seated
   }
   if (__builtin_popcount(id_mask) != 2) {
     return 0;  // reject anything that isn't exactly two ID magnets
@@ -2491,6 +2521,9 @@ void loop() {
         }
         const int proximity = hallPresenceCloseness(
             (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
+        // Fed every poll rather than on the publish deadband below, so the bar
+        // follows the sensor rather than the reporting rate.
+        display_manager->setPresencePercent(proximity);
 
         static unsigned long last_proximity_publish = 0;
         // The endpoints are exact: 0 and 100 must land even if the last publish was

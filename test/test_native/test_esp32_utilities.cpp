@@ -20,15 +20,18 @@ static HallPresenceConfig test_presence_config() {
     return HallPresenceConfig{1, 60, 30, 3, 7, 250};
 }
 
-// Feed a steady value for long enough that both filters settle.
-static void settle(HallPresenceTracker& t, int raw, uint32_t& now, int steps = 4000) {
-    for (int i = 0; i < steps; i++) t.update(raw, now += 1);
+// Feed a steady value for long enough that both filters settle. id_mask is what
+// the ID sensors read while it is fed, which the tracker uses to decide whether
+// a neighbour is there.
+static void settle(HallPresenceTracker& t, int raw, uint32_t& now, int steps = 4000,
+                   uint8_t id_mask = 0) {
+    for (int i = 0; i < steps; i++) t.update(raw, now += 1, id_mask);
 }
 
 void test_presence_starts_inactive_and_adopts_the_first_reading() {
     HallPresenceTracker t; t.begin(test_presence_config());
     uint32_t now = 0;
-    TEST_ASSERT_FALSE(t.update(2035, now));
+    TEST_ASSERT_FALSE(t.update(2035, now, 0));
     // Primed from the first sample rather than from an assumed 2048 midpoint, so a cube
     // whose rail sits off-nominal does not boot already half-way to threshold.
     TEST_ASSERT_EQUAL(2035, t.baseline());
@@ -130,7 +133,7 @@ void test_presence_ignores_an_absent_saved_baseline() {
     // first sample must still prime the baseline.
     HallPresenceTracker t; t.begin(test_presence_config(), 0);
     uint32_t now = 0;
-    TEST_ASSERT_FALSE(t.update(2035, now));
+    TEST_ASSERT_FALSE(t.update(2035, now, 0));
     TEST_ASSERT_EQUAL(2035, t.baseline());
 }
 
@@ -211,6 +214,65 @@ void test_closeness_rises_smoothly_between_the_endpoints() {
     // Latching happens partway up, not at the top: most of the travel is before it.
     const int at_latch = hallPresenceCloseness(95, 95);
     TEST_ASSERT_TRUE(at_latch > 50 && at_latch < 100);
+}
+
+// A neighbour close enough to trip the ID sensors but not the presence threshold
+// left the baseline free to adapt, so it walked up to the magnet and the reading
+// decayed to nothing over a couple of minutes -- observed on cube c. The ID
+// sensors are digital and independent of this reading, so they are what says a
+// neighbour is there while the analog signal is still below the trip point.
+void test_baseline_holds_while_the_id_sensors_see_a_neighbour() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    const int idle = t.baseline();
+
+    // Below on_delta of 60, so presence never latches; P2+P5 say a cube is there.
+    settle(t, 2035 + 40, now, 40000, 0b010010);
+
+    TEST_ASSERT_EQUAL(idle, t.baseline());
+    TEST_ASSERT_TRUE(t.delta() > 30);
+}
+
+// The freeze must not become permanent: with no neighbour the baseline still has
+// to follow the rail, which is what keeps a slow drift from reading as approach.
+void test_baseline_still_adapts_with_no_neighbour() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    settle(t, 2035 + 40, now, 40000, 0);
+    TEST_ASSERT_TRUE(t.baseline() > 2035 + 20);
+    TEST_ASSERT_TRUE(t.delta() < 20);
+}
+
+// Priming from a sample taken with a neighbour present subtracts the magnet into
+// the baseline and the cube never sees it. Cubes are powered up in whatever
+// arrangement they were left in, so this is a coin flip on every cold boot.
+void test_priming_waits_for_a_sample_with_no_neighbour() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035 + 200, now, 500, 0b010010);
+    // Nothing can be reported without a reference, so it stays quiet rather than
+    // guessing.
+    TEST_ASSERT_FALSE(t.active());
+    TEST_ASSERT_EQUAL(0, t.delta());
+
+    settle(t, 2035, now, 4000, 0);
+    const int idle = t.baseline();
+    TEST_ASSERT_TRUE(idle > 2000 && idle < 2070);
+
+    // And the neighbour it could not see at boot is visible once there is one.
+    settle(t, 2035 + 200, now, 500, 0b010010);
+    TEST_ASSERT_TRUE(t.active());
+}
+
+// A saved baseline is the other half: it lets a cube powered up already docked
+// see the neighbour on the first sample, with no clean reading to prime from.
+void test_a_saved_baseline_sees_a_neighbour_present_at_boot() {
+    HallPresenceTracker t; t.begin(test_presence_config(), 2035);
+    uint32_t now = 0;
+    settle(t, 2035 + 200, now, 500, 0b010010);
+    TEST_ASSERT_TRUE(t.active());
 }
 
 void test_presence_delta_is_monotonic_with_approach() {
@@ -905,6 +967,10 @@ int main(void) {
     RUN_TEST(test_distance_reports_out_of_range_behind_the_baseline);
     RUN_TEST(test_closeness_spans_nothing_to_docked);
     RUN_TEST(test_closeness_rises_smoothly_between_the_endpoints);
+    RUN_TEST(test_baseline_holds_while_the_id_sensors_see_a_neighbour);
+    RUN_TEST(test_baseline_still_adapts_with_no_neighbour);
+    RUN_TEST(test_priming_waits_for_a_sample_with_no_neighbour);
+    RUN_TEST(test_a_saved_baseline_sees_a_neighbour_present_at_boot);
     RUN_TEST(test_presence_delta_is_monotonic_with_approach);
 
     // Sensor-mode discriminator
