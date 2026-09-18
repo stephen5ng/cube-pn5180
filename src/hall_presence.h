@@ -93,7 +93,10 @@ class HallPresenceTracker {
     active_ = false;
     delta_ = 0;
     base_primed_ = saved_baseline > 0;
-    if (base_primed_) base_ = (int32_t)saved_baseline << cfg_.base_shift;
+    // Set either way. Leaving the old value in place would let baseline() keep
+    // reporting a reference that begin() has just discarded, and anything that
+    // copies it out -- the RTC cache, the diagnostics -- would carry it forward.
+    base_ = (int32_t)(base_primed_ ? saved_baseline : 0) << cfg_.base_shift;
   }
 
   // id_mask is what the ID sensors read: non-zero means a neighbour is physically
