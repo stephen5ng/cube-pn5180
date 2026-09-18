@@ -28,11 +28,16 @@ static void settle(HallPresenceTracker& t, int raw, uint32_t& now, int steps = 4
     for (int i = 0; i < steps; i++) t.update(raw, now += 1, id_mask);
 }
 
-void test_presence_starts_inactive_and_adopts_the_first_reading() {
+void test_presence_starts_inactive_and_adopts_the_settled_reading() {
     HallPresenceTracker t; t.begin(test_presence_config());
     uint32_t now = 0;
+    // One sample is not a reference. A cold boot reaches the first update before the
+    // sensor output has settled, and slot 16 primed 148 counts low that way.
     TEST_ASSERT_FALSE(t.update(2035, now, 0));
-    // Primed from the first sample rather than from an assumed 2048 midpoint, so a cube
+    TEST_ASSERT_EQUAL(0, t.baseline());
+
+    settle(t, 2035, now, 600);
+    // Primed from the reading rather than from an assumed 2048 midpoint, so a cube
     // whose rail sits off-nominal does not boot already half-way to threshold.
     TEST_ASSERT_EQUAL(2035, t.baseline());
     TEST_ASSERT_EQUAL(0, t.delta());
@@ -130,10 +135,11 @@ void test_presence_restores_a_saved_baseline_instead_of_priming_from_a_magnet() 
 
 void test_presence_ignores_an_absent_saved_baseline() {
     // 0 means nothing was saved -- a cold boot re-initialises RTC memory -- so the
-    // first sample must still prime the baseline.
+    // reading must still prime the baseline once it has settled.
     HallPresenceTracker t; t.begin(test_presence_config(), 0);
     uint32_t now = 0;
     TEST_ASSERT_FALSE(t.update(2035, now, 0));
+    settle(t, 2035, now, 600);
     TEST_ASSERT_EQUAL(2035, t.baseline());
 }
 
@@ -285,7 +291,7 @@ void test_primed_reports_whether_a_reference_exists() {
     // A neighbour there from the first sample blocks priming entirely.
     settle(t, 2035 + 200, now, 500, 0b010010);
     TEST_ASSERT_FALSE(t.primed());
-    settle(t, 2035, now, 10, 0);
+    settle(t, 2035, now, 600, 0);
     TEST_ASSERT_TRUE(t.primed());
 }
 
@@ -294,6 +300,37 @@ void test_primed_reports_whether_a_reference_exists() {
 void test_a_saved_baseline_counts_as_primed() {
     HallPresenceTracker t; t.begin(test_presence_config(), 2035);
     TEST_ASSERT_TRUE(t.primed());
+}
+
+// Slot 16 cold-booted, sampled 1702 while the sensor output was still rising to
+// its ~1850 idle, primed there, latched on the 148-count difference, and had
+// persisted the bad value before the activation closed the save gate. The
+// reference has to come from the settled reading, not the first one.
+void test_priming_ignores_an_unsettled_first_sample() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    t.update(1702, now += 1, 0);
+    settle(t, 1850, now, 600);
+    TEST_ASSERT_TRUE(t.primed());
+    TEST_ASSERT_TRUE(t.baseline() > 1800);
+    TEST_ASSERT_FALSE(t.active());
+}
+
+// What the recalibrate command relies on: it clears the stored reference and calls
+// begin() again, so a tracker latched on a bad baseline must come back clean
+// rather than carry the activation across.
+void test_begin_clears_a_latched_bad_baseline() {
+    HallPresenceTracker t; t.begin(test_presence_config(), 1702);
+    uint32_t now = 0;
+    settle(t, 1850, now, 200, 0);
+    TEST_ASSERT_TRUE(t.active());
+
+    t.begin(test_presence_config(), 0);
+    TEST_ASSERT_FALSE(t.primed());
+    settle(t, 1850, now, 600, 0);
+    TEST_ASSERT_TRUE(t.primed());
+    TEST_ASSERT_FALSE(t.active());
+    TEST_ASSERT_TRUE(t.baseline() > 1800);
 }
 
 void test_presence_delta_is_monotonic_with_approach() {
@@ -971,7 +1008,7 @@ int main(void) {
     RUN_TEST(test_buildObservationPayload_has_no_provenance_fields);
 
     // Hall presence tracker
-    RUN_TEST(test_presence_starts_inactive_and_adopts_the_first_reading);
+    RUN_TEST(test_presence_starts_inactive_and_adopts_the_settled_reading);
     RUN_TEST(test_presence_asserts_above_on_delta_and_holds_through_hysteresis);
     RUN_TEST(test_presence_ignores_the_wrong_direction);
     RUN_TEST(test_presence_tracks_slow_rail_drift_without_asserting);
@@ -994,6 +1031,8 @@ int main(void) {
     RUN_TEST(test_a_saved_baseline_sees_a_neighbour_present_at_boot);
     RUN_TEST(test_primed_reports_whether_a_reference_exists);
     RUN_TEST(test_a_saved_baseline_counts_as_primed);
+    RUN_TEST(test_priming_ignores_an_unsettled_first_sample);
+    RUN_TEST(test_begin_clears_a_latched_bad_baseline);
     RUN_TEST(test_presence_delta_is_monotonic_with_approach);
 
     // Sensor-mode discriminator
