@@ -152,6 +152,10 @@ class HallPresenceTracker {
   }
 
   bool active()   const { return active_; }
+  // False until a sample arrived with no neighbour to prime from. While it is
+  // false nothing is reported, which from outside looks the same as an absent
+  // neighbour -- the diagnostics publish it so the two can be told apart.
+  bool primed()   const { return base_primed_; }
   int  baseline() const { return (int)(base_ >> cfg_.base_shift); }
   int  filtered() const { return (int)(fast_ >> cfg_.fast_shift); }
   int  delta()    const { return delta_; }  // signed by direction; proximity measure
