@@ -485,6 +485,7 @@ private:
   uint8_t vline_height;
   uint16_t hline_color_top;
   uint8_t presence_bar_height;
+  unsigned long last_presence_bar_ms;
   uint16_t hline_color_bottom;
   //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
   //: above it they have arrived and the settle tail rebounds three times.
@@ -558,7 +559,7 @@ public:
                                 text_size(1), font_size(1), is_lock(false),
                                 vline_color_left(0), vline_color_right(0),
                                 vline_height(PANEL_RES),
-                                hline_color_top(0), presence_bar_height(0),
+                                hline_color_top(0), presence_bar_height(0), last_presence_bar_ms(0),
                                 hline_color_bottom(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
@@ -684,16 +685,30 @@ public:
   // height is the neighbour's closeness, empty at 0 and PRESENCE_BAR_MAX px when
   // seated. Nothing sets it on an NFC build, so it stays empty there.
   static const uint8_t PRESENCE_BAR_MAX = 32;
+  // There is no way to repaint one edge on its own: the frame lives in a DMA
+  // buffer that gets swapped whole, so any change to the bar costs a full redraw
+  // of the letter and borders as well. A raw proximity value wanders constantly,
+  // which turned a debug aid into a 30 FPS full-frame redraw. Coarse steps and a
+  // floor on how often it may change cut that to a handful of redraws per
+  // second, which is all a human can read off a 32px bar anyway.
+  static const uint8_t PRESENCE_BAR_STEP = 4;
+  static const unsigned long PRESENCE_BAR_MIN_INTERVAL_MS = 250;
 
-  void setPresencePercent(int percent) {
+  void setPresencePercent(int percent, unsigned long now) {
     uint8_t height = percent <= 0    ? 0
                    : percent >= 100  ? PRESENCE_BAR_MAX
                    : (uint8_t)((percent * PRESENCE_BAR_MAX) / 100);
-    // Only a change the eye could see is worth a redraw: the sensor is polled
-    // at ~1 kHz and the bar has 33 distinct heights.
+    height -= height % PRESENCE_BAR_STEP;
     if (height == presence_bar_height) {
       return;
     }
+    // Empty and full are the two the eye is actually waiting for, so they land
+    // immediately; everything between is a rate-limited approximation.
+    const bool endpoint = (height == 0 || height == PRESENCE_BAR_MAX);
+    if (!endpoint && now - last_presence_bar_ms < PRESENCE_BAR_MIN_INTERVAL_MS) {
+      return;
+    }
+    last_presence_bar_ms = now;
     presence_bar_height = height;
     is_dirty = true;
   }
@@ -2581,7 +2596,7 @@ void loop() {
             (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
         // Fed every poll rather than on the publish deadband below, so the bar
         // follows the sensor rather than the reporting rate.
-        display_manager->setPresencePercent(proximity);
+        display_manager->setPresencePercent(proximity, current_time);
 
         static unsigned long last_proximity_publish = 0;
         // The endpoints are exact: 0 and 100 must land even if the last publish was
