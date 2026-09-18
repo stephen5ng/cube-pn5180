@@ -682,15 +682,17 @@ public:
   }
 
   // Debug aid for the hall presence sensor: a green bar up the left edge whose
-  // height is the neighbour's closeness, empty at 0 and PRESENCE_BAR_MAX px when
+  // height is the neighbour's closeness, empty at 0 and full height when
   // seated. Nothing sets it on an NFC build, so it stays empty there.
-  static const uint8_t PRESENCE_BAR_MAX = 32;
+  // Full panel height: the bar is read by eye, and 16 steps across 64px is twice
+  // the resolution of 8 across 32.
+  static const uint8_t PRESENCE_BAR_MAX = PANEL_RES_Y;
   // There is no way to repaint one edge on its own: the frame lives in a DMA
   // buffer that gets swapped whole, so any change to the bar costs a full redraw
   // of the letter and borders as well. A raw proximity value wanders constantly,
   // which turned a debug aid into a 30 FPS full-frame redraw. Coarse steps and a
   // floor on how often it may change cut that to a handful of redraws per
-  // second, which is all a human can read off a 32px bar anyway.
+  // second, which is all a human can read off the bar anyway.
   static const uint8_t PRESENCE_BAR_STEP = 4;
   static const unsigned long PRESENCE_BAR_MIN_INTERVAL_MS = 250;
 
