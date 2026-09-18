@@ -174,20 +174,22 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_DIRECTION        1    // +1: presence magnet drives the reading up
 // Measured across slots 11-16 on 2026-09-18, docked and separated, with the
 // baselines primed from a clean reading:
-//   docked deflection   63 .. 264   (weakest 15->16 and 11->12; 11->12 read both
-//                                    109 and 63 on successive passes, so seating
-//                                    moves it by ~40 on its own)
+//   docked deflection   94 .. 240   on a cold docking of the whole row; a single
+//                                   badly seated pass read 11->12 down at 63, so
+//                                   seating alone moves a pair by ~40
 //   idle excursion      up to 11    (worst slot 15; was up to 34 at fast_shift 3)
-// 95 sat above two of the five pairs, which then reported a neighbour only
-// because hysteresis had latched them while being pushed together -- a fresh
-// docking would have missed. 35 clears the worst idle excursion by 3.2x and sits
-// 1.8x under the weakest docking.
-#define HALL_PRESENCE_ON_DELTA         35
-#define HALL_PRESENCE_OFF_DELTA        20   // ~25% of the weakest docking
-// 32 samples at the 1kHz poll. 8 was not enough smoothing for these boards: idle
-// excursions reached 34 counts against a weakest docking of 63, leaving no
-// threshold that could separate the two. 32 samples brings that to 11 for ~32ms
-// of added latency, which docking does not notice.
+//
+// The gap between the two thresholds is what stops a cube parked at the edge of
+// the zone from flipping in and out -- with NFC that chatter made cubes flash and
+// play sounds with no cause a player could see, and hysteresis is the whole
+// reason there is a presence sensor in front of the ID sensors at all.
+//
+// A stationary cube chatters when noise can carry it above ON and later below
+// OFF, which needs ON - OFF < 2 * excursion. At 11 counts of excursion, any band
+// under 22 allows it. 30 does not, and leaves ON at 4x the excursion so nothing
+// latches on noise alone, while clearing the weakest docking by 2x.
+#define HALL_PRESENCE_ON_DELTA         45
+#define HALL_PRESENCE_OFF_DELTA        15
 #define HALL_PRESENCE_FAST_SHIFT       5
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
