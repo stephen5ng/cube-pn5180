@@ -172,9 +172,23 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // DRV5055 analog presence sensor. Thresholds are deltas from a tracked baseline, not
 // absolute ADC values; see hall_presence.h.
 #define HALL_PRESENCE_DIRECTION        1    // +1: presence magnet drives the reading up
-#define HALL_PRESENCE_ON_DELTA         95   // ~50% of the 194-count deflection measured on slot 1
-#define HALL_PRESENCE_OFF_DELTA        48   // ~25%, hysteresis
-#define HALL_PRESENCE_FAST_SHIFT       3    // ~8 samples at the 1kHz poll
+// Measured across slots 11-16 on 2026-09-18, docked and separated, with the
+// baselines primed from a clean reading:
+//   docked deflection   63 .. 264   (weakest 15->16 and 11->12; 11->12 read both
+//                                    109 and 63 on successive passes, so seating
+//                                    moves it by ~40 on its own)
+//   idle excursion      up to 11    (worst slot 15; was up to 34 at fast_shift 3)
+// 95 sat above two of the five pairs, which then reported a neighbour only
+// because hysteresis had latched them while being pushed together -- a fresh
+// docking would have missed. 35 clears the worst idle excursion by 3.2x and sits
+// 1.8x under the weakest docking.
+#define HALL_PRESENCE_ON_DELTA         35
+#define HALL_PRESENCE_OFF_DELTA        20   // ~25% of the weakest docking
+// 32 samples at the 1kHz poll. 8 was not enough smoothing for these boards: idle
+// excursions reached 34 counts against a weakest docking of 63, leaving no
+// threshold that could separate the two. 32 samples brings that to 11 for ~32ms
+// of added latency, which docking does not notice.
+#define HALL_PRESENCE_FAST_SHIFT       5
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
 
