@@ -80,6 +80,13 @@ inline int hallPresenceCloseness(int delta, int on_delta) {
   return 100 * (far - distance) / (far - near_by);
 }
 
+// The shared-edge animation is an approach hint, not a second representation of
+// a confirmed neighbour. A real dock can settle below the calibrated 100% point,
+// so the presence latch, rather than closeness alone, ends the preview.
+inline bool shouldPreviewHallCandidate(int proximity, bool presence_active) {
+  return !presence_active && proximity > 0 && proximity < 100;
+}
+
 class HallPresenceTracker {
  public:
   // saved_baseline carries a baseline across a wake. Priming from the first sample

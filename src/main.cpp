@@ -2771,7 +2771,7 @@ void loop() {
                 ? hallCubeIdForMask(stable_raw)
                 : 0;
         const uint8_t wanted_preview =
-            (proximity > 0 && proximity < 100) ? stable_candidate : 0;
+            shouldPreviewHallCandidate(proximity, presence_state) ? stable_candidate : 0;
         if (wanted_preview != preview_candidate ||
             (wanted_preview && current_time - last_preview_publish >= 1000)) {
           if (mqtt_client.isConnected()) {
