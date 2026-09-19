@@ -498,6 +498,9 @@ private:
   uint16_t pending_border_top, pending_border_bottom, pending_border_left, pending_border_right;
   unsigned long border_animation_start_time;
   bool border_animation_active, border_target_pending;
+  char border_preview_side;
+  unsigned long border_preview_start_time;
+  unsigned long border_preview_until;
   //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
   //: above it they have arrived and the settle tail rebounds three times.
   //:
@@ -577,6 +580,7 @@ public:
                                 pending_border_top(0), pending_border_bottom(0),
                                 pending_border_left(0), pending_border_right(0),
                                 border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
+                                border_preview_side(0), border_preview_start_time(0), border_preview_until(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
@@ -703,6 +707,7 @@ public:
         is_dirty = true;  // display-only redraw while the border interpolates
       }
     }
+    if (border_preview_side) is_dirty = true;
   }
 
   void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
@@ -992,10 +997,31 @@ public:
     }
 
     drawBorderFrame();
+    drawBorderPreview(current_time);
     drawPresenceBar();
     led_display->flipDMABuffer();
     led_display->clearScreen();
     is_dirty = false;
+  }
+
+  void handleBorderPreviewCommand(const String& message) {
+    const char side = message.length() ? message.charAt(0) : 0;
+    border_preview_side = (side == 'E' || side == 'W') ? side : 0;
+    border_preview_start_time = millis();
+    border_preview_until = border_preview_side ? border_preview_start_time + 1500 : 0;
+    is_dirty = true;
+  }
+
+  void drawBorderPreview(unsigned long now) {
+    if (!border_preview_side) return;
+    if (now >= border_preview_until) { border_preview_side = 0; return; }
+    const float t = (float)((now - border_preview_start_time) % BORDER_ANIMATION_DURATION_MS) / BORDER_ANIMATION_DURATION_MS;
+    const float inv = 1.0f - t;
+    const float p = 1.0f - inv * inv * inv * inv * inv;
+    const bool left = border_preview_side == 'W';
+    // Preview only the candidate connection. It is an overlay and never changes
+    // the confirmed border target maintained by /border.
+    drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, WHITE);
   }
 
 #ifdef BOARD_V6
@@ -1693,6 +1719,7 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/border_preview", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderPreviewCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderFrameCommand(msg); });
@@ -2733,6 +2760,28 @@ void loop() {
         // Fed every poll rather than on the publish deadband below, so the bar
         // follows the sensor rather than the reporting rate.
         display_manager->setPresencePercent(proximity, current_time);
+
+        // A debounced 2-of-6 Hall mask identifies the candidate before the
+        // presence latch confirms a neighbour. Preview the prospective shared
+        // edge on both cubes while it is near, but never alter /border.
+        static uint8_t preview_candidate = 0;
+        static unsigned long last_preview_publish = 0;
+        const uint8_t stable_candidate =
+            stable_raw != 0xFF && __builtin_popcount(stable_raw) == 2
+                ? hallCubeIdForMask(stable_raw)
+                : 0;
+        const uint8_t wanted_preview =
+            (proximity > 0 && proximity < 100) ? stable_candidate : 0;
+        if (wanted_preview != preview_candidate ||
+            (wanted_preview && current_time - last_preview_publish >= 1000)) {
+          if (mqtt_client.isConnected()) {
+            mqtt_client.publish(mqtt_topic_cube + "/border_preview", wanted_preview ? "E" : "", false);
+            if (preview_candidate) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(preview_candidate) + "/border_preview", "", false);
+            if (wanted_preview) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(wanted_preview) + "/border_preview", "W", false);
+            preview_candidate = wanted_preview;
+            last_preview_publish = current_time;
+          }
+        }
 
         static unsigned long last_proximity_publish = 0;
         // The endpoints are exact: 0 and 100 must land even if the last publish was
