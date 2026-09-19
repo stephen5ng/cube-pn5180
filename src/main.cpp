@@ -124,6 +124,7 @@ void initialiseNeighbourSensor() {
 #define NFC_MIN_PUBLISH_INTERVAL_MS 100
 #define ANIMATION_DURATION_MS 1000
 #define ANIMATION_SCALE 100
+#define BORDER_ANIMATION_DURATION_MS 1000
 #define DISPLAY_STARTUP_DELAY_MS 600
 #define HALL_SENSOR_CHECK_INTERVAL_MS 50  /* Hall sensor polling interval (matches NFC read rate) */
 
@@ -493,6 +494,10 @@ private:
   uint8_t presence_bar_height;
   unsigned long last_presence_bar_ms;
   uint16_t hline_color_bottom;
+  uint16_t border_from_top, border_from_bottom, border_from_left, border_from_right;
+  uint16_t pending_border_top, pending_border_bottom, pending_border_left, pending_border_right;
+  unsigned long border_animation_start_time;
+  bool border_animation_active, border_target_pending;
   //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
   //: above it they have arrived and the settle tail rebounds three times.
   //:
@@ -567,6 +572,11 @@ public:
                                 vline_height(PANEL_RES),
                                 hline_color_top(0), presence_bar_height(0), last_presence_bar_ms(0),
                                 hline_color_bottom(0),
+                                border_from_top(0), border_from_bottom(0),
+                                border_from_left(0), border_from_right(0),
+                                pending_border_top(0), pending_border_bottom(0),
+                                pending_border_left(0), pending_border_right(0),
+                                border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
@@ -669,6 +679,30 @@ public:
         }
       }
     }
+    if (border_animation_active) {
+      if (current_time - border_animation_start_time >= BORDER_ANIMATION_DURATION_MS) {
+        if (border_target_pending) {
+          // Finish the frame already on screen, then start the newer target.
+          // This deliberately trades at most one display-only animation period
+          // for a continuous border; gameplay state is never delayed.
+          border_from_top = hline_color_top;
+          border_from_bottom = hline_color_bottom;
+          border_from_left = vline_color_left;
+          border_from_right = vline_color_right;
+          hline_color_top = pending_border_top;
+          hline_color_bottom = pending_border_bottom;
+          vline_color_left = pending_border_left;
+          vline_color_right = pending_border_right;
+          border_target_pending = false;
+          border_animation_start_time = current_time;
+          is_dirty = true;
+        } else {
+          border_animation_active = false;
+        }
+      } else {
+        is_dirty = true;  // display-only redraw while the border interpolates
+      }
+    }
   }
 
   void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
@@ -681,11 +715,91 @@ public:
   }
     
   void drawBorderFrame() {
+    if (border_animation_active) {
+      const float t = (float)(millis() - border_animation_start_time) / BORDER_ANIMATION_DURATION_MS;
+      const float inv = 1.0f - t;
+      const float p = 1.0f - inv * inv * inv * inv * inv;  // easeOutQuint
+      drawAnimatedBorder(p);
+      return;
+    }
     drawBorders(true, true, hline_color_top);
     drawBorders(true, false, hline_color_bottom);
     drawBorders(false, true, vline_color_left);
     drawBorders(false, false, vline_color_right);
   }
+
+  void beginBorderTransition() {
+    border_from_top = hline_color_top;
+    border_from_bottom = hline_color_bottom;
+    border_from_left = vline_color_left;
+    border_from_right = vline_color_right;
+    border_animation_start_time = millis();
+    border_animation_active = true;
+  }
+
+  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
+                                   uint16_t left, uint16_t right) {
+    if (border_animation_active) {
+      pending_border_top = top;
+      pending_border_bottom = bottom;
+      pending_border_left = left;
+      pending_border_right = right;
+      border_target_pending = true;
+      return;
+    }
+    beginBorderTransition();
+    hline_color_top = top;
+    hline_color_bottom = bottom;
+    vline_color_left = left;
+    vline_color_right = right;
+  }
+
+  static bool isMiddleBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
+    return top && bottom && !left && !right;
+  }
+  static bool isEndBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
+    return top && bottom && (left != 0 || right != 0) && !(left != 0 && right != 0);
+  }
+  static bool isEmptyBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
+    return !top && !bottom && !left && !right;
+  }
+  void drawHorizontalFromMiddle(float p, uint16_t top, uint16_t bottom) {
+    const int n = (int)(32 * p + .5f);
+    for (uint8_t line = 0; line < BORDER_LINE_COUNT / 2; ++line) {
+      if (top) { led_display->drawFastHLine(32 - n, line, n, top); led_display->drawFastHLine(32, line, n, top); }
+      if (bottom) { const int y = PANEL_RES_Y - BORDER_LINE_COUNT / 2 + line; led_display->drawFastHLine(32 - n, y, n, bottom); led_display->drawFastHLine(32, y, n, bottom); }
+    }
+  }
+  void drawEndPath(bool left, float p, uint16_t top, uint16_t bottom, uint16_t side) {
+    const int travel = (int)(96 * p + .5f), horizontal = min(64, travel), vertical = max(0, travel - 64);
+    for (uint8_t line = 0; line < BORDER_LINE_COUNT / 2; ++line) {
+      const int ty = line, by = PANEL_RES_Y - BORDER_LINE_COUNT / 2 + line;
+      const int sx = left ? 64 - horizontal : 0;
+      if (top) led_display->drawFastHLine(sx, ty, horizontal, top);
+      if (bottom) led_display->drawFastHLine(sx, by, horizontal, bottom);
+      if (side && vertical) {
+        const int x = left ? line : PANEL_RES_X - BORDER_LINE_COUNT / 2 + line;
+        led_display->drawFastVLine(x, 0, vertical, side);
+        led_display->drawFastVLine(x, PANEL_RES_Y - vertical, vertical, side);
+      }
+    }
+  }
+  void drawAnimatedBorder(float p) {
+    const bool from_empty = isEmptyBorder(border_from_top, border_from_bottom, border_from_left, border_from_right);
+    const bool to_empty = isEmptyBorder(hline_color_top, hline_color_bottom, vline_color_left, vline_color_right);
+    const bool from_middle = isMiddleBorder(border_from_top, border_from_bottom, border_from_left, border_from_right);
+    const bool to_middle = isMiddleBorder(hline_color_top, hline_color_bottom, vline_color_left, vline_color_right);
+    const bool from_end = isEndBorder(border_from_top, border_from_bottom, border_from_left, border_from_right);
+    const bool to_end = isEndBorder(hline_color_top, hline_color_bottom, vline_color_left, vline_color_right);
+    if (from_empty && to_middle) { drawHorizontalFromMiddle(p, hline_color_top, hline_color_bottom); return; }
+    if (from_middle && to_empty) { drawHorizontalFromMiddle(1.0f - p, border_from_top, border_from_bottom); return; }
+    if (from_empty && to_end) { const bool left = vline_color_left != 0; drawEndPath(left, p, hline_color_top, hline_color_bottom, left ? vline_color_left : vline_color_right); return; }
+    if (from_end && to_empty) { const bool left = border_from_left != 0; drawEndPath(left, 1.0f - p, border_from_top, border_from_bottom, left ? border_from_left : border_from_right); return; }
+    if (from_middle && to_end) { drawBorders(true, true, hline_color_top); drawBorders(true, false, hline_color_bottom); const bool left = vline_color_left != 0; drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, left ? vline_color_left : vline_color_right); return; }
+    if (from_end && to_middle) { drawBorders(true, true, border_from_top); drawBorders(true, false, border_from_bottom); const bool left = border_from_left != 0; drawEndPath(left, (64.0f + 32.0f * (1.0f - p)) / 96.0f, 0, 0, left ? border_from_left : border_from_right); return; }
+    drawBorderFrameStatic();
+  }
+  void drawBorderFrameStatic() { drawBorders(true, true, hline_color_top); drawBorders(true, false, hline_color_bottom); drawBorders(false, true, vline_color_left); drawBorders(false, false, vline_color_right); }
 
   // Debug aid for the hall presence sensor: a green bar up the left edge whose
   // height is the neighbour's closeness, empty at 0 and full height when
@@ -949,15 +1063,11 @@ public:
     debugPrint("Consolidated border: ");
     debugPrintln(message.c_str());
     
-    // First clear all borders
-    hline_color_top = 0;
-    hline_color_bottom = 0; 
-    vline_color_left = 0;
-    vline_color_right = 0;
-    
     // Parse the message: directions:color
     int colonIndex = message.indexOf(':');
     if (colonIndex == -1) return; // Invalid format
+
+    uint16_t top = 0, bottom = 0, left = 0, right = 0;
     
     String directions = message.substring(0, colonIndex);
     String colorStr = message.substring(colonIndex + 1);
@@ -972,20 +1082,21 @@ public:
       char dir = directions.charAt(i);
       switch (dir) {
         case 'N': // North = top
-          hline_color_top = color;
+          top = color;
           break;
         case 'S': // South = bottom  
-          hline_color_bottom = color;
+          bottom = color;
           break;
         case 'E': // East = right
-          vline_color_right = color;
+          right = color;
           break;
         case 'W': // West = left
-          vline_color_left = color;
+          left = color;
           break;
       }
     }
     
+    setConsolidatedBorderTarget(top, bottom, left, right);
     // Force display update
     is_dirty = true;
   }
