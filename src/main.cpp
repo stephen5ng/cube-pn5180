@@ -172,9 +172,25 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // DRV5055 analog presence sensor. Thresholds are deltas from a tracked baseline, not
 // absolute ADC values; see hall_presence.h.
 #define HALL_PRESENCE_DIRECTION        1    // +1: presence magnet drives the reading up
-#define HALL_PRESENCE_ON_DELTA         95   // ~50% of the 194-count deflection measured on slot 1
-#define HALL_PRESENCE_OFF_DELTA        48   // ~25%, hysteresis
-#define HALL_PRESENCE_FAST_SHIFT       3    // ~8 samples at the 1kHz poll
+// Measured across slots 11-16 on 2026-09-18, docked and separated, with the
+// baselines primed from a clean reading:
+//   docked deflection   94 .. 240   on a cold docking of the whole row; a single
+//                                   badly seated pass read 11->12 down at 63, so
+//                                   seating alone moves a pair by ~40
+//   idle excursion      up to 11    (worst slot 15; was up to 34 at fast_shift 3)
+//
+// The gap between the two thresholds is what stops a cube parked at the edge of
+// the zone from flipping in and out -- with NFC that chatter made cubes flash and
+// play sounds with no cause a player could see, and hysteresis is the whole
+// reason there is a presence sensor in front of the ID sensors at all.
+//
+// A stationary cube chatters when noise can carry it above ON and later below
+// OFF, which needs ON - OFF < 2 * excursion. At 11 counts of excursion, any band
+// under 22 allows it. 30 does not, and leaves ON at 4x the excursion so nothing
+// latches on noise alone, while clearing the weakest docking by 2x.
+#define HALL_PRESENCE_ON_DELTA         45
+#define HALL_PRESENCE_OFF_DELTA        15
+#define HALL_PRESENCE_FAST_SHIFT       5
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
 
@@ -471,6 +487,7 @@ private:
   uint8_t vline_height;
   uint16_t hline_color_top;
   uint8_t presence_bar_height;
+  unsigned long last_presence_bar_ms;
   uint16_t hline_color_bottom;
   //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
   //: above it they have arrived and the settle tail rebounds three times.
@@ -544,7 +561,7 @@ public:
                                 text_size(1), font_size(1), is_lock(false),
                                 vline_color_left(0), vline_color_right(0),
                                 vline_height(PANEL_RES),
-                                hline_color_top(0), presence_bar_height(0),
+                                hline_color_top(0), presence_bar_height(0), last_presence_bar_ms(0),
                                 hline_color_bottom(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
@@ -667,19 +684,35 @@ public:
   }
 
   // Debug aid for the hall presence sensor: a green bar up the left edge whose
-  // height is the neighbour's closeness, empty at 0 and PRESENCE_BAR_MAX px when
+  // height is the neighbour's closeness, empty at 0 and full height when
   // seated. Nothing sets it on an NFC build, so it stays empty there.
-  static const uint8_t PRESENCE_BAR_MAX = 32;
+  // Full panel height: the bar is read by eye, and 16 steps across 64px is twice
+  // the resolution of 8 across 32.
+  static const uint8_t PRESENCE_BAR_MAX = PANEL_RES_Y;
+  // There is no way to repaint one edge on its own: the frame lives in a DMA
+  // buffer that gets swapped whole, so any change to the bar costs a full redraw
+  // of the letter and borders as well. A raw proximity value wanders constantly,
+  // which turned a debug aid into a 30 FPS full-frame redraw. Coarse steps and a
+  // floor on how often it may change cut that to a handful of redraws per
+  // second, which is all a human can read off the bar anyway.
+  static const uint8_t PRESENCE_BAR_STEP = 4;
+  static const unsigned long PRESENCE_BAR_MIN_INTERVAL_MS = 250;
 
-  void setPresencePercent(int percent) {
+  void setPresencePercent(int percent, unsigned long now) {
     uint8_t height = percent <= 0    ? 0
                    : percent >= 100  ? PRESENCE_BAR_MAX
                    : (uint8_t)((percent * PRESENCE_BAR_MAX) / 100);
-    // Only a change the eye could see is worth a redraw: the sensor is polled
-    // at ~1 kHz and the bar has 33 distinct heights.
+    height -= height % PRESENCE_BAR_STEP;
     if (height == presence_bar_height) {
       return;
     }
+    // Empty and full are the two the eye is actually waiting for, so they land
+    // immediately; everything between is a rate-limited approximation.
+    const bool endpoint = (height == 0 || height == PRESENCE_BAR_MAX);
+    if (!endpoint && now - last_presence_bar_ms < PRESENCE_BAR_MIN_INTERVAL_MS) {
+      return;
+    }
+    last_presence_bar_ms = now;
     presence_bar_height = height;
     is_dirty = true;
   }
@@ -1754,7 +1787,7 @@ static uint8_t hallCubeIdForMask(uint8_t id_mask) {
     // Player 1, read off the boards on 2026-09-18: each cube's mask is what its
     // left-hand neighbour reported over cube/{id}/hall_debug with the row lined
     // up, so these follow the magnets rather than the magnets following these.
-    case 0b000011: return 11;  // P1+P2
+    case 0b110000: return 11;  // P5+P6
     case 0b010010: return 12;  // P2+P5
     case 0b001100: return 13;  // P3+P4
     case 0b010001: return 14;  // P1+P5
@@ -1763,7 +1796,9 @@ static uint8_t hallCubeIdForMask(uint8_t id_mask) {
     // Player 0 has no magnets fitted -- those boards still run NFC -- so these are
     // a free choice, taken from what player 1 left and preferring the pins that
     // are not GPIO 34/35. Fit magnets to match, or renumber these to match the
-    // magnets, whichever comes first.
+    // magnets, whichever comes first. P1+P2 is spare and is the safest pair
+    // available, so it is the one to move slot 11 onto if its magnets are ever
+    // repositioned.
     case 0b000110: return 1;   // P2+P3
     case 0b001010: return 2;   // P2+P4
     case 0b010100: return 3;   // P3+P5
@@ -2567,7 +2602,7 @@ void loop() {
             (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
         // Fed every poll rather than on the publish deadband below, so the bar
         // follows the sensor rather than the reporting rate.
-        display_manager->setPresencePercent(proximity);
+        display_manager->setPresencePercent(proximity, current_time);
 
         static unsigned long last_proximity_publish = 0;
         // The endpoints are exact: 0 and 100 must land even if the last publish was
