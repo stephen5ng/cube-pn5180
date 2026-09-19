@@ -1872,7 +1872,17 @@ static void recalibratePresence() {
 
 void setupHallSensors() {
   for (uint8_t i = 0; i < 6; i++) {
-    pinMode(HALL_ID_PINS[i], INPUT);
+    // The GH1230KSW outputs are open-drain and the daughterboard carries a 10k
+    // pull-up per sensor, so a line whose pull-up path opens floats -- and it
+    // floats LOW, which reads as a magnet that is not there. Slot 16 lost P6 to
+    // a bad joint that way and reported a neighbour with nothing beside it.
+    //
+    // GPIO 34 and above are input-only with no internal pull-up, so P5 and P6
+    // cannot be given a fallback in firmware; the rest can, and then an open
+    // pull-up path reads HIGH, which is "no magnet". Only a resistor on the main
+    // board side of the connector can do the same for P5 and P6.
+    const bool has_internal_pullup = HALL_ID_PINS[i] < 34;
+    pinMode(HALL_ID_PINS[i], has_internal_pullup ? INPUT_PULLUP : INPUT);
   }
   pinMode(HALL_PRESENCE_PIN, INPUT);
   hall_presence.begin({HALL_PRESENCE_DIRECTION,
