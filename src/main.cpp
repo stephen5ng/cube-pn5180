@@ -2761,13 +2761,17 @@ void loop() {
         // follows the sensor rather than the reporting rate.
         display_manager->setPresencePercent(proximity, current_time);
 
-        // A stable 2-of-6 Hall mask identifies the candidate before the
+        // A debounced 2-of-6 Hall mask identifies the candidate before the
         // presence latch confirms a neighbour. Preview the prospective shared
         // edge on both cubes while it is near, but never alter /border.
         static uint8_t preview_candidate = 0;
         static unsigned long last_preview_publish = 0;
-        const uint8_t raw_candidate = __builtin_popcount(raw) == 2 ? hallCubeIdForMask(raw) : 0;
-        const uint8_t wanted_preview = (proximity > 0 && proximity < 100) ? raw_candidate : 0;
+        const uint8_t stable_candidate =
+            stable_raw != 0xFF && __builtin_popcount(stable_raw) == 2
+                ? hallCubeIdForMask(stable_raw)
+                : 0;
+        const uint8_t wanted_preview =
+            (proximity > 0 && proximity < 100) ? stable_candidate : 0;
         if (wanted_preview != preview_candidate ||
             (wanted_preview && current_time - last_preview_publish >= 1000)) {
           if (mqtt_client.isConnected()) {
