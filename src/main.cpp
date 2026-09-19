@@ -491,8 +491,9 @@ private:
   unsigned long last_presence_bar_ms;
   uint16_t hline_color_bottom;
   uint16_t border_from_top, border_from_bottom, border_from_left, border_from_right;
+  uint16_t pending_border_top, pending_border_bottom, pending_border_left, pending_border_right;
   unsigned long border_animation_start_time;
-  bool border_animation_active;
+  bool border_animation_active, border_target_pending;
   //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
   //: above it they have arrived and the settle tail rebounds three times.
   //:
@@ -569,7 +570,9 @@ public:
                                 hline_color_bottom(0),
                                 border_from_top(0), border_from_bottom(0),
                                 border_from_left(0), border_from_right(0),
-                                border_animation_start_time(0), border_animation_active(false),
+                                pending_border_top(0), pending_border_bottom(0),
+                                pending_border_left(0), pending_border_right(0),
+                                border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
@@ -674,7 +677,24 @@ public:
     }
     if (border_animation_active) {
       if (current_time - border_animation_start_time >= BORDER_ANIMATION_DURATION_MS) {
-        border_animation_active = false;
+        if (border_target_pending) {
+          // Finish the frame already on screen, then start the newer target.
+          // This deliberately trades at most one display-only animation period
+          // for a continuous border; gameplay state is never delayed.
+          border_from_top = hline_color_top;
+          border_from_bottom = hline_color_bottom;
+          border_from_left = vline_color_left;
+          border_from_right = vline_color_right;
+          hline_color_top = pending_border_top;
+          hline_color_bottom = pending_border_bottom;
+          vline_color_left = pending_border_left;
+          vline_color_right = pending_border_right;
+          border_target_pending = false;
+          border_animation_start_time = current_time;
+          is_dirty = true;
+        } else {
+          border_animation_active = false;
+        }
       } else {
         is_dirty = true;  // display-only redraw while the border interpolates
       }
@@ -711,6 +731,23 @@ public:
     border_from_right = vline_color_right;
     border_animation_start_time = millis();
     border_animation_active = true;
+  }
+
+  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
+                                   uint16_t left, uint16_t right) {
+    if (border_animation_active) {
+      pending_border_top = top;
+      pending_border_bottom = bottom;
+      pending_border_left = left;
+      pending_border_right = right;
+      border_target_pending = true;
+      return;
+    }
+    beginBorderTransition();
+    hline_color_top = top;
+    hline_color_bottom = bottom;
+    vline_color_left = left;
+    vline_color_right = right;
   }
 
   static bool isMiddleBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
@@ -1022,20 +1059,11 @@ public:
     debugPrint("Consolidated border: ");
     debugPrintln(message.c_str());
     
-    // Snapshot the currently displayed state before applying the consolidated
-    // target. This is rendering-only; MQTT parsing and gameplay state are
-    // unchanged.
-    beginBorderTransition();
-
-    // First clear all borders
-    hline_color_top = 0;
-    hline_color_bottom = 0; 
-    vline_color_left = 0;
-    vline_color_right = 0;
-    
     // Parse the message: directions:color
     int colonIndex = message.indexOf(':');
     if (colonIndex == -1) return; // Invalid format
+
+    uint16_t top = 0, bottom = 0, left = 0, right = 0;
     
     String directions = message.substring(0, colonIndex);
     String colorStr = message.substring(colonIndex + 1);
@@ -1050,20 +1078,21 @@ public:
       char dir = directions.charAt(i);
       switch (dir) {
         case 'N': // North = top
-          hline_color_top = color;
+          top = color;
           break;
         case 'S': // South = bottom  
-          hline_color_bottom = color;
+          bottom = color;
           break;
         case 'E': // East = right
-          vline_color_right = color;
+          right = color;
           break;
         case 'W': // West = left
-          vline_color_left = color;
+          left = color;
           break;
       }
     }
     
+    setConsolidatedBorderTarget(top, bottom, left, right);
     // Force display update
     is_dirty = true;
   }
