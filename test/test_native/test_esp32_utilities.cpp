@@ -222,6 +222,17 @@ void test_closeness_rises_smoothly_between_the_endpoints() {
     TEST_ASSERT_TRUE(at_latch > 50 && at_latch < 100);
 }
 
+void test_candidate_preview_stops_when_presence_is_confirmed() {
+    TEST_ASSERT_TRUE(shouldPreviewHallCandidate(1, false));
+    TEST_ASSERT_TRUE(shouldPreviewHallCandidate(99, false));
+    TEST_ASSERT_FALSE(shouldPreviewHallCandidate(0, false));
+    TEST_ASSERT_FALSE(shouldPreviewHallCandidate(100, false));
+
+    // A fully docked cube can read below the calibrated 100% endpoint. The
+    // presence latch is authoritative, so that state must clear the preview.
+    TEST_ASSERT_FALSE(shouldPreviewHallCandidate(94, true));
+}
+
 // A neighbour close enough to trip the ID sensors but not the presence threshold
 // left the baseline free to adapt, so it walked up to the magnet and the reading
 // decayed to nothing over a couple of minutes -- observed on cube c. The ID
@@ -1189,6 +1200,7 @@ int main(void) {
     RUN_TEST(test_distance_reports_out_of_range_behind_the_baseline);
     RUN_TEST(test_closeness_spans_nothing_to_docked);
     RUN_TEST(test_closeness_rises_smoothly_between_the_endpoints);
+    RUN_TEST(test_candidate_preview_stops_when_presence_is_confirmed);
     RUN_TEST(test_baseline_holds_while_the_id_sensors_see_a_neighbour);
     RUN_TEST(test_baseline_still_adapts_with_no_neighbour);
     RUN_TEST(test_priming_waits_for_a_sample_with_no_neighbour);
