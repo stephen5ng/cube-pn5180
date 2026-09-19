@@ -884,6 +884,30 @@ void test_chatterGate_first_departure_and_return_is_instant() {
     TEST_ASSERT_EQUAL(NFC_OBS_TAG, reconnect.action);
 }
 
+void test_chatterGate_a_republish_with_no_real_change_is_not_a_flip() {
+    // `cube/resend` and every MQTT (re)connect clear
+    // `last_observation_published` in main.cpp, which makes
+    // `decideNfcObservation` re-announce NFC_OBS_TAG for a tag that never
+    // actually left -- no intervening NFC_OBS_ABSENT. That must not be
+    // recorded as a flip, or it can wrongly gate the tag's real next
+    // departure-and-return.
+    NfcChatterState state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000).state;
+
+    for (int i = 0; i < 5; i++) {
+        NfcChatterResult republish =
+            applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1010 + i * 10);
+        TEST_ASSERT_EQUAL(NFC_OBS_TAG, republish.action);  // always republished
+        state = republish.state;
+    }
+
+    // The tag's REAL first departure-and-return must still be instant -- the
+    // re-announces above must not have been mistaken for chatter history.
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1100).state;
+    NfcChatterResult reconnect = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1150);
+    TEST_ASSERT_EQUAL(NFC_OBS_TAG, reconnect.action);
+}
+
 void test_chatterGate_second_flip_within_window_is_held() {
     NfcChatterState state;
     state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000).state;
@@ -1136,6 +1160,7 @@ int main(void) {
     RUN_TEST(test_decideNfcObservation_ignores_a_failed_read);
     RUN_TEST(test_chatterGate_first_connect_is_instant);
     RUN_TEST(test_chatterGate_first_departure_and_return_is_instant);
+    RUN_TEST(test_chatterGate_a_republish_with_no_real_change_is_not_a_flip);
     RUN_TEST(test_chatterGate_second_flip_within_window_is_held);
     RUN_TEST(test_chatterGate_accepts_the_held_reconnect_once_it_settles);
     RUN_TEST(test_chatterGate_a_dropout_mid_confirmation_resets_the_hold);

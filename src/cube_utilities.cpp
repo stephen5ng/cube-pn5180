@@ -253,6 +253,7 @@ NfcChatterResult applyNfcChatterGate(const NfcChatterState& state,
     // that a tag needs a second RECONNECT (not merely its first departure)
     // before it counts as chattering. `state.tag` already names the
     // departing candidate; nothing else changes here.
+    result.state.connected = false;
     result.state.confirm_since_ms = 0;
     result.action = NFC_OBS_ABSENT;
     return result;
@@ -260,6 +261,16 @@ NfcChatterResult applyNfcChatterGate(const NfcChatterState& state,
 
   if (action == NFC_OBS_TAG) {
     bool same_tag_as_last_flip = strcmp(state.tag, tag_hex) == 0;
+
+    if (same_tag_as_last_flip && state.connected) {
+      // A forced re-announce (`cube/resend`, or any MQTT (re)connect --
+      // main.cpp clears `last_observation_published` on both), not a real
+      // arrival: nothing physically changed, so this must not count as a
+      // flip. Republish as asked, untouched otherwise.
+      result.action = NFC_OBS_TAG;
+      return result;
+    }
+
     // `flip_ms_older` is only set once this tag has connected at least
     // twice, so chattering can only trigger from the SECOND reconnect
     // onward -- the first departure-and-return of any tag is always instant.
@@ -274,6 +285,7 @@ NfcChatterResult applyNfcChatterGate(const NfcChatterState& state,
       result.state.flip_ms_newest = now_ms;
       strncpy(result.state.tag, tag_hex, sizeof(result.state.tag) - 1);
       result.state.tag[sizeof(result.state.tag) - 1] = '\0';
+      result.state.connected = true;
       result.state.confirm_since_ms = 0;
       result.action = NFC_OBS_TAG;
       return result;
@@ -285,6 +297,7 @@ NfcChatterResult applyNfcChatterGate(const NfcChatterState& state,
     if (now_ms - confirm_since >= NFC_CHATTER_CONFIRM_MS) {
       result.state.flip_ms_older = state.flip_ms_newest;
       result.state.flip_ms_newest = now_ms;
+      result.state.connected = true;
       result.state.confirm_since_ms = 0;
       result.action = NFC_OBS_TAG;
     } else {

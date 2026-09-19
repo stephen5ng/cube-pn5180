@@ -122,6 +122,14 @@ void buildObservationPayload(const char* boot_id, const char* tag,
 
 struct NfcChatterState {
   char tag[NFCID_LENGTH * 2 + 1] = "";
+  // Whether `tag` is physically present right now, by this gate's OWN
+  // reckoning -- independent of `last_observation_published`, which
+  // `cube/resend` and every (re)connect clear to force a re-announce even
+  // when nothing physically changed (main.cpp). Without this, a forced
+  // re-announce reads as NFC_OBS_TAG with no intervening NFC_OBS_ABSENT and
+  // gets counted as a real flip, which can wrongly gate the tag's actual
+  // next departure-and-return.
+  bool connected = false;
   unsigned long flip_ms_newest = 0;
   unsigned long flip_ms_older = 0;
   //: 0 = no reconnect currently being held for confirmation.
