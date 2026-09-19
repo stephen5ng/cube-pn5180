@@ -240,6 +240,70 @@ NfcObservationAction decideNfcObservation(bool read_ok, bool no_card,
   return NFC_OBS_NONE;
 }
 
+NfcChatterResult applyNfcChatterGate(const NfcChatterState& state,
+                                     NfcObservationAction action,
+                                     bool read_ok, const char* tag_hex,
+                                     unsigned long now_ms) {
+  NfcChatterResult result;
+  result.state = state;
+
+  if (action == NFC_OBS_ABSENT) {
+    // Disconnects are never held back -- apart is always the safe default.
+    // Not counted as a flip itself: flip history only tracks CONNECTS, so
+    // that a tag needs a second RECONNECT (not merely its first departure)
+    // before it counts as chattering. `state.tag` already names the
+    // departing candidate; nothing else changes here.
+    result.state.confirm_since_ms = 0;
+    result.action = NFC_OBS_ABSENT;
+    return result;
+  }
+
+  if (action == NFC_OBS_TAG) {
+    bool same_tag_as_last_flip = strcmp(state.tag, tag_hex) == 0;
+    // `flip_ms_older` is only set once this tag has connected at least
+    // twice, so chattering can only trigger from the SECOND reconnect
+    // onward -- the first departure-and-return of any tag is always instant.
+    bool chattering = same_tag_as_last_flip && state.flip_ms_older != 0 &&
+        (now_ms - state.flip_ms_older) <= NFC_CHATTER_WINDOW_MS;
+
+    if (!chattering) {
+      // A new tag, or this tag's first reconnect in a while: always
+      // instant. Record this connect so a SECOND one soon after is what
+      // triggers the gate, not this one.
+      result.state.flip_ms_older = same_tag_as_last_flip ? state.flip_ms_newest : 0;
+      result.state.flip_ms_newest = now_ms;
+      strncpy(result.state.tag, tag_hex, sizeof(result.state.tag) - 1);
+      result.state.tag[sizeof(result.state.tag) - 1] = '\0';
+      result.state.confirm_since_ms = 0;
+      result.action = NFC_OBS_TAG;
+      return result;
+    }
+
+    // Chattering: hold until this exact tag has read steadily for
+    // NFC_CHATTER_CONFIRM_MS before accepting the reconnect.
+    unsigned long confirm_since = state.confirm_since_ms != 0 ? state.confirm_since_ms : now_ms;
+    if (now_ms - confirm_since >= NFC_CHATTER_CONFIRM_MS) {
+      result.state.flip_ms_older = state.flip_ms_newest;
+      result.state.flip_ms_newest = now_ms;
+      result.state.confirm_since_ms = 0;
+      result.action = NFC_OBS_TAG;
+    } else {
+      result.state.confirm_since_ms = confirm_since;
+      result.action = NFC_OBS_NONE;
+    }
+    return result;
+  }
+
+  // NFC_OBS_NONE. A confirmation in progress survives only if this read is
+  // still the tag it is confirming -- anything else breaks the streak.
+  if (state.confirm_since_ms != 0 &&
+      !(read_ok && strcmp(state.tag, tag_hex) == 0)) {
+    result.state.confirm_since_ms = 0;
+  }
+  result.action = NFC_OBS_NONE;
+  return result;
+}
+
 void buildObservationPayload(const char* boot_id, const char* tag,
                              char* out, size_t out_size) {
   // protocol, boot_id, tag. Nothing else: the server validates no provenance,

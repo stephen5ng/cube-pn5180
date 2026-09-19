@@ -858,6 +858,134 @@ void test_decideNfcObservation_ignores_a_failed_read() {
         decideNfcObservation(false, false, true, false, "", "AABB"));
 }
 
+// ---------------------------------------------------------------------------
+// NFC chatter gate
+// ---------------------------------------------------------------------------
+// Real hardware at the edge of NFC range flipped up to ~10 times/sec
+// (measured: 51 flips in 15s, mostly 80-500ms apart). A tag's first
+// departure-and-return is always instant -- that is either a new cube or a
+// single dropped read on a solid pair, and neither should pay a confirmation
+// cost. Only a SECOND flip of the same tag within NFC_CHATTER_WINDOW_MS
+// means it is genuinely chattering.
+
+void test_chatterGate_first_connect_is_instant() {
+    NfcChatterState state;
+    NfcChatterResult result = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000);
+    TEST_ASSERT_EQUAL(NFC_OBS_TAG, result.action);
+}
+
+void test_chatterGate_first_departure_and_return_is_instant() {
+    NfcChatterState state;
+    NfcChatterResult connect = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000);
+    NfcChatterResult depart = applyNfcChatterGate(connect.state, NFC_OBS_ABSENT, false, "", 1050);
+    // The tag's first return, shortly after its first (and only) departure:
+    // still instant -- this is one flip, not chatter.
+    NfcChatterResult reconnect = applyNfcChatterGate(depart.state, NFC_OBS_TAG, true, "AABB", 1100);
+    TEST_ASSERT_EQUAL(NFC_OBS_TAG, reconnect.action);
+}
+
+void test_chatterGate_second_flip_within_window_is_held() {
+    NfcChatterState state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1050).state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1100).state;   // 1st return: instant
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1150).state;   // 2nd departure
+
+    // 2nd return within the window: now chattering, held back.
+    NfcChatterResult held = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1200);
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE, held.action);
+}
+
+void test_chatterGate_accepts_the_held_reconnect_once_it_settles() {
+    NfcChatterState state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1050).state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1100).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1150).state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1200).state; // held, confirm starts at 1200
+
+    // Read stays on AABB (decideNfcObservation would keep saying NFC_OBS_TAG
+    // every cycle since last_published is still "-"); after
+    // NFC_CHATTER_CONFIRM_MS it is accepted.
+    NfcChatterResult still_holding =
+        applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1200 + NFC_CHATTER_CONFIRM_MS - 1);
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE, still_holding.action);
+
+    NfcChatterResult confirmed =
+        applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1200 + NFC_CHATTER_CONFIRM_MS);
+    TEST_ASSERT_EQUAL(NFC_OBS_TAG, confirmed.action);
+}
+
+void test_chatterGate_a_dropout_mid_confirmation_resets_the_hold() {
+    NfcChatterState state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1050).state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1100).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1150).state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1200).state; // held, confirm starts at 1200
+
+    // The read drops out again before confirmation completes -- reported as
+    // NFC_OBS_NONE (last_published is still "-", so decideNfcObservation
+    // would already suppress this), but it must break the confirmation hold.
+    state = applyNfcChatterGate(state, NFC_OBS_NONE, false, "", 1250).state;
+
+    // AABB comes back within NFC_CHATTER_CONFIRM_MS of the ORIGINAL hold
+    // start (1200); if the hold had not reset, this would already be
+    // confirmed. It must not be -- the streak broke and confirmation
+    // restarts from here.
+    NfcChatterResult result =
+        applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1200 + NFC_CHATTER_CONFIRM_MS);
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE, result.action);
+}
+
+// Drives `state` into a genuinely chattering hold on "AABB": connect, depart,
+// reconnect (1st return, instant), depart, reconnect (2nd return -- this is
+// the one that triggers the gate and is left PENDING, unconfirmed).
+static NfcChatterState chattering_state_pending_on_aabb() {
+    NfcChatterState state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1010).state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1020).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1030).state;
+    NfcChatterResult pending = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1040);
+    TEST_ASSERT_EQUAL(NFC_OBS_NONE, pending.action);  // sanity: genuinely held
+    return pending.state;
+}
+
+void test_chatterGate_never_holds_back_a_disconnect() {
+    NfcChatterState state = chattering_state_pending_on_aabb();
+    // A reconnect is mid-confirmation-hold, but a disconnect must still
+    // publish instantly -- never held, regardless of chatter state.
+    NfcChatterResult departed = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1050);
+    TEST_ASSERT_EQUAL(NFC_OBS_ABSENT, departed.action);
+}
+
+void test_chatterGate_a_different_tag_connects_instantly_even_during_chatter() {
+    NfcChatterState state = chattering_state_pending_on_aabb();
+    // AABB has an unresolved chatter hold, but a genuinely different tag (a
+    // new cube placed down) must connect instantly -- it has no flip
+    // history of its own yet.
+    NfcChatterResult result = applyNfcChatterGate(state, NFC_OBS_TAG, true, "CCDD", 1050);
+    TEST_ASSERT_EQUAL(NFC_OBS_TAG, result.action);
+}
+
+void test_chatterGate_a_stale_flip_outside_the_window_is_not_chatter() {
+    NfcChatterState state;
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1000).state;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", 1050).state;
+    // 1st return: instant, and this is the connect the staleness check is
+    // against (`flip_ms_older` becomes 1100 here).
+    state = applyNfcChatterGate(state, NFC_OBS_TAG, true, "AABB", 1100).state;
+    // Solidly connected for well over NFC_CHATTER_WINDOW_MS before dropping.
+    unsigned long stale_departure = 1100 + NFC_CHATTER_WINDOW_MS + 50;
+    state = applyNfcChatterGate(state, NFC_OBS_ABSENT, false, "", stale_departure).state;
+    // The prior connect (1100) is now well outside the window -- this pair
+    // settled, so the reconnect is instant again, not gated as chatter.
+    NfcChatterResult result = applyNfcChatterGate(
+        state, NFC_OBS_TAG, true, "AABB", stale_departure + 10);
+    TEST_ASSERT_EQUAL(NFC_OBS_TAG, result.action);
+}
+
 void test_buildObservationPayload_carries_protocol_boot_id_and_tag() {
     char buf[160];
     buildObservationPayload("A3F9", "0A40D303530104E0", buf, sizeof(buf));
@@ -1006,6 +1134,14 @@ int main(void) {
     RUN_TEST(test_decideNfcObservation_keeps_the_neighbor_when_hall_still_sees_it);
     RUN_TEST(test_decideNfcObservation_suppresses_repeated_absence);
     RUN_TEST(test_decideNfcObservation_ignores_a_failed_read);
+    RUN_TEST(test_chatterGate_first_connect_is_instant);
+    RUN_TEST(test_chatterGate_first_departure_and_return_is_instant);
+    RUN_TEST(test_chatterGate_second_flip_within_window_is_held);
+    RUN_TEST(test_chatterGate_accepts_the_held_reconnect_once_it_settles);
+    RUN_TEST(test_chatterGate_a_dropout_mid_confirmation_resets_the_hold);
+    RUN_TEST(test_chatterGate_never_holds_back_a_disconnect);
+    RUN_TEST(test_chatterGate_a_different_tag_connects_instantly_even_during_chatter);
+    RUN_TEST(test_chatterGate_a_stale_flip_outside_the_window_is_not_chatter);
     RUN_TEST(test_buildObservationPayload_carries_protocol_boot_id_and_tag);
     RUN_TEST(test_buildObservationPayload_encodes_no_neighbor);
     RUN_TEST(test_buildObservationPayload_has_no_provenance_fields);

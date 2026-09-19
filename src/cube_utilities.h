@@ -108,6 +108,41 @@ NfcObservationAction decideNfcObservation(bool read_ok, bool no_card,
 void buildObservationPayload(const char* boot_id, const char* tag,
                              char* out, size_t out_size);
 
+// A tag right at the edge of NFC range reads as present/absent in rapid
+// succession; on hardware that showed up to ~10 flips/sec. Almost always the
+// player meant the cubes to be apart, not together -- so disconnects
+// (NFC_OBS_ABSENT) are never held back, but a RECONNECT to a tag that has
+// already flipped repeatedly and recently must hold steady for
+// NFC_CHATTER_CONFIRM_MS before it is accepted. A tag's first
+// departure-and-return is always instant (a single dropped read is not
+// chatter); only the second flip onward within NFC_CHATTER_WINDOW_MS pays
+// the confirmation cost.
+#define NFC_CHATTER_WINDOW_MS 1000UL
+#define NFC_CHATTER_CONFIRM_MS 200UL
+
+struct NfcChatterState {
+  char tag[NFCID_LENGTH * 2 + 1] = "";
+  unsigned long flip_ms_newest = 0;
+  unsigned long flip_ms_older = 0;
+  //: 0 = no reconnect currently being held for confirmation.
+  unsigned long confirm_since_ms = 0;
+};
+
+struct NfcChatterResult {
+  NfcObservationAction action;
+  NfcChatterState state;
+};
+
+// Applies chatter suppression on top of `decideNfcObservation`'s raw
+// decision. `action` is that decision; `read_ok`/`tag_hex` are this cycle's
+// raw read, needed to tell a broken confirmation streak from a continuing
+// one. Returns the (possibly downgraded to NFC_OBS_NONE) action to actually
+// publish, and the state to carry into the next cycle.
+NfcChatterResult applyNfcChatterGate(const NfcChatterState& state,
+                                     NfcObservationAction action,
+                                     bool read_ok, const char* tag_hex,
+                                     unsigned long now_ms);
+
 enum WakeAction { WAKE_ACTION_STAY_ASLEEP, WAKE_ACTION_WAKE_FULL };
 
 // The keep-alive check-in decision. Only a timer wake makes a check-in, so

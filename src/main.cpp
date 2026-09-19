@@ -348,6 +348,10 @@ static String boot_id;
 static String mqtt_topic_assign;
 static String mqtt_topic_device_nfc;
 static char last_observation_published[NFCID_LENGTH * 2 + 1] = "";
+// A tag right at the edge of NFC range flickers rapidly; this holds a
+// repeatedly-flipping reconnect back for confirmation. See
+// cube_utilities.h's NFC_CHATTER_* comment for the design.
+static NfcChatterState nfc_chatter_state;
 static String mqtt_topic_presence;
 static String mqtt_topic_liveness_response;
 static const unsigned long ASSIGNMENT_WAIT_MS = 3000;
@@ -2482,6 +2486,11 @@ void loop() {
             read_result == ISO15693_EC_OK, read_result == EC_NO_CARD,
             hall_allows_neighbor, hall_says_present, neighbor_id,
             last_observation_published);
+        NfcChatterResult chatter_result = applyNfcChatterGate(
+            nfc_chatter_state, action, read_result == ISO15693_EC_OK,
+            neighbor_id, millis());
+        action = chatter_result.action;
+        nfc_chatter_state = chatter_result.state;
         if (action != NFC_OBS_NONE) {
           const char* tag = (action == NFC_OBS_TAG) ? neighbor_id : "-";
           char payload[160];
