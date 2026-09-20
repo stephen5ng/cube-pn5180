@@ -373,7 +373,6 @@ unsigned long last_nfc_publish_time = 0;
 
 // Pre-allocated MQTT topics
 String mqtt_topic_cube;
-String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
 String mqtt_topic_cube_proximity;  // publishes 0-100 closeness to cube/<id>/proximity
@@ -482,7 +481,6 @@ private:
   uint16_t* image2;
   uint16_t* image;
   uint16_t* previous_image;
-  String display_string;
   bool is_border_word;
   uint8_t debug_line;
   uint16_t border_color;
@@ -493,7 +491,6 @@ private:
   uint16_t current_letter_color;
   uint16_t vline_color_right;
   uint16_t vline_color_left;
-  uint8_t vline_height;
   uint16_t hline_color_top;
   uint8_t presence_bar_height;
   unsigned long last_presence_bar_ms;
@@ -521,7 +518,6 @@ private:
   const GFXfont* current_font;
   uint8_t text_size;
   uint8_t rotation;
-  uint8_t font_size;
   bool is_dirty;
   char previous_letter;
   char current_letter;
@@ -574,9 +570,8 @@ public:
                                 is_border_word(false), debug_line(0),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), font_size(1), is_lock(false),
+                                text_size(1), is_lock(false),
                                 vline_color_left(0), vline_color_right(0),
-                                vline_height(PANEL_RES),
                                 hline_color_top(0), presence_bar_height(0), last_presence_bar_ms(0),
                                 hline_color_bottom(0),
                                 border_from_top(0), border_from_bottom(0),
@@ -895,37 +890,9 @@ public:
       if (isHorizontal) {
         led_display->drawFastHLine(0, pos, PANEL_RES_X, color);
       } else {
-        led_display->drawFastVLine(pos, 
-          PANEL_RES_Y - vline_height, vline_height, color);
+        led_display->drawFastVLine(pos, 0, PANEL_RES_Y, color);
       }
     }
-  }
-
-  void handleBorderFrameCommand(const String& message) {
-    debugPrintln("setting border frame due to /border_frame");
-    handleBorderTopBannerCommand(message);
-    handleBorderBottomBannerCommand(message);
-    handleBorderVLineLeftCommand(message);
-    handleBorderVLineRightCommand(message);
-    is_dirty = true;
-  }
-
-  void handleBorderVLineRightCommand(const String& message) {
-    debugPrintln("setting border vline right color due to /border_vline_right");
-    vline_color_right = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;
-  }
-
-  void handleBorderVLineLeftCommand(const String& message) {
-    debugPrintln("setting border vline left color due to /border_vline_left");
-    vline_color_left = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;
-  }
-
-  void handleBorderLineHeightCommand(const String& message) {
-    debugPrintln("setting border vline height due to /border_vline_height");
-    vline_height = message.length() == 0 ? PANEL_RES_Y : message.toInt();
-    is_dirty = true;
   }
 
   void handleFlashCommand(const String& message) {
@@ -934,22 +901,6 @@ public:
     }
     debugPrintln("flashing due to /flash");
     highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
-    is_dirty = true;
-  }
-
-  void handleFontSizeCommand(const String& message) {
-    debugPrintln("setting font size due to /font_size");
-    // if (!is_image_mode) {
-    //   debugPrintln("ignoring font size change in image mode");
-    //   return;
-    // }
-
-    if (message.length() <= 0) {
-      return;
-    }
-
-    int size = max(0L, message.toInt());
-    font_size = size;
     is_dirty = true;
   }
 
@@ -1012,14 +963,6 @@ public:
         drawOrientationIndicator();
       }
     } 
-
-    if (display_string.length() > 0) {
-      Serial.println("displaying string");
-      Serial.println(display_string);
-      led_display->setCursor(5, 28);
-      led_display->setTextColor(RED, BLACK);
-      led_display->print(display_string);
-    }
 
     drawBorderFrame();
     drawBorderPreview(current_time);
@@ -1098,20 +1041,6 @@ public:
 
     memcpy(image, message.c_str(), message.length());
     is_dirty = true;
-  }
-
-  void handleBorderTopBannerCommand(const String& message) {
-    debugPrintln("setting border top banner due to /border_top_banner");
-    Serial.println(message);
-    hline_color_top = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;  
-  }
-
-  void handleBorderBottomBannerCommand(const String& message) {
-    debugPrintln("setting border bottom banner due to /border_bottom_banner");
-    Serial.println(message);
-    hline_color_bottom = strtol(message.c_str(), NULL, 16);    
-    is_dirty = true;  
   }
 
   void handleConsolidatedBorderCommand(const String& message) {
@@ -1198,12 +1127,6 @@ public:
     }
   }
 
-  void handleStringCommand(const String& message) {
-    debugPrintln("setting string due to /string");
-    display_string = message;
-    current_font = nullptr;  // Use default font for string mode
-    is_dirty = true;
-  }
 };
 
 
@@ -1356,12 +1279,6 @@ void setupWiFiConnection() {
 
   startWiFiConnectionAttempt();
   Serial.println("WiFi connection started; setup will continue offline");
-}
-
-void handleNfcCommand(const String& message) {
-  debugPrintln("nfc due to /nfc");
-  strncpy(last_neighbor_id, message.c_str(), sizeof(last_neighbor_id) - 1);
-  last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
 }
 
 void handlePingCommand(const String& message) {
@@ -1711,7 +1628,6 @@ void subscribeSlotTopics() {
   }
 
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
-  mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
   mqtt_topic_cube_proximity = mqtt_topic_cube + "/proximity";
@@ -1737,19 +1653,9 @@ void subscribeSlotTopics() {
 
   auto resetActivityTimer = []() { last_activity_time = millis(); };
 
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_preview", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderPreviewCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderFrameCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_height", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderLineHeightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderVLineLeftCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderVLineRightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleImageBinaryCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
@@ -1760,7 +1666,6 @@ void subscribeSlotTopics() {
 #endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/rise_ms", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleRiseMsCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
   if (sensorModeIsMagnets()) {
     mqtt_client.publish(mqtt_topic_cube_right, "-", true);
