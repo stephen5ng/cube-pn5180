@@ -99,8 +99,6 @@ void initialiseNeighbourSensor() {
 #define PANEL_RES_Y PANEL_RES  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
 
-#define PIXEL_COUNT (PANEL_RES_X * PANEL_RES_Y)
-#define IMAGE_SIZE (PIXEL_COUNT * sizeof(uint16_t))
 
 #define BAND_COUNT 4
 #define BAND_WIDTH (PANEL_RES_X/BAND_COUNT)
@@ -474,11 +472,6 @@ unsigned int nfc_err_count = 0;
 class DisplayManager {
 private:
   MatrixPanel_I2S_DMA* led_display;
-  bool is_image_mode;
-  uint16_t* image1;
-  uint16_t* image2;
-  uint16_t* image;
-  uint16_t* previous_image;
   String display_string;
   bool is_border_word;
   uint8_t debug_line;
@@ -567,7 +560,7 @@ private:
   }
 
 public:
-  DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true),
+  DisplayManager(String cube_id) : is_dirty(true),
                                 is_border_word(false), debug_line(0),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
@@ -583,18 +576,11 @@ public:
                                 border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
                                 border_preview_side(0), border_preview_start_time(0),
                                 border_preview_until(0),
-                                image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
     rotation = (cube_id_int <= 6) ? 2 : 0;
     setupDisplay();
     rise_ms = (uint16_t)(ANIMATION_DURATION_MS * 4.0f / 11.0f);
-
-    // Allocate image buffers. Failure is fatal.
-    image = image1 = new uint16_t[PIXEL_COUNT];
-    previous_image = image2 = new uint16_t[PIXEL_COUNT];
-    memset(image1, 0, PIXEL_COUNT * sizeof(uint16_t));
-    memset(image2, 0, PIXEL_COUNT * sizeof(uint16_t));
   }
 
   void setupDisplay() {
@@ -667,11 +653,10 @@ public:
       is_dirty = true;
     }
 
-    if (previous_letter != current_letter || previous_image != image) {
+    if (previous_letter != current_letter) {
       static uint8_t previous_percent_complete = -1;
       if (current_time - animation_start_time >= ANIMATION_DURATION_MS) {
         // complete animation
-        previous_image = image;
         previous_letter = current_letter;
         percent_complete = ANIMATION_SCALE;
         is_dirty = true;
@@ -934,11 +919,6 @@ public:
 
   void handleFontSizeCommand(const String& message) {
     debugPrintln("setting font size due to /font_size");
-    // if (!is_image_mode) {
-    //   debugPrintln("ignoring font size change in image mode");
-    //   return;
-    // }
-
     if (message.length() <= 0) {
       return;
     }
@@ -973,14 +953,6 @@ public:
     is_dirty = true;
   }
 
-  void drawImage(int8_t percent_complete, uint16_t* image) {
-    // debugPrintln("drawImage");
-    // Serial.printf("image_position: %d\n", image_position);
-    // Serial.printf("image: %p\n", image);
-    int16_t row = (PANEL_RES_Y * percent_complete) / 100;
-    led_display->drawRGBBitmap(0, row, image, 64, 64);
-  }
-
   void updateDisplay(unsigned long current_time) {
     if (!is_dirty) {
       return;
@@ -990,23 +962,15 @@ public:
     led_display->setTextSize(text_size);
     led_display->setRotation(rotation);
 
-    if (is_image_mode) {
-      // Serial.printf("image: %p, previous_image: %p\n", image, previous_image);
-      if (image != previous_image) {
-        drawImage(-percent_complete, previous_image);
-      }
-      drawImage(100 - percent_complete, image);
-    } else {
-      if (current_letter != previous_letter) {
-        drawLetter(100 + percent_complete, previous_letter, RED);
-      }
-      drawLetter(percent_complete, current_letter, current_letter_color);
+    if (current_letter != previous_letter) {
+      drawLetter(100 + percent_complete, previous_letter, RED);
+    }
+    drawLetter(percent_complete, current_letter, current_letter_color);
 
-      // Draw orientation indicator only when letter animation is complete
-      if (percent_complete >= 100) {
-        drawOrientationIndicator();
-      }
-    } 
+    // Draw orientation indicator only when letter animation is complete
+    if (percent_complete >= 100) {
+      drawOrientationIndicator();
+    }
 
     if (display_string.length() > 0) {
       Serial.println("displaying string");
@@ -1073,26 +1037,6 @@ public:
     uint16_t brightness = message.toInt();
     saved_brightness = brightness;  // Save to RTC memory for persistence across sleep
     led_display->setBrightness(brightness);
-  }
-
-  void handleImageBinaryCommand(const String& message) {
-    Serial.println("handling binary image");
-    Serial.printf("message length: %d\n", message.length());
-    if (message.length() > IMAGE_SIZE) {
-      Serial.println("Image too large");
-      return;
-    }
-    
-    static unsigned long last_message_time = 0;
-    is_image_mode = true;
-
-    previous_image = image;
-    image = (image == image1) ? image2 : image1;
-
-    animation_start_time = millis();
-
-    memcpy(image, message.c_str(), message.length());
-    is_dirty = true;
   }
 
   void handleBorderTopBannerCommand(const String& message) {
@@ -1183,7 +1127,6 @@ public:
       previous_letter = current_letter;
     }
       
-    is_image_mode = false;
     if (message.length() > 0) {
       current_letter = message.charAt(0);
       animation_start_time = millis();
@@ -1755,7 +1698,6 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderVLineRightCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleImageBinaryCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLockCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
@@ -2377,7 +2319,11 @@ void setup() {
   const bool is_timer_wake = (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER);
 
   mqtt_client.enableDebuggingMessages(true);
-  mqtt_client.setMaxPacketSize(11999);
+  // PubSubClient's 256-byte default covers the whole packet, not just the
+  // payload, and the largest publish here is the liveness response: a 224-byte
+  // buffer on a ~42-character topic, which reaches ~270 bytes with the fixed
+  // header. 512 clears that with room for a longer nonce.
+  mqtt_client.setMaxPacketSize(512);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
   mqtt_client.setMqttConnectionTimeout(MQTT_CONNECTION_TIMEOUT_MS);
