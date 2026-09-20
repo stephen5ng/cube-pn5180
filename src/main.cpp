@@ -44,8 +44,8 @@ void publishPresence(const char* state);
 
 // Which neighbour sensor this board carries, fixed when it is flashed. The
 // hall board supplies the ID sensors and the presence tap together, so the
-// same flag that enables presence selects the magnet neighbour path.
-#if defined(HALL_SENSOR_ENABLED) || defined(HALL_SENSOR_ANALOG)
+// flag that enables presence selects the magnet neighbour path.
+#ifdef HALL_SENSOR_ANALOG
 static constexpr SensorMode sensor_mode = SENSOR_MODE_MAGNETS;
 #else
 static constexpr SensorMode sensor_mode = SENSOR_MODE_NFC;
@@ -128,10 +128,6 @@ void initialiseNeighbourSensor() {
 #define DISPLAY_STARTUP_DELAY_MS 600
 #define HALL_SENSOR_CHECK_INTERVAL_MS 50  /* Hall sensor polling interval (matches NFC read rate) */
 
-// Hall Sensor Status Strings
-#define HALL_SENSOR_STATUS_CONNECTED "connected"
-#define HALL_SENSOR_STATUS_DISCONNECTED "disconnected"
-
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
 #define SLEEP_PIN GPIO_NUM_0     /* Pin 0 for external wake-up (boot button) */
@@ -150,18 +146,8 @@ void initialiseNeighbourSensor() {
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
 #endif
 
-// Hall sensor modes (mutually exclusive)
-#if defined(HALL_SENSOR_ENABLED)
+#ifdef HALL_SENSOR_ANALOG
 #define HALL_SENSOR_PIN GPIO_NUM_36
-#define HAS_HALL_SENSOR true
-#define HAS_HALL_ANALOG false
-#elif defined(HALL_SENSOR_ANALOG)
-#define HALL_SENSOR_PIN GPIO_NUM_36
-#define HAS_HALL_SENSOR false
-#define HAS_HALL_ANALOG true
-#else
-#define HAS_HALL_SENSOR false
-#define HAS_HALL_ANALOG false
 #endif
 
 // 2-of-6 Hall-sensor neighbor ID decode, an alternative to the PN5180 NFC
@@ -2406,9 +2392,7 @@ void setup() {
   digitalWrite(POWER_SWITCH_PIN, is_timer_wake ? LOW : HIGH);
 
   // Initialize Hall effect sensor on GPIO36
-#if defined(HALL_SENSOR_ENABLED)
-  pinMode(HALL_SENSOR_PIN, INPUT);
-#elif defined(HALL_SENSOR_ANALOG)
+#ifdef HALL_SENSOR_ANALOG
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
   pinMode(HALL_SENSOR_PIN, INPUT);
@@ -2548,8 +2532,6 @@ void setup() {
 void loop() {
   loop_start_time = micros();
 
-  static bool last_hall_present = true;
-
   serviceWiFiConnection();
 
   unsigned long section_start = micros();
@@ -2617,10 +2599,6 @@ void loop() {
         );
       }
 
-      // Always publish NFC tag IDs (needed for nfc_control_daemon).
-      // Only gate neighbor observations on hall sensor state.
-      bool hall_allows_neighbor = !HAS_HALL_SENSOR || last_hall_present || HAS_HALL_ANALOG;
-      bool hall_says_present = HAS_HALL_SENSOR && last_hall_present;
       char neighbor_id[NFCID_LENGTH * 2 + 1] = "";
 
       if (read_result == ISO15693_EC_OK) {
@@ -2642,13 +2620,12 @@ void loop() {
 
       // Resolution moved to the server: publish the raw tag keyed by MAC and let
       // the roster decide which slot wears it. cube/right is no longer published
-      // from this path. The gating is unchanged -- "-" still requires both
-      // sensors to agree, which is what stops an NFC flake breaking a word.
+      // from this path. applyNfcChatterGate() below is what stops a dropped
+      // read breaking a word in play.
       if (slotIsResolved()) {
         NfcObservationAction action = decideNfcObservation(
             read_result == ISO15693_EC_OK, read_result == EC_NO_CARD,
-            hall_allows_neighbor, hall_says_present, neighbor_id,
-            last_observation_published);
+            neighbor_id, last_observation_published);
         NfcChatterResult chatter_result = applyNfcChatterGate(
             nfc_chatter_state, action, read_result == ISO15693_EC_OK,
             neighbor_id, millis());
@@ -2881,33 +2858,6 @@ void loop() {
       }
     }
   }
-
-  // Track Hall sensor state and log connect/disconnect via MQTT
-#ifdef HALL_SENSOR_ENABLED
-  if (slotIsResolved()) {
-    static unsigned long last_hall_check = 0;
-    if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
-      last_hall_check = current_time;
-      bool hall_present = (digitalRead(HALL_SENSOR_PIN) == LOW);
-
-      if (hall_present != last_hall_present) {
-        last_hall_present = hall_present;
-        const char* status = hall_present ? HALL_SENSOR_STATUS_CONNECTED : HALL_SENSOR_STATUS_DISCONNECTED;
-        mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
-        Serial.printf("Hall sensor %s\n", status);
-
-        // On hall connect, if NFC still remembers a tag from before, force the
-        // next gated NFC read to re-announce it rather than skip it as
-        // unchanged, so the observation republishes via cube/device/{MAC}/nfc
-        // instead of sitting silent while NFC re-acquires. The server
-        // resolves the tag now, not this firmware.
-        if (hall_present && strcmp(last_neighbor_id, "-") != 0) {
-          last_observation_published[0] = '\0';
-        }
-      }
-    }
-  }
-#endif
 
 #ifdef HALL_SENSOR_ANALOG
   if (slotIsResolved()) {

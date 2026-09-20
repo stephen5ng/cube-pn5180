@@ -220,22 +220,16 @@ void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
 }
 
 NfcObservationAction decideNfcObservation(bool read_ok, bool no_card,
-                                          bool hall_allows_neighbor,
-                                          bool hall_says_present,
                                           const char* tag_hex,
                                           const char* last_published) {
   if (read_ok) {
-    if (!hall_allows_neighbor || tag_hex == nullptr) {
+    if (tag_hex == nullptr) {
       return NFC_OBS_NONE;
     }
     return strcmp(tag_hex, last_published) == 0 ? NFC_OBS_NONE : NFC_OBS_TAG;
   }
   if (no_card) {
-    // "-" only when both sensors agree: hall-present guards an NFC flake.
-    if (hall_says_present || strcmp(last_published, "-") == 0) {
-      return NFC_OBS_NONE;
-    }
-    return NFC_OBS_ABSENT;
+    return strcmp(last_published, "-") == 0 ? NFC_OBS_NONE : NFC_OBS_ABSENT;
   }
   return NFC_OBS_NONE;
 }

@@ -100,8 +100,6 @@ enum NfcObservationAction {
 };
 
 NfcObservationAction decideNfcObservation(bool read_ok, bool no_card,
-                                          bool hall_allows_neighbor,
-                                          bool hall_says_present,
                                           const char* tag_hex,
                                           const char* last_published);
 
