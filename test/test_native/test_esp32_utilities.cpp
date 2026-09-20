@@ -794,39 +794,27 @@ void test_runWakeCheckIn_reset_obeys_the_device_flag() {
 
 void test_decideNfcObservation_publishes_a_new_tag() {
     TEST_ASSERT_EQUAL(NFC_OBS_TAG,
-        decideNfcObservation(true, false, true, false, "AABB", "-"));
+        decideNfcObservation(true, false, "AABB", "-"));
 }
 
 void test_decideNfcObservation_suppresses_an_unchanged_tag() {
     TEST_ASSERT_EQUAL(NFC_OBS_NONE,
-        decideNfcObservation(true, false, true, false, "AABB", "AABB"));
-}
-
-void test_decideNfcObservation_respects_the_hall_gate() {
-    TEST_ASSERT_EQUAL(NFC_OBS_NONE,
-        decideNfcObservation(true, false, false, false, "AABB", "-"));
+        decideNfcObservation(true, false, "AABB", "AABB"));
 }
 
 void test_decideNfcObservation_reports_absence_when_both_sensors_agree() {
     TEST_ASSERT_EQUAL(NFC_OBS_ABSENT,
-        decideNfcObservation(false, true, true, false, "", "AABB"));
-}
-
-void test_decideNfcObservation_keeps_the_neighbor_when_hall_still_sees_it() {
-    // A hall-present guard on an NFC flake: this is what stops a dropped read
-    // from breaking a word in play.
-    TEST_ASSERT_EQUAL(NFC_OBS_NONE,
-        decideNfcObservation(false, true, true, true, "", "AABB"));
+        decideNfcObservation(false, true, "", "AABB"));
 }
 
 void test_decideNfcObservation_suppresses_repeated_absence() {
     TEST_ASSERT_EQUAL(NFC_OBS_NONE,
-        decideNfcObservation(false, true, true, false, "", "-"));
+        decideNfcObservation(false, true, "", "-"));
 }
 
 void test_decideNfcObservation_ignores_a_failed_read() {
     TEST_ASSERT_EQUAL(NFC_OBS_NONE,
-        decideNfcObservation(false, false, true, false, "", "AABB"));
+        decideNfcObservation(false, false, "", "AABB"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,9 +1098,7 @@ int main(void) {
     // Neighbor observation protocol tests
     RUN_TEST(test_decideNfcObservation_publishes_a_new_tag);
     RUN_TEST(test_decideNfcObservation_suppresses_an_unchanged_tag);
-    RUN_TEST(test_decideNfcObservation_respects_the_hall_gate);
     RUN_TEST(test_decideNfcObservation_reports_absence_when_both_sensors_agree);
-    RUN_TEST(test_decideNfcObservation_keeps_the_neighbor_when_hall_still_sees_it);
     RUN_TEST(test_decideNfcObservation_suppresses_repeated_absence);
     RUN_TEST(test_decideNfcObservation_ignores_a_failed_read);
     RUN_TEST(test_chatterGate_first_connect_is_instant);
