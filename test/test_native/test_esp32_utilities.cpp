@@ -364,40 +364,6 @@ void test_presence_delta_is_monotonic_with_approach() {
 void setUp(void) {}
 void tearDown(void) {}
 
-void test_findCubeId_known_addresses() {
-    TEST_ASSERT_EQUAL(1, findCubeId("AA:AA:AA:AA:AA:AA"));
-    TEST_ASSERT_EQUAL(2, findCubeId("BB:BB:BB:BB:BB:BB"));
-    TEST_ASSERT_EQUAL(6, findCubeId("FF:FF:FF:FF:FF:FF"));
-}
-
-void test_findCubeId_all_cubes() {
-    // Test all cube IDs using test MACs
-    TEST_ASSERT_EQUAL( 1, findCubeId("AA:AA:AA:AA:AA:AA"));
-    TEST_ASSERT_EQUAL( 2, findCubeId("BB:BB:BB:BB:BB:BB"));
-    TEST_ASSERT_EQUAL( 3, findCubeId("CC:CC:CC:CC:CC:CC"));
-    TEST_ASSERT_EQUAL( 4, findCubeId("DD:DD:DD:DD:DD:DD"));
-    TEST_ASSERT_EQUAL( 5, findCubeId("EE:EE:EE:EE:EE:EE"));
-    TEST_ASSERT_EQUAL( 6, findCubeId("FF:FF:FF:FF:FF:FF"));
-    TEST_ASSERT_EQUAL(11, findCubeId("01:01:01:01:01:01"));
-    TEST_ASSERT_EQUAL(12, findCubeId("02:02:02:02:02:02"));
-    TEST_ASSERT_EQUAL(13, findCubeId("03:03:03:03:03:03"));
-    TEST_ASSERT_EQUAL(14, findCubeId("04:04:04:04:04:04"));
-    TEST_ASSERT_EQUAL(15, findCubeId("05:05:05:05:05:05"));
-    TEST_ASSERT_EQUAL(16, findCubeId("06:06:06:06:06:06"));
-}
-
-void test_findCubeId_unknown_address() {
-    TEST_ASSERT_EQUAL(-1, findCubeId("AA:BB:CC:DD:EE:FF"));
-    TEST_ASSERT_EQUAL(-1, findCubeId(""));
-    TEST_ASSERT_EQUAL(-1, findCubeId("INVALID"));
-}
-
-void test_findCubeId_case_sensitivity() {
-    TEST_ASSERT_EQUAL(-1, findCubeId("cc:db:a7:9f:c2:84"));  // lowercase
-    TEST_ASSERT_EQUAL(-1, findCubeId("CC:DB:A7:9F:C2:84:00"));  // too long
-    TEST_ASSERT_EQUAL(-1, findCubeId("CC:DB:A7:9F:C2"));  // too short
-}
-
 void test_convertNfcIdToHexString_full_id() {
     uint8_t nfc_id[] = {0xdd, 0x11, 0xf8, 0xb8, 0x50, 0x01, 0x04, 0xe0};
     char hex_buffer[17]; // 8 bytes * 2 + null terminator
@@ -448,11 +414,6 @@ void test_num_cube_mac_entries() {
     TEST_ASSERT_EQUAL(13, NUM_CUBE_MAC_ENTRIES);
 }
 
-void test_findCubeId_backup_cubes() {
-    // Backup MAC should return same cube ID as primary
-    TEST_ASSERT_EQUAL(1, findCubeId("A1:A1:A1:A1:A1:A1"));
-}
-
 void test_findCubeIpOctet_primaries() {
     TEST_ASSERT_EQUAL(21, findCubeIpOctet("AA:AA:AA:AA:AA:AA"));
     TEST_ASSERT_EQUAL(26, findCubeIpOctet("FF:FF:FF:FF:FF:FF"));
@@ -461,7 +422,6 @@ void test_findCubeIpOctet_primaries() {
 }
 
 void test_findCubeIpOctet_backup_is_unique() {
-    TEST_ASSERT_EQUAL(1, findCubeId("A1:A1:A1:A1:A1:A1"));
     TEST_ASSERT_EQUAL(41, findCubeIpOctet("A1:A1:A1:A1:A1:A1"));
     TEST_ASSERT_NOT_EQUAL(findCubeIpOctet("AA:AA:AA:AA:AA:AA"),
                           findCubeIpOctet("A1:A1:A1:A1:A1:A1"));
@@ -524,21 +484,21 @@ void test_resolveAssignedSlot() {
     TEST_ASSERT_EQUAL(4, resolveAssignedSlot(ASSIGNMENT_OK, 4, true, 1));
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_UNASSIGNED, -1, false, 1));
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_UNASSIGNED, -1, true, 1));
+
+    // No record: the fallback is the slot NVS remembers, which is what lets an
+    // assigned cube reboot correctly with the broker down.
     TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, 1));
     TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, 1));
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, true, 1));
     TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, true, 1));
-    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, -1));
 
-    // An uncommissioned spare must not adopt a real cube's slot when no
-    // assignment record arrives. Blank NVS means authority_latched is false,
-    // which is exactly the branch that hands back the compiled id, so the
-    // sentinel is the only thing standing between a freshly flashed board and
-    // a slot collision on the live fleet.
-    TEST_ASSERT_TRUE(
-        resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, CUBE_ID_NONE) <= 0);
-    TEST_ASSERT_TRUE(
-        resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, CUBE_ID_NONE) <= 0);
+    // A board that has never been assigned has nothing stored, so it stays
+    // unassigned instead of adopting a slot someone else holds. loadStoredSlot()
+    // yields -1 for blank NVS; 0 is covered too, since neither is a real slot.
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, -1) <= 0);
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, -1) <= 0);
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, 0) <= 0);
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, 0) <= 0);
 }
 
 void test_assignmentRecordIsActionable() {
@@ -1052,32 +1012,23 @@ void test_buildObservationPayload_has_no_provenance_fields() {
 
 void test_boot_identity_pairs_slot_with_octet() {
     char buf[64];
-    formatBootIdentity(buf, sizeof(buf), 12, 12, 32);
+    formatBootIdentity(buf, sizeof(buf), 12, 32);
     TEST_ASSERT_EQUAL_STRING("c12 ip32", buf);
 }
 
-void test_boot_identity_prefers_the_stored_slot_over_the_compiled_one() {
-    // The spare: octet 47 from its MAC, slot 1 from the admin page. Showing the
-    // compiled CUBE_ID_NONE here would print "c?" for a cube that is playing as
-    // cube 1, which is the confusion this line exists to end.
+void test_boot_identity_shows_an_assigned_slot_against_a_foreign_octet() {
+    // The spare: octet 47 from its MAC, slot 1 from the admin page. The two are
+    // unrelated, which is the confusion this line exists to end.
     char buf[64];
-    formatBootIdentity(buf, sizeof(buf), 1, CUBE_ID_NONE, 47);
+    formatBootIdentity(buf, sizeof(buf), 1, 47);
     TEST_ASSERT_EQUAL_STRING("c1 ip47", buf);
-}
-
-void test_boot_identity_falls_back_to_the_compiled_slot() {
-    // No stored assignment yet: a cube sitting in its own slot still names
-    // itself correctly from the compiled table.
-    char buf[64];
-    formatBootIdentity(buf, sizeof(buf), CUBE_ID_NONE, 12, 32);
-    TEST_ASSERT_EQUAL_STRING("c12 ip32", buf);
 }
 
 void test_boot_identity_admits_an_unknown_slot() {
     // An unassigned spare knows its octet and nothing else. "c?" is honest;
     // any number here would be a guess, and applySlot() paints NO SLOT next.
     char buf[64];
-    formatBootIdentity(buf, sizeof(buf), CUBE_ID_NONE, CUBE_ID_NONE, 47);
+    formatBootIdentity(buf, sizeof(buf), 0, 47);
     TEST_ASSERT_EQUAL_STRING("c? ip47", buf);
 }
 
@@ -1085,8 +1036,8 @@ void test_boot_identity_negative_stored_slot_is_not_treated_as_assigned() {
     // resolveAssignedSlot() returns -1 for a deliberately unassigned cube, and
     // that value reaches the stored record. It must not print as "c-1".
     char buf[64];
-    formatBootIdentity(buf, sizeof(buf), -1, 16, 36);
-    TEST_ASSERT_EQUAL_STRING("c16 ip36", buf);
+    formatBootIdentity(buf, sizeof(buf), -1, 36);
+    TEST_ASSERT_EQUAL_STRING("c? ip36", buf);
 }
 
 void test_boot_identity_fits_the_debug_line() {
@@ -1095,11 +1046,11 @@ void test_boot_identity_fits_the_debug_line() {
     char buf[64];
     for (int slot = 1; slot <= 16; slot++) {
         for (int octet = 21; octet <= 48; octet++) {
-            formatBootIdentity(buf, sizeof(buf), slot, slot, octet);
+            formatBootIdentity(buf, sizeof(buf), slot, octet);
             TEST_ASSERT_TRUE_MESSAGE(strlen(buf) <= 10, buf);
         }
     }
-    formatBootIdentity(buf, sizeof(buf), CUBE_ID_NONE, CUBE_ID_NONE, 48);
+    formatBootIdentity(buf, sizeof(buf), 0, 48);
     TEST_ASSERT_TRUE_MESSAGE(strlen(buf) <= 10, buf);
 }
 
@@ -1107,12 +1058,7 @@ int main(void) {
     UNITY_BEGIN();
 
     // MAC-to-cube-ID lookup tests
-    RUN_TEST(test_findCubeId_known_addresses);
-    RUN_TEST(test_findCubeId_all_cubes);
-    RUN_TEST(test_findCubeId_unknown_address);
-    RUN_TEST(test_findCubeId_case_sensitivity);
     RUN_TEST(test_num_cube_mac_entries);
-    RUN_TEST(test_findCubeId_backup_cubes);
     RUN_TEST(test_findCubeIpOctet_primaries);
     RUN_TEST(test_findCubeIpOctet_backup_is_unique);
     RUN_TEST(test_findCubeIpOctet_unknown);
@@ -1215,8 +1161,7 @@ int main(void) {
 
     // Boot screen identity line
     RUN_TEST(test_boot_identity_pairs_slot_with_octet);
-    RUN_TEST(test_boot_identity_prefers_the_stored_slot_over_the_compiled_one);
-    RUN_TEST(test_boot_identity_falls_back_to_the_compiled_slot);
+    RUN_TEST(test_boot_identity_shows_an_assigned_slot_against_a_foreign_octet);
     RUN_TEST(test_boot_identity_admits_an_unknown_slot);
     RUN_TEST(test_boot_identity_negative_stored_slot_is_not_treated_as_assigned);
     RUN_TEST(test_boot_identity_fits_the_debug_line);

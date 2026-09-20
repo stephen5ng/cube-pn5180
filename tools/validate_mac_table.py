@@ -9,10 +9,8 @@ ALLOWED_MIN, ALLOWED_MAX = 21, 199
 EXPECTED_ROWS = 21
 
 LOOSE = re.compile(r'\{\s*"[^"]*"[^}]*\}')
-# cube_id is \w+ rather than \d+: a spare carries the CUBE_ID_NONE sentinel
-# instead of a literal. ip_octet stays numeric, since it is range-checked.
 STRICT = re.compile(
-    r'^\{\s*"((?:[0-9A-F]{2}:){5}[0-9A-F]{2})"\s*,\s*(\w+)\s*,\s*\w+\s*,\s*(\d+)\s*\}$'
+    r'^\{\s*"((?:[0-9A-F]{2}:){5}[0-9A-F]{2})"\s*,\s*\w+\s*,\s*(\d+)\s*\}$'
 )
 
 
@@ -31,15 +29,10 @@ def main():
         if not match:
             errors.append(f"malformed/non-canonical row: {raw.strip()}")
             continue
-        mac, cube_id, octet = match.group(1), match.group(2), int(match.group(3))
+        mac, octet = match.group(1), int(match.group(2))
         if mac in macs:
             errors.append(f"duplicate MAC {mac}")
         macs[mac] = True
-        if cube_id != "CUBE_ID_NONE":
-            errors.append(
-                f"{mac} compiles in slot {cube_id}: the roster assigns slots, "
-                "so every row must be CUBE_ID_NONE"
-            )
         if octet in octets:
             errors.append(f"duplicate ip_octet {octet} ({octets[octet]} and {mac})")
         octets[octet] = mac
@@ -54,7 +47,7 @@ def main():
         return 1
     print(
         f"MAC table OK: {len(rows)} rows, "
-        f"all MACs and octets unique and canonical, no compiled slots."
+        f"all MACs and octets unique and canonical."
     )
     return 0
 

@@ -41,18 +41,17 @@ static constexpr SensorMode sensor_mode = SENSOR_MODE_NFC;
 static bool sensorModeIsMagnets() { return sensor_mode == SENSOR_MODE_MAGNETS; }
 
 // Function to configure pins based on board type (compile-time)
-void configurePins(int cube_id) {
+void configurePins() {
 #ifdef BOARD_V6
   miso_pin = 34;
   pn5180_busy_pin = 35;
-  Serial.printf("Cube %d: 38-pin board - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+  Serial.printf("38-pin board - MISO=%d, PN5180_BUSY=%d\n", miso_pin, pn5180_busy_pin);
 #else
   miso_pin = 39;
   pn5180_busy_pin = 36;
-  Serial.printf("Cube %d: socket board - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+  Serial.printf("socket board - MISO=%d, PN5180_BUSY=%d\n", miso_pin, pn5180_busy_pin);
 #endif
 
-  Serial.printf("Pin configuration complete for cube %d\n", cube_id);
 }
 
 // Called once the sensor mode is known. configurePins() must have run first:
@@ -313,7 +312,6 @@ EspMQTTClient mqtt_client(
   ""
 );
 static String cube_identifier;
-static int compiled_cube_id = -1;
 static int applied_slot = -1;
 static uint32_t applied_generation = 0;
 static bool authority_latched = false;
@@ -532,7 +530,7 @@ private:
   }
 
 public:
-  DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true),
+  DisplayManager() : is_image_mode(false), is_dirty(true),
                                 debug_line(0),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
@@ -550,8 +548,10 @@ public:
                                 border_preview_until(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
-    int cube_id_int = cube_id.toInt();    
-    rotation = (cube_id_int <= 6) ? 2 : 0;
+    // Player 0's panels are mounted upside down relative to player 1's. The
+    // slot is not known yet at construction, so start where a player 0 cube
+    // needs to be; applySlot() calls setSlotRotation() once the roster answers.
+    rotation = 2;
     setupDisplay();
     rise_ms = (uint16_t)(ANIMATION_DURATION_MS * 4.0f / 11.0f);
 
@@ -1173,20 +1173,15 @@ uint8_t getCubeIpOctet() {
       delay(1000);
     }
   }
-  int cube_id = entry->cube_id;
   current_rgb_order = entry->rgb_order;
-  compiled_cube_id = cube_id;
 
-  // Configure pins based on cube ID
-  configurePins(cube_id);
+  configurePins();
   Serial.printf("sensor_mode: %s (compiled)\n",
                 sensorModeIsMagnets() ? "magnets" : "nfc");
   initialiseNeighbourSensor();
 
   Serial.print("mac_address: ");
   Serial.println(mac_address);
-  Serial.print("cube_id: ");
-  Serial.println(compiled_cube_id);
   return entry->ip_octet;
 }
 
@@ -1719,7 +1714,7 @@ void handleAssignmentRecord(const String& message) {
     return;
   }
   int slot = resolveAssignedSlot(
-      result, assignment.slot, authority_latched, compiled_cube_id);
+      result, assignment.slot, authority_latched, -1);
 
   if (!slot_resolved) {
     applied_generation = assignment.generation;
@@ -2103,7 +2098,7 @@ void handleUDP() {
         udp.write((const uint8_t*)marker, strlen(marker));
         udp.endPacket();
       }
-      // Check if message is "timing" - return cube_id:avg_loop_time_us
+      // Check if message is "timing" - return slot:avg_loop_time_us
       else if (slotIsResolved() && strcmp(udpBuffer, "timing") == 0) {
         // Calculate average loop time over recent samples
         unsigned long avg_loop_time_us = 0;
@@ -2209,7 +2204,7 @@ void handleUDP() {
         Serial.printf("Sent chip info to %s:%d: %s\n",
                       udp.remoteIP().toString().c_str(), udp.remotePort(), chipStr);
       }
-      // Check if message is "temp" - return cube_id:temperature_celsius
+      // Check if message is "temp" - return slot:temperature_celsius
       else if (slotIsResolved() && strcmp(udpBuffer, "temp") == 0) {
         // Read internal temperature sensor
         float temperature_c = temperatureRead();
@@ -2326,7 +2321,6 @@ void setup() {
   mqtt_client.enableLastWillMessage(
       mqtt_topic_presence.c_str(), last_will_payload.c_str(), true);
 
-  String cube_id = String(compiled_cube_id);
 
   // A power cycle is someone picking the cube up, and it gets an answer before
   // the check-in below can send it back to sleep. Without this a cold boot that
@@ -2346,7 +2340,7 @@ void setup() {
   // is already up and setupWiFiConnection() above gave it time to settle, so no
   // settle delay is needed.
   if (is_first_boot && esp_reset_reason() == ESP_RST_POWERON) {
-    display_manager = new DisplayManager(cube_id);
+    display_manager = new DisplayManager();
     display_manager->clearDebugDisplay();
     display_manager->displayDebugMessage(GIT_TIMESTAMP);
   }
@@ -2375,23 +2369,21 @@ void setup() {
   // Already built above on a first boot; a timer or button wake arrives here
   // with nothing on the panel.
   if (display_manager == nullptr) {
-    display_manager = new DisplayManager(cube_id);
+    display_manager = new DisplayManager();
     display_manager->clearDebugDisplay();
     display_manager->displayDebugMessage(GIT_TIMESTAMP);
   }
   delay(DISPLAY_STARTUP_DELAY_MS);
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
-  Serial.println(cube_id);
   static String client_name = makeMqttClientId(WiFi.macAddress(), "");
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
-  // Both inputs are already resolved: loadStoredSlot() ran above and
-  // getCubeIpOctet() set compiled_cube_id before WiFi came up. Nothing here
-  // waits on the roster, so an authoritative assignment arriving later can
-  // still move the slot out from under this line.
+  // loadStoredSlot() ran above. Nothing here waits on the roster, so an
+  // authoritative assignment arriving later can still move the slot out from
+  // under this line.
   char ipDisplay[64];
   formatBootIdentity(ipDisplay, sizeof(ipDisplay), stored.slot,
-                     compiled_cube_id, WiFi.localIP()[3]);
+                     WiFi.localIP()[3]);
   display_manager->displayDebugMessage(ipDisplay);
 
   debugPrintln(WiFi.macAddress().c_str());
@@ -2456,9 +2448,8 @@ void loop() {
       millis() - assignment_wait_started >= ASSIGNMENT_WAIT_MS) {
     assignment_wait_started = 0;
     StoredSlot stored = loadStoredSlot();
-    int fallback = stored.slot > 0 ? stored.slot : compiled_cube_id;
     int slot = resolveAssignedSlot(
-        ASSIGNMENT_MISSING, -1, authority_latched, fallback);
+        ASSIGNMENT_MISSING, -1, authority_latched, stored.slot);
     applied_generation = stored.generation;
     saveStoredSlot(slot, stored.generation);
     applySlot(slot);
