@@ -159,24 +159,12 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
 
 
-// cube/N/proximity is the 0..100 closeness of the neighbour, for driving an
-// animation or any other control. Smoothed harder than the detection path,
-// which is deliberately quick so a docking cube latches promptly: at the ~1kHz
-// poll a shift of 7 is roughly 128ms, slow enough that the +/-13 counts of ADC
-// noise measured on slot 1 do not show as jitter.
-//
-// 10Hz is a compromise against MQTT volume, which is this firmware's documented
-// bottleneck -- six cubes streaming during a game is real traffic. Publishing
-// only on a change keeps a still cube silent, so the cost is only paid while
-// something is actually moving.
-// A docked neighbour clamps to 100 and so goes silent on its own, but one
-// parked mid-scale -- a loose magnet, a cube not fully seated -- sits on the
-// residual wander of the reading and would otherwise publish at the cap
-// indefinitely. Measured on slot 1 in that state: 278 messages in 35s across a
-// span of 9. A deadband costs an animation nothing at this scale.
+// The 0..100 closeness of the neighbour, driving the presence bar and the
+// candidate border preview. Smoothed harder than the detection path, which is
+// deliberately quick so a docking cube latches promptly: at the ~1kHz poll a
+// shift of 7 is roughly 128ms, slow enough that the +/-13 counts of ADC noise
+// measured on slot 1 do not show as jitter.
 #define HALL_PROXIMITY_SHIFT           7
-#define HALL_PROXIMITY_INTERVAL_MS     100
-#define HALL_PROXIMITY_MIN_CHANGE      3
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
 // idle HIGH and a magnet pulls them LOW: an undocked cube reads hall_mask
 // 00 in the diag response, so HIGH is the no-magnet level.
@@ -306,18 +294,6 @@ char last_right_published[8] = "INIT";                  // last value published 
 String mqtt_topic_cube;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
-String mqtt_topic_cube_proximity;  // publishes 0-100 closeness to cube/<id>/proximity
-int published_proximity = -1;      // -1 forces the next poll to publish
-// Topics whose retained delete has not been accepted yet. The topic name is the
-// only handle on the stale value, so it is held rather than dropped.
-//
-// Several can be outstanding at once from a single rebinding: binding a slot
-// queues a delete for the topic being left, and resolving as a reader queues
-// another for the one just bound. One pending slot would let the second
-// overwrite the first while the broker is refusing writes, which is the case
-// that strands a record indefinitely.
-static constexpr size_t PROXIMITY_PENDING_CLEARS = 4;
-String mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS];
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1398,80 +1374,11 @@ void handleSleepIntervalCommand(const String& message) {
   }
 }
 
-// Retried from loop() until the broker accepts it. Only one delete is tracked:
-// a second rebinding during a sustained outage drops the earlier tombstone, and
-// that is bounded because a cube that cannot publish is not producing new
-// proximity values either, so the stale record can only predate the outage.
-void flushProximityClears() {
-  if (!mqtt_client.isConnected()) return;
-  for (String& pending : mqtt_topic_proximity_pending_clear) {
-    if (pending.isEmpty()) continue;
-    if (mqtt_client.publish(pending, "", true)) {
-      pending = "";
-    }
-  }
-}
-
-// Deletes the retained record rather than writing 0, which would be a standing
-// "nothing near me" assertion from a cube that is no longer reporting at all.
-// Invalidating the cache matters as much as the delete: without it a cube
-// rebound to another slot whose closeness happens to match would publish
-// nothing, and the new topic would stay empty.
-void requestProximityClear(const String& topic) {
-  if (topic.isEmpty()) return;
-  flushProximityClears();
-
-  for (const String& pending : mqtt_topic_proximity_pending_clear) {
-    if (pending == topic) return;
-  }
-  for (String& pending : mqtt_topic_proximity_pending_clear) {
-    if (pending.isEmpty()) {
-      pending = topic;
-      flushProximityClears();
-      return;
-    }
-  }
-
-  // Every slot taken means as many distinct topics have gone un-deleted as a
-  // cube has bindings to give, so the oldest is the one whose slot is least
-  // likely to be looked at again. Reaching here at all needs the broker to
-  // reject writes across that many rebindings.
-  for (size_t i = 1; i < PROXIMITY_PENDING_CLEARS; i++) {
-    mqtt_topic_proximity_pending_clear[i - 1] = mqtt_topic_proximity_pending_clear[i];
-  }
-  mqtt_topic_proximity_pending_clear[PROXIMITY_PENDING_CLEARS - 1] = topic;
-  flushProximityClears();
-}
-
-void clearRetainedProximity() {
-  requestProximityClear(mqtt_topic_cube_proximity);
-  mqtt_topic_cube_proximity = "";
-  published_proximity = -1;
-}
 
 void subscribeSlotTopics() {
-  // Retained, so the value outlives the slot it described: it is cleared before
-  // the topic is rebound. This also runs on every MQTT reconnect with the slot
-  // unchanged, though, where deleting the cube's own live value and writing it
-  // straight back is pure churn.
-  //
-  // The publish cache is invalidated either way, because the broker runs with
-  // persistence off -- a reconnect may be to a broker that has forgotten every
-  // retained record, and publish-on-change alone would leave the topic empty
-  // until the neighbour physically moved.
-  // Built from cube_identifier, not from mqtt_topic_cube, which still holds the
-  // slot being left at this point.
-  if (mqtt_topic_cube_proximity ==
-      String(MQTT_TOPIC_PREFIX_CUBE) + cube_identifier + "/proximity") {
-    published_proximity = -1;
-  } else {
-    clearRetainedProximity();
-  }
-
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
-  mqtt_topic_cube_proximity = mqtt_topic_cube + "/proximity";
 
   // Only publish version on first boot, not on wake from sleep
   if (is_first_boot) {
@@ -1526,9 +1433,6 @@ void subscribeSlotTopics() {
     // the observation path owns.
     mqtt_client.publish(mqtt_topic_cube_right, "", true);
     last_right_published[0] = '\0';
-    // Nothing writes proximity outside the magnets loop, so a cube that reported
-    // a docked neighbour and came back as a reader would keep asserting it.
-    requestProximityClear(mqtt_topic_cube_proximity);
   }
 }
 
@@ -1561,7 +1465,6 @@ void applySlot(int slot) {
     if (!mqtt_topic_device_nfc.isEmpty()) {
       mqtt_client.publish(mqtt_topic_device_nfc, "", true);
     }
-    clearRetainedProximity();
     publishPresence("online");
     return;
   }
@@ -2313,10 +2216,6 @@ void loop() {
   unsigned long mqtt_end = micros();
   unsigned long mqtt_us = mqtt_end - section_start;
 
-  // Outside the magnets branch: a cube that resolved as a reader is exactly the
-  // one whose stale proximity needs deleting, and it never enters that branch.
-  flushProximityClears();
-
   if (!slot_resolved && assignment_wait_started != 0 &&
       millis() - assignment_wait_started >= ASSIGNMENT_WAIT_MS) {
     assignment_wait_started = 0;
@@ -2527,24 +2426,6 @@ void loop() {
           }
         }
 
-        static unsigned long last_proximity_publish = 0;
-        // The endpoints are exact: 0 and 100 must land even if the last publish was
-        // within the deadband, or an animation never fully arrives or clears.
-        const bool proximity_changed =
-            published_proximity < 0 ||
-            ((proximity == 0 || proximity == 100) ? proximity != published_proximity
-                                                  : abs(proximity - published_proximity) >=
-                                                        HALL_PROXIMITY_MIN_CHANGE);
-        if (proximity_changed &&
-            current_time - last_proximity_publish >= HALL_PROXIMITY_INTERVAL_MS &&
-            mqtt_client.isConnected()) {
-          char proximity_buf[8];
-          snprintf(proximity_buf, sizeof(proximity_buf), "%d", proximity);
-          if (mqtt_client.publish(mqtt_topic_cube_proximity, proximity_buf, true)) {
-            last_proximity_publish = current_time;
-            published_proximity = proximity;
-          }
-        }
         // Only once there is a reference to save. An unprimed tracker has no
         // baseline worth carrying across a reset, and writing the magic anyway
         // would resurrect a baseline that recalibratePresence() just cleared if
