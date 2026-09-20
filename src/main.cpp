@@ -340,7 +340,6 @@ WiFiClient wifi_client;
 static String cube_identifier;
 static int applied_slot = -1;
 static uint32_t applied_generation = 0;
-static bool authority_latched = false;
 static bool slot_resolved = false;
 static unsigned long assignment_wait_started = 0;
 static String mac_nocolons;
@@ -1827,18 +1826,6 @@ void applySlot(int slot) {
   publishPresence("online");
 }
 
-void handleAuthorityMarker(const String& message) {
-  if (message.indexOf("\"authoritative\"") < 0 ||
-      message.indexOf("true") < 0) {
-    return;
-  }
-  if (!authority_latched) {
-    authority_latched = true;
-    latchAuthority();
-    debugSend("authority latched");
-  }
-}
-
 void handleAssignmentRecord(const String& message) {
   CubeAssignment assignment;
   AssignmentParseResult result =
@@ -1850,7 +1837,7 @@ void handleAssignmentRecord(const String& message) {
     return;
   }
   int slot = resolveAssignedSlot(
-      result, assignment.slot, authority_latched, -1);
+      result, assignment.slot, -1);
 
   if (!slot_resolved) {
     applied_generation = assignment.generation;
@@ -1892,7 +1879,6 @@ void onConnectionEstablished() {
   mqtt_topic_liveness_response =
       String("cube/device/") + mac_nocolons + "/liveness-response";
 
-  mqtt_client.subscribe("cube/roster/authoritative", handleAuthorityMarker);
   mqtt_client.subscribe(mqtt_topic_assign, handleAssignmentRecord);
   mqtt_client.subscribe(
       String("cube/device/") + mac_nocolons + "/liveness-request",
@@ -2422,7 +2408,6 @@ void setup() {
   mqtt_topic_presence =
       String("cube/device/") + mac_nocolons + "/presence";
   StoredSlot stored = loadStoredSlot();
-  authority_latched = stored.authority_latched;
   static String last_will_payload =
       String("{\"protocol\":1,\"state\":\"offline\",\"boot_id\":\"") +
       boot_id + "\",\"applied_slot\":" + String(stored.slot) +
@@ -2558,7 +2543,7 @@ void loop() {
     assignment_wait_started = 0;
     StoredSlot stored = loadStoredSlot();
     int slot = resolveAssignedSlot(
-        ASSIGNMENT_MISSING, -1, authority_latched, stored.slot);
+        ASSIGNMENT_MISSING, -1, stored.slot);
     applied_generation = stored.generation;
     saveStoredSlot(slot, stored.generation);
     applySlot(slot);

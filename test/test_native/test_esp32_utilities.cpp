@@ -480,25 +480,24 @@ void test_parseAssignmentRecord_malformed() {
 }
 
 void test_resolveAssignedSlot() {
-    TEST_ASSERT_EQUAL(4, resolveAssignedSlot(ASSIGNMENT_OK, 4, false, 1));
-    TEST_ASSERT_EQUAL(4, resolveAssignedSlot(ASSIGNMENT_OK, 4, true, 1));
-    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_UNASSIGNED, -1, false, 1));
-    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_UNASSIGNED, -1, true, 1));
+    TEST_ASSERT_EQUAL(4, resolveAssignedSlot(ASSIGNMENT_OK, 4, 1));
 
-    // No record: the fallback is the slot NVS remembers, which is what lets an
-    // assigned cube reboot correctly with the broker down.
-    TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, 1));
-    TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, 1));
-    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, true, 1));
-    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, true, 1));
+    // A record saying "no slot" is an answer, not a gap: it outranks the
+    // fallback, so a deliberately unassigned cube stays unassigned.
+    TEST_ASSERT_EQUAL(-1, resolveAssignedSlot(ASSIGNMENT_UNASSIGNED, -1, 1));
+
+    // No usable record: the fallback is the slot NVS remembers, which is what
+    // lets an assigned cube reboot into its slot with the broker down.
+    TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MISSING, -1, 1));
+    TEST_ASSERT_EQUAL(1, resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, 1));
 
     // A board that has never been assigned has nothing stored, so it stays
     // unassigned instead of adopting a slot someone else holds. loadStoredSlot()
     // yields -1 for blank NVS; 0 is covered too, since neither is a real slot.
-    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, -1) <= 0);
-    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, -1) <= 0);
-    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MISSING, -1, false, 0) <= 0);
-    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, false, 0) <= 0);
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MISSING, -1, -1) <= 0);
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, -1) <= 0);
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MISSING, -1, 0) <= 0);
+    TEST_ASSERT_TRUE(resolveAssignedSlot(ASSIGNMENT_MALFORMED, -1, 0) <= 0);
 }
 
 void test_assignmentRecordIsActionable() {

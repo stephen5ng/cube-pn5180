@@ -59,7 +59,7 @@ struct CubeAssignment {
 AssignmentParseResult parseAssignmentRecord(const char* json, CubeAssignment* out);
 bool assignmentRecordIsActionable(AssignmentParseResult result);
 int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
-                        bool authority_latched, int fallback_slot);
+                        int fallback_slot);
 
 // The boot screen's identity line: "c12 ip32".
 //

@@ -5,7 +5,6 @@
 struct StoredSlot {
   int slot;
   uint32_t generation;
-  bool authority_latched;
 };
 
 // Presence baseline, kept in NVS purely as a cold-boot seed: RTC memory covers
@@ -17,4 +16,3 @@ bool savePresenceBaseline(int baseline);
 
 StoredSlot loadStoredSlot();
 void saveStoredSlot(int slot, uint32_t generation);
-void latchAuthority();

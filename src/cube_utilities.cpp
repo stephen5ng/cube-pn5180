@@ -142,14 +142,14 @@ bool assignmentRecordIsActionable(AssignmentParseResult result) {
 }
 
 int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
-                        bool authority_latched, int fallback_slot) {
+                        int fallback_slot) {
   switch (result) {
     case ASSIGNMENT_OK:
       return record_slot;
     case ASSIGNMENT_UNASSIGNED:
       return -1;
     default:
-      return authority_latched ? -1 : fallback_slot;
+      return fallback_slot;
   }
 }
 
