@@ -1,14 +1,3 @@
-// #include "cube_messages.h"
-typedef struct MessageLetter {
-  char letter;
-  char secret;
-} MessageLetter;
-
-#define NFCID_LENGTH 8
-
-typedef struct MessageNfcId {
-  char id[NFCID_LENGTH*2 + 1];
-} MessageNfcId;
 #include "cube_utilities.h"
 #include "hall_presence.h"
 #include "sensor_mode.h"
@@ -19,14 +8,11 @@ typedef struct MessageNfcId {
 #include <EspMQTTClient.h>
 #include <PN5180ISO15693.h>
 #include <SPI.h>
-#include "mbedtls/base64.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <Wire.h>
 #include <secrets.h>
 #include "font.h"
 #include "esp_system.h"
-#include "esp_task_wdt.h"
 #include "driver/rtc_io.h"
 
 // ============= Configuration =============
@@ -44,8 +30,8 @@ void publishPresence(const char* state);
 
 // Which neighbour sensor this board carries, fixed when it is flashed. The
 // hall board supplies the ID sensors and the presence tap together, so the
-// same flag that enables presence selects the magnet neighbour path.
-#if defined(HALL_SENSOR_ENABLED) || defined(HALL_SENSOR_ANALOG)
+// flag that enables presence selects the magnet neighbour path.
+#ifdef HALL_SENSOR_ANALOG
 static constexpr SensorMode sensor_mode = SENSOR_MODE_MAGNETS;
 #else
 static constexpr SensorMode sensor_mode = SENSOR_MODE_NFC;
@@ -54,18 +40,17 @@ static constexpr SensorMode sensor_mode = SENSOR_MODE_NFC;
 static bool sensorModeIsMagnets() { return sensor_mode == SENSOR_MODE_MAGNETS; }
 
 // Function to configure pins based on board type (compile-time)
-void configurePins(int cube_id) {
+void configurePins() {
 #ifdef BOARD_V6
   miso_pin = 34;
   pn5180_busy_pin = 35;
-  Serial.printf("Cube %d: 38-pin board - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+  Serial.printf("38-pin board - MISO=%d, PN5180_BUSY=%d\n", miso_pin, pn5180_busy_pin);
 #else
   miso_pin = 39;
   pn5180_busy_pin = 36;
-  Serial.printf("Cube %d: socket board - MISO=%d, PN5180_BUSY=%d\n", cube_id, miso_pin, pn5180_busy_pin);
+  Serial.printf("socket board - MISO=%d, PN5180_BUSY=%d\n", miso_pin, pn5180_busy_pin);
 #endif
 
-  Serial.printf("Pin configuration complete for cube %d\n", cube_id);
 }
 
 // Called once the sensor mode is known. configurePins() must have run first:
@@ -99,20 +84,14 @@ void initialiseNeighbourSensor() {
 #define PANEL_RES_Y PANEL_RES  // Number of pixels tall of each INDIVIDUAL panel module.
 #define PANEL_CHAIN 1   // Total number of panels chained one to another
 
-#define PIXEL_COUNT (PANEL_RES_X * PANEL_RES_Y)
-#define IMAGE_SIZE (PIXEL_COUNT * sizeof(uint16_t))
 
-#define BAND_COUNT 4
-#define BAND_WIDTH (PANEL_RES_X/BAND_COUNT)
 #define BORDER_LINE_COUNT 4
 
 // Pin Definitions
 #define PN5180_NSS 32
 #define PN5180_RST 17
 
-
 // Display Settings
-#define BIG_ROW 0
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
@@ -120,17 +99,14 @@ void initialiseNeighbourSensor() {
 #define PRINT_DEBUG true
 
 // Timing Constants
-#define NFC_DEBOUNCE_TIME_MS 200
-#define NFC_MIN_PUBLISH_INTERVAL_MS 100
 #define ANIMATION_DURATION_MS 1000
 #define ANIMATION_SCALE 100
 #define BORDER_ANIMATION_DURATION_MS 1000
+// MQTT can dispatch a small batch of topology updates before the display draws
+// its next frame. Let the final update in that frame replace the target while
+// preserving the original border as the animation's start state.
+#define BORDER_TARGET_REPLACE_WINDOW_MS 16
 #define DISPLAY_STARTUP_DELAY_MS 600
-#define HALL_SENSOR_CHECK_INTERVAL_MS 50  /* Hall sensor polling interval (matches NFC read rate) */
-
-// Hall Sensor Status Strings
-#define HALL_SENSOR_STATUS_CONNECTED "connected"
-#define HALL_SENSOR_STATUS_DISCONNECTED "disconnected"
 
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
@@ -148,20 +124,6 @@ void initialiseNeighbourSensor() {
 #define POWER_RAIL_SETTLE_MS  50  /* Let the HUB75 5V rail come up before I2S DMA drives the panel */
 #ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
-#endif
-
-// Hall sensor modes (mutually exclusive)
-#if defined(HALL_SENSOR_ENABLED)
-#define HALL_SENSOR_PIN GPIO_NUM_36
-#define HAS_HALL_SENSOR true
-#define HAS_HALL_ANALOG false
-#elif defined(HALL_SENSOR_ANALOG)
-#define HALL_SENSOR_PIN GPIO_NUM_36
-#define HAS_HALL_SENSOR false
-#define HAS_HALL_ANALOG true
-#else
-#define HAS_HALL_SENSOR false
-#define HAS_HALL_ANALOG false
 #endif
 
 // 2-of-6 Hall-sensor neighbor ID decode, an alternative to the PN5180 NFC
@@ -196,19 +158,6 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
 
-// Presence telemetry. The ID sensors are digital, so cube/N/hall_debug shows
-// whether a magnet tripped them but nothing shows how much margin the analog
-// presence reading has over HALL_PRESENCE_ON_DELTA. Rate-limited and
-// change-gated: retained, so the last value is always readable, and quiet while
-// a docked cube sits still.
-//
-// The change threshold has to clear the ADC noise or "sits still" never
-// happens. delta idles across a band of roughly 36 counts -- measured on slot 1
-// both undocked (-13..+35) and docked (135..171) -- so a smaller gate is always
-// open and the topic streams at the rate cap forever. An assert or release is
-// published regardless of size, so the events still land immediately.
-#define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
-#define HALL_PRESENCE_PUBLISH_MIN_CHANGE  40
 
 // The 0..100 closeness of the neighbour, driving the presence bar and the
 // candidate border preview. Smoothed harder than the detection path, which is
@@ -217,14 +166,13 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // measured on slot 1 do not show as jitter.
 #define HALL_PROXIMITY_SHIFT           7
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
-// idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
-// hall_debug: idle mask reads 111111 with HIGH as the reference level).
+// idle HIGH and a magnet pulls them LOW: an undocked cube reads hall_mask
+// 00 in the diag response, so HIGH is the no-magnet level.
 #define HALL_ID_ACTIVE_LEVEL LOW
 #define HALL_POLL_INTERVAL_MS 1     // ~1 kHz polling; each digitalRead is ~us
 #define HALL_DEBOUNCE_READS 8       // consecutive identical reads to confirm (~8 ms)
 
 // Sleep state management
-RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 // How long a sleeping cube stays down between keep-alive check-ins. Survives
 // deep sleep in RTC memory, and cube/{id}/sleep_interval overrides it.
@@ -249,7 +197,6 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 #define MQTT_SOCKET_TIMEOUT_S 2
 #define MQTT_CONNECTION_TIMEOUT_MS 1000
 
-// MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
 // ============= Global Variables =============
 
@@ -290,17 +237,8 @@ HUB75_I2S_CFG display_config(
 PN5180ISO15693* nfc_reader = nullptr;  // Will be initialized after cube ID is determined
 
 // Message Objects
-MessageLetter letter_message;
-MessageNfcId nfc_message;
 
 // NFC State
-uint8_t last_nfc_id[NFCID_LENGTH];
-uint8_t DEBUG_NFC_ID[NFCID_LENGTH] = {
-  0xdd, 0x11, 0xf8, 0xb8,
-  0x50, 0x01, 0x04, 0xe0};
-uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
-  0xbc, 0x10, 0xf8, 0xb8,
-  0x50, 0x01, 0x04, 0xe0};
 
 struct NfcWorkerResult {
   ISO15693ErrorCode read_result;
@@ -325,9 +263,7 @@ EspMQTTClient mqtt_client(
   "",
   ""
 );
-WiFiClient wifi_client;
 static String cube_identifier;
-static int compiled_cube_id = -1;
 static int applied_slot = -1;
 static uint32_t applied_generation = 0;
 static bool authority_latched = false;
@@ -346,7 +282,6 @@ static String mqtt_topic_presence;
 static String mqtt_topic_liveness_response;
 static const unsigned long ASSIGNMENT_WAIT_MS = 3000;
 static RgbOrder current_rgb_order = RGB_ORDER_BGR;
-const char* nfc_topic_out;
 static bool wifi_connection_attempt_active = false;
 static unsigned long wifi_connection_attempt_started = 0;
 static unsigned long next_wifi_connection_attempt = 0;
@@ -354,11 +289,9 @@ static unsigned long next_wifi_connection_attempt = 0;
 // Animation
 char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value read
 char last_right_published[8] = "INIT";                  // last value published to /right
-unsigned long last_nfc_publish_time = 0;
 
 // Pre-allocated MQTT topics
 String mqtt_topic_cube;
-String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
 
@@ -404,61 +337,18 @@ void debugPrintln(const __FlashStringHelper* message) {
 }
 
 // MQTT letter latency tracking (forward-declared for use in DisplayManager)
-unsigned long last_letter_recv_time = 0;
 unsigned long letter_interval_accum = 0;
 int letter_interval_count = 0;
 unsigned long max_letter_interval = 0;
 unsigned long nfc_read_max_us = 0;
 int nfc_reset_count = 0;
 
-// NFC read cost split by protocol outcome.
-//
-// `nfc=` in the diag string is the section average: total read time divided by
-// MAIN LOOP ITERATIONS, and most iterations dequeue no NFC result at all, so it
-// is diluted by an unknown factor and is NOT a per-read figure. Reading it as
-// one suggested reads cost ~0.12 ms; the duty cycle says otherwise. Measured
-// from `nfc` x `samples` against `loop` x `samples`, two cubes spent 38% and
-// 48% of wall-clock time inside NFC reads -- which at ISO15693 timings can only
-// mean tens of milliseconds per read, close to nfc_max rather than far below it.
-//
-// These are per-read: a count and a total for each outcome, so the average is
-// computable without guessing the divisor. Split by outcome because a
-// successful inventory and a no-card timeout are different fixed costs, and
-// nfc_max showed exactly two plateaus (~31 ms and ~47 ms) across the rig. The
-// no-card case is the one that matters most: most cubes have no neighbour most
-// of the time, so if it is the expensive branch it dominates the whole system.
-//
-// Totals are uint64_t, not unsigned long. `long` is 32 bits on the ESP32, so
-// a microsecond total wraps after 4295 s of accumulated NFC work -- at the duty
-// cycles above that is only ~2.5-3.2 hours of wall clock, and these reset only
-// when a diag is requested. An overnight cube's first capture would then report
-// a wrapped total that looks entirely plausible. Maxima stay 32-bit (a single
-// read cannot approach 4295 s) and so do the counts (~12/s would take 11 years).
-//
-// Reset per diag read, like the accumulators above.
-uint64_t nfc_ok_total_us = 0;
-unsigned long nfc_ok_max_us = 0;
-unsigned int nfc_ok_count = 0;
-uint64_t nfc_nocard_total_us = 0;
-unsigned long nfc_nocard_max_us = 0;
-unsigned int nfc_nocard_count = 0;
-uint64_t nfc_err_total_us = 0;
-unsigned long nfc_err_max_us = 0;
-unsigned int nfc_err_count = 0;
 
 // ============= DisplayManager Class =============
 class DisplayManager {
 private:
   MatrixPanel_I2S_DMA* led_display;
-  bool is_image_mode;
-  uint16_t* image1;
-  uint16_t* image2;
-  uint16_t* image;
-  uint16_t* previous_image;
-  String display_string;
-  bool is_border_word;
   uint8_t debug_line;
-  uint16_t border_color;
   unsigned long animation_start_time;
   long highlight_end_time;
   bool is_lock;
@@ -466,7 +356,6 @@ private:
   uint16_t current_letter_color;
   uint16_t vline_color_right;
   uint16_t vline_color_left;
-  uint8_t vline_height;
   uint16_t hline_color_top;
   uint8_t presence_bar_height;
   unsigned long last_presence_bar_ms;
@@ -494,7 +383,6 @@ private:
   const GFXfont* current_font;
   uint8_t text_size;
   uint8_t rotation;
-  uint8_t font_size;
   bool is_dirty;
   char previous_letter;
   char current_letter;
@@ -543,34 +431,29 @@ private:
   }
 
 public:
-  DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true),
-                                is_border_word(false), debug_line(0),
+  DisplayManager() : is_dirty(true),
+                                debug_line(0),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), font_size(1), is_lock(false),
+                                text_size(1), is_lock(false),
                                 vline_color_left(0), vline_color_right(0),
-                                vline_height(PANEL_RES),
                                 hline_color_top(0), presence_bar_height(0), last_presence_bar_ms(0),
                                 hline_color_bottom(0),
                                 border_from_top(0), border_from_bottom(0),
                                 border_from_left(0), border_from_right(0),
                                 pending_border_top(0), pending_border_bottom(0),
                                 pending_border_left(0), pending_border_right(0),
-                                border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
+                                border_animation_start_time(0), border_animation_active(false),
+                                border_target_pending(false),
                                 border_preview_side(0), border_preview_start_time(0),
                                 border_preview_until(0),
-                                image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
-    int cube_id_int = cube_id.toInt();    
-    rotation = (cube_id_int <= 6) ? 2 : 0;
+    // Player 0's panels are mounted upside down relative to player 1's. The
+    // slot is not known yet at construction, so start where a player 0 cube
+    // needs to be; applySlot() calls setSlotRotation() once the roster answers.
+    rotation = 2;
     setupDisplay();
     rise_ms = (uint16_t)(ANIMATION_DURATION_MS * 4.0f / 11.0f);
-
-    // Allocate image buffers. Failure is fatal.
-    image = image1 = new uint16_t[PIXEL_COUNT];
-    previous_image = image2 = new uint16_t[PIXEL_COUNT];
-    memset(image1, 0, PIXEL_COUNT * sizeof(uint16_t));
-    memset(image2, 0, PIXEL_COUNT * sizeof(uint16_t));
   }
 
   void setupDisplay() {
@@ -643,11 +526,10 @@ public:
       is_dirty = true;
     }
 
-    if (previous_letter != current_letter || previous_image != image) {
+    if (previous_letter != current_letter) {
       static uint8_t previous_percent_complete = -1;
       if (current_time - animation_start_time >= ANIMATION_DURATION_MS) {
         // complete animation
-        previous_image = image;
         previous_letter = current_letter;
         percent_complete = ANIMATION_SCALE;
         is_dirty = true;
@@ -664,9 +546,6 @@ public:
     if (border_animation_active) {
       if (current_time - border_animation_start_time >= BORDER_ANIMATION_DURATION_MS) {
         if (border_target_pending) {
-          // Finish the frame already on screen, then start the newer target.
-          // This deliberately trades at most one display-only animation period
-          // for a continuous border; gameplay state is never delayed.
           border_from_top = hline_color_top;
           border_from_bottom = hline_color_bottom;
           border_from_left = vline_color_left;
@@ -711,30 +590,34 @@ public:
     drawBorders(false, false, vline_color_right);
   }
 
-  void beginBorderTransition() {
+  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
+                                   uint16_t left, uint16_t right) {
+    const unsigned long now = millis();
+    if (border_animation_active) {
+      if (now - border_animation_start_time <= BORDER_TARGET_REPLACE_WINDOW_MS) {
+        hline_color_top = top;
+        hline_color_bottom = bottom;
+        vline_color_left = left;
+        vline_color_right = right;
+      } else {
+        pending_border_top = top;
+        pending_border_bottom = bottom;
+        pending_border_left = left;
+        pending_border_right = right;
+        border_target_pending = true;
+      }
+      return;
+    }
     border_from_top = hline_color_top;
     border_from_bottom = hline_color_bottom;
     border_from_left = vline_color_left;
     border_from_right = vline_color_right;
-    border_animation_start_time = millis();
-    border_animation_active = true;
-  }
-
-  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
-                                   uint16_t left, uint16_t right) {
-    if (border_animation_active) {
-      pending_border_top = top;
-      pending_border_bottom = bottom;
-      pending_border_left = left;
-      pending_border_right = right;
-      border_target_pending = true;
-      return;
-    }
-    beginBorderTransition();
     hline_color_top = top;
     hline_color_bottom = bottom;
     vline_color_left = left;
     vline_color_right = right;
+    border_animation_start_time = now;
+    border_animation_active = true;
   }
 
   static bool isMiddleBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
@@ -866,37 +749,9 @@ public:
       if (isHorizontal) {
         led_display->drawFastHLine(0, pos, PANEL_RES_X, color);
       } else {
-        led_display->drawFastVLine(pos, 
-          PANEL_RES_Y - vline_height, vline_height, color);
+        led_display->drawFastVLine(pos, 0, PANEL_RES_Y, color);
       }
     }
-  }
-
-  void handleBorderFrameCommand(const String& message) {
-    debugPrintln("setting border frame due to /border_frame");
-    handleBorderTopBannerCommand(message);
-    handleBorderBottomBannerCommand(message);
-    handleBorderVLineLeftCommand(message);
-    handleBorderVLineRightCommand(message);
-    is_dirty = true;
-  }
-
-  void handleBorderVLineRightCommand(const String& message) {
-    debugPrintln("setting border vline right color due to /border_vline_right");
-    vline_color_right = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;
-  }
-
-  void handleBorderVLineLeftCommand(const String& message) {
-    debugPrintln("setting border vline left color due to /border_vline_left");
-    vline_color_left = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;
-  }
-
-  void handleBorderLineHeightCommand(const String& message) {
-    debugPrintln("setting border vline height due to /border_vline_height");
-    vline_height = message.length() == 0 ? PANEL_RES_Y : message.toInt();
-    is_dirty = true;
   }
 
   void handleFlashCommand(const String& message) {
@@ -905,22 +760,6 @@ public:
     }
     debugPrintln("flashing due to /flash");
     highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
-    is_dirty = true;
-  }
-
-  void handleFontSizeCommand(const String& message) {
-    debugPrintln("setting font size due to /font_size");
-    // if (!is_image_mode) {
-    //   debugPrintln("ignoring font size change in image mode");
-    //   return;
-    // }
-
-    if (message.length() <= 0) {
-      return;
-    }
-
-    int size = max(0L, message.toInt());
-    font_size = size;
     is_dirty = true;
   }
 
@@ -949,14 +788,6 @@ public:
     is_dirty = true;
   }
 
-  void drawImage(int8_t percent_complete, uint16_t* image) {
-    // debugPrintln("drawImage");
-    // Serial.printf("image_position: %d\n", image_position);
-    // Serial.printf("image: %p\n", image);
-    int16_t row = (PANEL_RES_Y * percent_complete) / 100;
-    led_display->drawRGBBitmap(0, row, image, 64, 64);
-  }
-
   void updateDisplay(unsigned long current_time) {
     if (!is_dirty) {
       return;
@@ -966,30 +797,14 @@ public:
     led_display->setTextSize(text_size);
     led_display->setRotation(rotation);
 
-    if (is_image_mode) {
-      // Serial.printf("image: %p, previous_image: %p\n", image, previous_image);
-      if (image != previous_image) {
-        drawImage(-percent_complete, previous_image);
-      }
-      drawImage(100 - percent_complete, image);
-    } else {
-      if (current_letter != previous_letter) {
-        drawLetter(100 + percent_complete, previous_letter, RED);
-      }
-      drawLetter(percent_complete, current_letter, current_letter_color);
+    if (current_letter != previous_letter) {
+      drawLetter(100 + percent_complete, previous_letter, RED);
+    }
+    drawLetter(percent_complete, current_letter, current_letter_color);
 
-      // Draw orientation indicator only when letter animation is complete
-      if (percent_complete >= 100) {
-        drawOrientationIndicator();
-      }
-    } 
-
-    if (display_string.length() > 0) {
-      Serial.println("displaying string");
-      Serial.println(display_string);
-      led_display->setCursor(5, 28);
-      led_display->setTextColor(RED, BLACK);
-      led_display->print(display_string);
+    // Draw orientation indicator only when letter animation is complete
+    if (percent_complete >= 100) {
+      drawOrientationIndicator();
     }
 
     drawBorderFrame();
@@ -1043,46 +858,11 @@ public:
   }
 #endif
 
-
   void handleBrightnessCommand(const String& message) {
     debugPrintln("setting brightness due to /brightness");
     uint16_t brightness = message.toInt();
     saved_brightness = brightness;  // Save to RTC memory for persistence across sleep
     led_display->setBrightness(brightness);
-  }
-
-  void handleImageBinaryCommand(const String& message) {
-    Serial.println("handling binary image");
-    Serial.printf("message length: %d\n", message.length());
-    if (message.length() > IMAGE_SIZE) {
-      Serial.println("Image too large");
-      return;
-    }
-    
-    static unsigned long last_message_time = 0;
-    is_image_mode = true;
-
-    previous_image = image;
-    image = (image == image1) ? image2 : image1;
-
-    animation_start_time = millis();
-
-    memcpy(image, message.c_str(), message.length());
-    is_dirty = true;
-  }
-
-  void handleBorderTopBannerCommand(const String& message) {
-    debugPrintln("setting border top banner due to /border_top_banner");
-    Serial.println(message);
-    hline_color_top = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;  
-  }
-
-  void handleBorderBottomBannerCommand(const String& message) {
-    debugPrintln("setting border bottom banner due to /border_bottom_banner");
-    Serial.println(message);
-    hline_color_bottom = strtol(message.c_str(), NULL, 16);    
-    is_dirty = true;  
   }
 
   void handleConsolidatedBorderCommand(const String& message) {
@@ -1149,7 +929,6 @@ public:
         max_letter_interval = time_since_last;
       }
     }
-    last_letter_recv_time = current_time;
 
     last_message_time = current_time;
 
@@ -1159,7 +938,6 @@ public:
       previous_letter = current_letter;
     }
       
-    is_image_mode = false;
     if (message.length() > 0) {
       current_letter = message.charAt(0);
       animation_start_time = millis();
@@ -1169,18 +947,10 @@ public:
     }
   }
 
-  void handleStringCommand(const String& message) {
-    debugPrintln("setting string due to /string");
-    display_string = message;
-    current_font = nullptr;  // Use default font for string mode
-    is_dirty = true;
-  }
 };
-
 
 // ============= Global Variables =============
 DisplayManager* display_manager;
-
 
 // Loop timing variables
 unsigned long loop_start_time = 0;
@@ -1192,28 +962,26 @@ int timing_sample_index = 0;
 bool timing_samples_filled = false;
 unsigned long timing_accumulator = 0;
 
-// Per-section timing diagnostics
+// Per-section timing diagnostics.
+//
+// These are per-ITERATION averages: the section total divided by main loop
+// iterations. nfc_us in particular is not a per-read figure -- most iterations
+// dequeue no NFC result at all, so it is diluted by an unknown factor.
+// Measured against the duty cycle, two cubes spent 38% and 48% of wall-clock
+// time inside NFC reads, which is tens of milliseconds per read, while the
+// nfc= field reads ~0.12 ms. Anything thresholding on it is comparing against
+// a number that does not mean microseconds per read.
 struct SectionTiming {
-  // 64-bit for the same reason as the per-outcome totals below: `long` is
-  // 32 bits here, so a microsecond accumulator wraps after 4295 s of
-  // accumulated work in that section, and these reset only on a diag request.
-  // nfc_us is the one that matters -- it is ~40% duty, so it wraps first, and
-  // it is the field the duty-cycle measurement in this PR was derived from. A
-  // wrap would have made that measurement quietly wrong rather than obviously
-  // so. (It did not: the samples used 2.5-3.2% of the 32-bit range.)
+  // 64-bit because `long` is 32 bits here, so a microsecond accumulator wraps
+  // after 4295 s of accumulated work in that section, and these reset only on
+  // a diag request. nfc_us wraps first: it runs at roughly 40% duty.
   uint64_t mqtt_us;
   uint64_t display_us;
   uint64_t udp_us;
   uint64_t nfc_us;
-  uint64_t total_us;
 };
-SectionTiming section_timing_accum = {0, 0, 0, 0, 0};
+SectionTiming section_timing_accum = {0, 0, 0, 0};
 int section_timing_count = 0;
-
-// Per-section timing diagnostics (forward declarations removed, definitions below)
-
-// ============= Utility Functions =============
-// Utility functions moved to cube_utilities.h/.cpp
 
 // ============= Hardware Setup Functions =============
 void initializeNfcReader() {
@@ -1254,7 +1022,6 @@ void setupNfcReader() {
   nfc_reader->setupRF();
 }
 
-
 // ============= Network Functions =============
 uint8_t getCubeIpOctet() {
   String mac_address = WiFi.macAddress();
@@ -1266,20 +1033,15 @@ uint8_t getCubeIpOctet() {
       delay(1000);
     }
   }
-  int cube_id = entry->cube_id;
   current_rgb_order = entry->rgb_order;
-  compiled_cube_id = cube_id;
 
-  // Configure pins based on cube ID
-  configurePins(cube_id);
+  configurePins();
   Serial.printf("sensor_mode: %s (compiled)\n",
                 sensorModeIsMagnets() ? "magnets" : "nfc");
   initialiseNeighbourSensor();
 
   Serial.print("mac_address: ");
   Serial.println(mac_address);
-  Serial.print("cube_id: ");
-  Serial.println(compiled_cube_id);
   return entry->ip_octet;
 }
 
@@ -1336,12 +1098,6 @@ void setupWiFiConnection() {
 
   startWiFiConnectionAttempt();
   Serial.println("WiFi connection started; setup will continue offline");
-}
-
-void handleNfcCommand(const String& message) {
-  debugPrintln("nfc due to /nfc");
-  strncpy(last_neighbor_id, message.c_str(), sizeof(last_neighbor_id) - 1);
-  last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
 }
 
 void handlePingCommand(const String& message) {
@@ -1440,7 +1196,6 @@ void enterSleepMode() {
   // Enable timer wake-up using configurable interval
   esp_sleep_enable_timer_wakeup((uint64_t)sleep_interval_s * uS_TO_S_FACTOR);
 
-  sleep_start_time = millis();
 
   // Send debug via UDP
   char dbg[64];
@@ -1622,7 +1377,6 @@ void handleSleepIntervalCommand(const String& message) {
 
 void subscribeSlotTopics() {
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
-  mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
 
@@ -1647,21 +1401,10 @@ void subscribeSlotTopics() {
 
   auto resetActivityTimer = []() { last_activity_time = millis(); };
 
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_preview", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderPreviewCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderFrameCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_height", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderLineHeightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderVLineLeftCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderVLineRightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleImageBinaryCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLockCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
@@ -1670,7 +1413,6 @@ void subscribeSlotTopics() {
 #endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/rise_ms", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleRiseMsCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
   if (sensorModeIsMagnets()) {
     mqtt_client.publish(mqtt_topic_cube_right, "-", true);
@@ -1757,7 +1499,7 @@ void handleAssignmentRecord(const String& message) {
     return;
   }
   int slot = resolveAssignedSlot(
-      result, assignment.slot, authority_latched, compiled_cube_id);
+      result, assignment.slot, authority_latched, -1);
 
   if (!slot_resolved) {
     applied_generation = assignment.generation;
@@ -1834,21 +1576,6 @@ void onConnectionEstablished() {
 }
 
 // ============= System Functions =============
-uint8_t getWakeupReason() {
-  esp_sleep_wakeup_cause_t wakeup_reason;
-  wakeup_reason = esp_sleep_get_wakeup_cause();
-
-  switch(wakeup_reason) {
-    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
-    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
-  }
-  return wakeup_reason;
-}
-
 // ============= Hall Neighbor Functions =============
 // Maps a 6-bit ID mask (bits P6 P5 P4 P3 P2 P1) to a neighbor cube id;
 // 0 = invalid pattern. Player 0 is cubes 1-6, player 1 is cubes 11-16, and
@@ -1856,7 +1583,7 @@ uint8_t getWakeupReason() {
 static uint8_t hallCubeIdForMask(uint8_t id_mask) {
   switch (id_mask & 0x3F) {
     // Player 1, measured with the cubes ordered A through F: each mask is what
-    // the cube immediately to its left reports through cube/{id}/hall_debug.
+    // the cube immediately to its left reports as hall_mask in its diag response.
     case 0b110000: return 11;  // P5+P6
     case 0b100010: return 12;  // P2+P6
     case 0b001100: return 13;  // P3+P4
@@ -1920,6 +1647,42 @@ static int restoredPresenceBaseline() {
   return plausiblePresenceBaseline(stored) ? stored : 0;
 }
 
+// The write side of restoredPresenceBaseline(), called once per poll.
+//
+// RTC every time, because it costs a word and covers every reset. NVS almost
+// never, because it is only the cold-boot seed and each write erases a sector.
+//
+// stable_mask is the debounced ID mask; 0xFF is its "not debounced yet"
+// sentinel, and an unknown mask must not be read as an undocked one.
+// shouldSavePresenceBaseline() decides the rest -- a seed is only worth keeping
+// when nothing magnetic is in range.
+static void storePresenceBaseline(uint8_t stable_mask, bool active,
+                                  unsigned long now) {
+  if (hall_presence.primed()) {
+    saved_presence_baseline = hall_presence.baseline();
+    saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+  } else {
+    saved_presence_magic = 0;
+  }
+
+  // The cache only advances on a confirmed write, so a failed one is retried
+  // rather than assumed: dropping the seed silently costs a cold boot, which is
+  // the whole point of storing it. Retries are spaced because this runs at the
+  // poll rate, and a durably unavailable NVS would otherwise be hammered.
+  static int nvs_baseline = loadPresenceBaseline();
+  static unsigned long last_attempt = 0;
+  if (stable_mask == 0xFF) return;
+  if (now - last_attempt < PRESENCE_BASELINE_SAVE_RETRY_MS) return;
+  if (!shouldSavePresenceBaseline(stable_mask, active, saved_presence_baseline,
+                                  nvs_baseline)) {
+    return;
+  }
+  last_attempt = now;
+  if (savePresenceBaseline(saved_presence_baseline)) {
+    nvs_baseline = saved_presence_baseline;
+  }
+}
+
 // Clears every stored reference so the tracker primes again from the current
 // reading. A baseline taken while something was in range latches active_ and is
 // then frozen by its own activation, and it reaches NVS in the moment between
@@ -1965,18 +1728,24 @@ void setupHallSensors() {
   Serial.println(F("Hall neighbor sensors initialized"));
 }
 
-// Returns the neighbor's cube id, or 0 for no/invalid neighbor.
-uint8_t readHallNeighborId() {
-  // Read before the presence check rather than after it: the tracker needs to
-  // know a neighbour is there on every call, and the calls that matter for that
-  // are the ones where presence has not tripped.
+// One sample of the six ID lines, LSB = P1.
+uint8_t readHallIdMask() {
   uint8_t id_mask = 0;
   for (uint8_t i = 0; i < 6; i++) {
     if (digitalRead(HALL_ID_PINS[i]) == HALL_ID_ACTIVE_LEVEL) {
       id_mask |= (1 << i);
     }
   }
+  return id_mask;
+}
 
+// Returns the neighbor's cube id, or 0 for no/invalid neighbor.
+//
+// Takes the mask rather than sampling it, so the id decision and the debounced
+// mask the caller publishes describe the same instant. The tracker is fed on
+// every call, including the ones where presence has not tripped -- those are
+// the calls that keep its baseline from drifting onto a magnet.
+uint8_t decodeHallNeighborId(uint8_t id_mask) {
   const int presence_raw = analogRead(HALL_PRESENCE_PIN);
   last_hall_id_mask = id_mask;
   last_hall_presence_raw = presence_raw;
@@ -2114,7 +1883,7 @@ void handleUDP() {
         udp.write((const uint8_t*)marker, strlen(marker));
         udp.endPacket();
       }
-      // Check if message is "timing" - return cube_id:avg_loop_time_us
+      // Check if message is "timing" - return slot:avg_loop_time_us
       else if (slotIsResolved() && strcmp(udpBuffer, "timing") == 0) {
         // Calculate average loop time over recent samples
         unsigned long avg_loop_time_us = 0;
@@ -2148,8 +1917,8 @@ void handleUDP() {
       }
       // Check if message is "diag" - return detailed per-section timing breakdown
       else if (slotIsResolved() && strcmp(udpBuffer, "diag") == 0) {
-        // 640, up from 320. The per-outcome fields add to a string already ~180
-        // chars, and snprintf truncates silently rather than telling you. Worst
+        // snprintf truncates silently rather than telling you, so this is
+        // sized for the worst case rather than the typical ~180 chars. Worst
         // case with every numeric field at its type maximum -- including three
         // 64-bit microsecond totals at 20 digits each -- is 505 bytes with the
         // NUL. 512 would fit with 7 bytes spare, which is not margin.
@@ -2170,19 +1939,15 @@ void handleUDP() {
 #endif
         snprintf(diagStr, sizeof(diagStr),
           "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu"
-          "|nfc_ok_n=%u|nfc_ok_us=%llu|nfc_ok_max=%lu"
-          "|nfc_nocard_n=%u|nfc_nocard_us=%llu|nfc_nocard_max=%lu"
-          "|nfc_err_n=%u|nfc_err_us=%llu|nfc_err_max=%lu"
-          "|hall_mask=%02X|hall_raw=%d|hall_base=%d|hall_delta=%d"
-          "|hall_active=%d|hall_primed=%d",
+          "|hall_mask=%02X|hall_raw=%d|hall_filt=%d|hall_base=%d"
+          "|hall_delta=%d|hall_on=%d|hall_active=%d|hall_primed=%d",
           cube_identifier.c_str(), fw_board, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, nfc_reset_count, avg_letter_interval, max_letter_interval, letter_interval_count,
           WiFi.RSSI(), section_timing_count, millis(),
-          nfc_ok_count, nfc_ok_total_us, nfc_ok_max_us,
-          nfc_nocard_count, nfc_nocard_total_us, nfc_nocard_max_us,
-          nfc_err_count, nfc_err_total_us, nfc_err_max_us,
-          last_hall_id_mask, last_hall_presence_raw, hall_presence.baseline(),
-          hall_presence.delta(), hall_presence.active(), hall_presence.primed());
+          last_hall_id_mask, last_hall_presence_raw, hall_presence.filtered(),
+          hall_presence.baseline(), hall_presence.delta(),
+          HALL_PRESENCE_ON_DELTA, hall_presence.active(),
+          hall_presence.primed());
 
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)diagStr, strlen(diagStr));
@@ -2192,15 +1957,12 @@ void handleUDP() {
         last_activity_time = millis();
 
         // Reset accumulators after reading
-        section_timing_accum = {0, 0, 0, 0, 0};
+        section_timing_accum = {0, 0, 0, 0};
         section_timing_count = 0;
         letter_interval_accum = 0;
         letter_interval_count = 0;
         max_letter_interval = 0;
         nfc_read_max_us = 0;
-        nfc_ok_total_us = 0; nfc_ok_max_us = 0; nfc_ok_count = 0;
-        nfc_nocard_total_us = 0; nfc_nocard_max_us = 0; nfc_nocard_count = 0;
-        nfc_err_total_us = 0; nfc_err_max_us = 0; nfc_err_count = 0;
       }
       // Check if message is "chip" - return ESP32 chip info
       else if (slotIsResolved() && strcmp(udpBuffer, "chip") == 0) {
@@ -2220,7 +1982,7 @@ void handleUDP() {
         Serial.printf("Sent chip info to %s:%d: %s\n",
                       udp.remoteIP().toString().c_str(), udp.remotePort(), chipStr);
       }
-      // Check if message is "temp" - return cube_id:temperature_celsius
+      // Check if message is "temp" - return slot:temperature_celsius
       else if (slotIsResolved() && strcmp(udpBuffer, "temp") == 0) {
         // Read internal temperature sensor
         float temperature_c = temperatureRead();
@@ -2279,7 +2041,11 @@ void setup() {
   const bool is_timer_wake = (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER);
 
   mqtt_client.enableDebuggingMessages(true);
-  mqtt_client.setMaxPacketSize(11999);
+  // PubSubClient's 256-byte default covers the whole packet, not just the
+  // payload, and the largest publish here is the liveness response: a 224-byte
+  // buffer on a ~42-character topic, which reaches ~270 bytes with the fixed
+  // header. 512 clears that with room for a longer nonce.
+  mqtt_client.setMaxPacketSize(512);
   Serial.printf("memory available: %d\n", ESP.getFreeHeap());
   mqtt_client.enableDebuggingMessages(false);
   mqtt_client.setMqttConnectionTimeout(MQTT_CONNECTION_TIMEOUT_MS);
@@ -2291,9 +2057,6 @@ void setup() {
 
   Serial.printf("Model: %d, Cores: %d, Revision: %d\n", chip_info.model, chip_info.cores, chip_info.revision);
 
-  // Initialize watchdog timer
-  // esp_task_wdt_init(10, true); 
-  // esp_task_wdt_add(NULL);      // Add current thread to WDT watch
   
   // Configure Pin 0 for momentary switch (with internal pull-up)
   pinMode(0, INPUT_PULLUP);
@@ -2307,13 +2070,12 @@ void setup() {
   pinMode(POWER_SWITCH_PIN, OUTPUT);
   digitalWrite(POWER_SWITCH_PIN, is_timer_wake ? LOW : HIGH);
 
-  // Initialize Hall effect sensor on GPIO36
-#if defined(HALL_SENSOR_ENABLED)
-  pinMode(HALL_SENSOR_PIN, INPUT);
-#elif defined(HALL_SENSOR_ANALOG)
+  // The presence tap is read with analogRead(), so the ADC needs configuring
+  // before setupHallSensors() takes its first sample. That function sets the
+  // pin mode itself.
+#ifdef HALL_SENSOR_ANALOG
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
-  pinMode(HALL_SENSOR_PIN, INPUT);
 #endif
 #endif
   
@@ -2337,7 +2099,6 @@ void setup() {
   mqtt_client.enableLastWillMessage(
       mqtt_topic_presence.c_str(), last_will_payload.c_str(), true);
 
-  String cube_id = String(compiled_cube_id);
 
   // A power cycle is someone picking the cube up, and it gets an answer before
   // the check-in below can send it back to sleep. Without this a cold boot that
@@ -2357,7 +2118,7 @@ void setup() {
   // is already up and setupWiFiConnection() above gave it time to settle, so no
   // settle delay is needed.
   if (is_first_boot && esp_reset_reason() == ESP_RST_POWERON) {
-    display_manager = new DisplayManager(cube_id);
+    display_manager = new DisplayManager();
     display_manager->clearDebugDisplay();
     display_manager->displayDebugMessage(GIT_TIMESTAMP);
   }
@@ -2386,23 +2147,21 @@ void setup() {
   // Already built above on a first boot; a timer or button wake arrives here
   // with nothing on the panel.
   if (display_manager == nullptr) {
-    display_manager = new DisplayManager(cube_id);
+    display_manager = new DisplayManager();
     display_manager->clearDebugDisplay();
     display_manager->displayDebugMessage(GIT_TIMESTAMP);
   }
   delay(DISPLAY_STARTUP_DELAY_MS);
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
-  Serial.println(cube_id);
   static String client_name = makeMqttClientId(WiFi.macAddress(), "");
   Serial.println(client_name);
   mqtt_client.setMqttClientName(client_name.c_str());
-  // Both inputs are already resolved: loadStoredSlot() ran above and
-  // getCubeIpOctet() set compiled_cube_id before WiFi came up. Nothing here
-  // waits on the roster, so an authoritative assignment arriving later can
-  // still move the slot out from under this line.
+  // loadStoredSlot() ran above. Nothing here waits on the roster, so an
+  // authoritative assignment arriving later can still move the slot out from
+  // under this line.
   char ipDisplay[64];
   formatBootIdentity(ipDisplay, sizeof(ipDisplay), stored.slot,
-                     compiled_cube_id, WiFi.localIP()[3]);
+                     WiFi.localIP()[3]);
   display_manager->displayDebugMessage(ipDisplay);
 
   debugPrintln(WiFi.macAddress().c_str());
@@ -2450,8 +2209,6 @@ void setup() {
 void loop() {
   loop_start_time = micros();
 
-  static bool last_hall_present = true;
-
   serviceWiFiConnection();
 
   unsigned long section_start = micros();
@@ -2463,9 +2220,8 @@ void loop() {
       millis() - assignment_wait_started >= ASSIGNMENT_WAIT_MS) {
     assignment_wait_started = 0;
     StoredSlot stored = loadStoredSlot();
-    int fallback = stored.slot > 0 ? stored.slot : compiled_cube_id;
     int slot = resolveAssignedSlot(
-        ASSIGNMENT_MISSING, -1, authority_latched, fallback);
+        ASSIGNMENT_MISSING, -1, authority_latched, stored.slot);
     applied_generation = stored.generation;
     saveStoredSlot(slot, stored.generation);
     applySlot(slot);
@@ -2478,7 +2234,6 @@ void loop() {
     enterSleepMode();
   }
 
-  esp_task_wdt_reset();  // Feed the watchdog timer
 
   // Throttle display updates to 30 FPS for improved MQTT responsiveness
   static unsigned long last_display_update = 0;
@@ -2515,10 +2270,6 @@ void loop() {
         );
       }
 
-      // Always publish NFC tag IDs (needed for nfc_control_daemon).
-      // Only gate neighbor observations on hall sensor state.
-      bool hall_allows_neighbor = !HAS_HALL_SENSOR || last_hall_present || HAS_HALL_ANALOG;
-      bool hall_says_present = HAS_HALL_SENSOR && last_hall_present;
       char neighbor_id[NFCID_LENGTH * 2 + 1] = "";
 
       if (read_result == ISO15693_EC_OK) {
@@ -2540,13 +2291,12 @@ void loop() {
 
       // Resolution moved to the server: publish the raw tag keyed by MAC and let
       // the roster decide which slot wears it. cube/right is no longer published
-      // from this path. The gating is unchanged -- "-" still requires both
-      // sensors to agree, which is what stops an NFC flake breaking a word.
+      // from this path. applyNfcChatterGate() below is what stops a dropped
+      // read breaking a word in play.
       if (slotIsResolved()) {
         NfcObservationAction action = decideNfcObservation(
             read_result == ISO15693_EC_OK, read_result == EC_NO_CARD,
-            hall_allows_neighbor, hall_says_present, neighbor_id,
-            last_observation_published);
+            neighbor_id, last_observation_published);
         NfcChatterResult chatter_result = applyNfcChatterGate(
             nfc_chatter_state, action, read_result == ISO15693_EC_OK,
             neighbor_id, millis());
@@ -2568,24 +2318,6 @@ void loop() {
         nfc_read_max_us = nfc_us;
       }
 
-      // Attribute this read to its outcome. read_us only -- recovery_us is
-      // excluded deliberately, because a recovery is a different event with
-      // its own counter (nfc_resets) and folding it in would make a rare
-      // 300 ms recovery masquerade as an expensive read.
-      unsigned long outcome_us = worker_result.read_us;
-      if (read_result == ISO15693_EC_OK) {
-        nfc_ok_total_us += outcome_us;
-        nfc_ok_count++;
-        if (outcome_us > nfc_ok_max_us) nfc_ok_max_us = outcome_us;
-      } else if (read_result == EC_NO_CARD) {
-        nfc_nocard_total_us += outcome_us;
-        nfc_nocard_count++;
-        if (outcome_us > nfc_nocard_max_us) nfc_nocard_max_us = outcome_us;
-      } else {
-        nfc_err_total_us += outcome_us;
-        nfc_err_count++;
-        if (outcome_us > nfc_err_max_us) nfc_err_max_us = outcome_us;
-      }
     }
   } else {
     // Hall 2-of-6 neighbor decode: poll ~1 kHz, debounce, publish the neighbor
@@ -2601,20 +2333,12 @@ void loop() {
       static int candidate_raw_count = 0;
       static uint8_t stable_raw = 0xFF;
 
-      static unsigned long last_presence_publish = 0;
-      static int published_presence_delta = 0;
-      static bool published_presence_active = false;
-      static bool presence_ever_published = false;
 
       if (current_time - last_hall_poll >= HALL_POLL_INTERVAL_MS) {
         last_hall_poll = current_time;
       
-        uint8_t raw = 0;
-        for (uint8_t i = 0; i < 6; i++) {
-          if (digitalRead(HALL_ID_PINS[i]) == HALL_ID_ACTIVE_LEVEL) {
-            raw |= (1 << i);
-          }
-        }
+        const uint8_t raw = readHallIdMask();
+
       
         if (raw == candidate_raw) {
           if (candidate_raw_count < HALL_DEBOUNCE_READS) candidate_raw_count++;
@@ -2623,19 +2347,13 @@ void loop() {
           candidate_raw_count = 1;
         }
       
-        if (candidate_raw_count >= HALL_DEBOUNCE_READS && candidate_raw != stable_raw) {
+        // Not a debug artifact: stable_raw gates the NVS baseline save and
+        // picks the candidate for the border preview.
+        if (candidate_raw_count >= HALL_DEBOUNCE_READS) {
           stable_raw = candidate_raw;
-          char raw_buf[7];
-          for (int i = 0; i < 6; i++) {
-            raw_buf[i] = (stable_raw & (1 << i)) ? '1' : '0';
-          }
-          raw_buf[6] = '\0';
-          if (mqtt_client.isConnected()) {
-            mqtt_client.publish(mqtt_topic_cube + "/hall_debug", raw_buf, true);
-          }
         }
 
-        uint8_t id = readHallNeighborId();
+        uint8_t id = decodeHallNeighborId(raw);
         if (id == candidate_id) {
           if (candidate_count < HALL_DEBOUNCE_READS) candidate_count++;
         } else {
@@ -2665,7 +2383,7 @@ void loop() {
           }
         }
 
-        // readHallNeighborId() above fed the tracker this sample, so the
+        // decodeHallNeighborId() above fed the tracker this sample, so the
         // accessors describe the reading the id decision was just made on.
         const int presence_delta = hall_presence.delta();
         const bool presence_state = hall_presence.active();
@@ -2712,101 +2430,10 @@ void loop() {
         // baseline worth carrying across a reset, and writing the magic anyway
         // would resurrect a baseline that recalibratePresence() just cleared if
         // the cube reset inside the settle window.
-        if (hall_presence.primed()) {
-          saved_presence_baseline = hall_presence.baseline();
-          saved_presence_magic = PRESENCE_BASELINE_MAGIC;
-        } else {
-          saved_presence_magic = 0;
-        }
-
-        static int nvs_presence_baseline = loadPresenceBaseline();
-        static unsigned long last_presence_save_attempt = 0;
-        // stable_raw holds its 0xFF sentinel until the ID lines have debounced, and
-        // an unknown mask must not read as an undocked one.
-        //
-        // The cache only advances on a confirmed write, so a failed one is retried
-        // rather than assumed: dropping the seed silently costs a cold boot, which
-        // is the whole point of storing it. Retries are spaced because this runs at
-        // the poll rate and a durably unavailable NVS would otherwise be hammered.
-        if (stable_raw != 0xFF &&
-            current_time - last_presence_save_attempt >= PRESENCE_BASELINE_SAVE_RETRY_MS &&
-            shouldSavePresenceBaseline(stable_raw, presence_state, saved_presence_baseline,
-                                       nvs_presence_baseline)) {
-          last_presence_save_attempt = current_time;
-          if (savePresenceBaseline(saved_presence_baseline)) {
-            nvs_presence_baseline = saved_presence_baseline;
-          }
-        }
-        const bool presence_changed =
-            !presence_ever_published || presence_state != published_presence_active ||
-            abs(presence_delta - published_presence_delta) >= HALL_PRESENCE_PUBLISH_MIN_CHANGE;
-
-        if (presence_changed &&
-            current_time - last_presence_publish >= HALL_PRESENCE_PUBLISH_INTERVAL_MS &&
-            mqtt_client.isConnected()) {
-          char presence_buf[96];
-          snprintf(presence_buf, sizeof(presence_buf),
-                   "delta=%d on=%d off=%d dist=%d drop=%d base=%d raw=%d active=%d",
-                   presence_delta, HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
-                   hallPresenceDistance(presence_delta, HALL_PRESENCE_ON_DELTA),
-                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA, HALL_PRESENCE_ON_DELTA),
-                   hall_presence.baseline(), hall_presence.filtered(), presence_state);
-          if (mqtt_client.publish(mqtt_topic_cube + "/hall_presence", presence_buf, true)) {
-            last_presence_publish = current_time;
-            published_presence_delta = presence_delta;
-            published_presence_active = presence_state;
-            presence_ever_published = true;
-          }
-        }
+        storePresenceBaseline(stable_raw, presence_state, current_time);
       }
     }
   }
-
-  // Track Hall sensor state and log connect/disconnect via MQTT
-#ifdef HALL_SENSOR_ENABLED
-  if (slotIsResolved()) {
-    static unsigned long last_hall_check = 0;
-    if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
-      last_hall_check = current_time;
-      bool hall_present = (digitalRead(HALL_SENSOR_PIN) == LOW);
-
-      if (hall_present != last_hall_present) {
-        last_hall_present = hall_present;
-        const char* status = hall_present ? HALL_SENSOR_STATUS_CONNECTED : HALL_SENSOR_STATUS_DISCONNECTED;
-        mqtt_client.publish(mqtt_topic_cube + "/hall_sensor", status, true);
-        Serial.printf("Hall sensor %s\n", status);
-
-        // On hall connect, if NFC still remembers a tag from before, force the
-        // next gated NFC read to re-announce it rather than skip it as
-        // unchanged, so the observation republishes via cube/device/{MAC}/nfc
-        // instead of sitting silent while NFC re-acquires. The server
-        // resolves the tag now, not this firmware.
-        if (hall_present && strcmp(last_neighbor_id, "-") != 0) {
-          last_observation_published[0] = '\0';
-        }
-      }
-    }
-  }
-#endif
-
-#ifdef HALL_SENSOR_ANALOG
-  if (slotIsResolved()) {
-    static unsigned long last_hall_check = 0;
-    static int last_hall_value = -1;
-    if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
-      last_hall_check = current_time;
-      int hall_value = analogRead(HALL_SENSOR_PIN);
-
-      if (hall_value != last_hall_value) {
-        last_hall_value = hall_value;
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", hall_value);
-        mqtt_client.publish(mqtt_topic_cube + "/hall_analog", buf, true);
-        Serial.printf("Hall analog: %d\n", hall_value);
-      }
-    }
-  }
-#endif
 
   // Accumulate per-section timing
   section_timing_accum.mqtt_us += mqtt_us;
@@ -2835,4 +2462,3 @@ void loop() {
     timing_samples_filled = true;
   }
 }
-// force rebuild
