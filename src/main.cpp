@@ -559,6 +559,9 @@ public:
           is_dirty = true;
         } else {
           border_animation_active = false;
+          // Draw a settled static frame after the final eased frame so neither
+          // DMA buffer can retain a rounded-short segment of the animation.
+          is_dirty = true;
         }
       } else {
         is_dirty = true;  // display-only redraw while the border interpolates
@@ -578,7 +581,8 @@ public:
     
   void drawBorderFrame() {
     if (border_animation_active) {
-      const float t = (float)(millis() - border_animation_start_time) / BORDER_ANIMATION_DURATION_MS;
+      const float t = min(1.0f, (float)(millis() - border_animation_start_time) /
+                               BORDER_ANIMATION_DURATION_MS);
       const float inv = 1.0f - t;
       const float p = 1.0f - inv * inv * inv * inv * inv;  // easeOutQuint
       drawAnimatedBorder(p);
