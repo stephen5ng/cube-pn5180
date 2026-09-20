@@ -125,6 +125,10 @@ void initialiseNeighbourSensor() {
 #define ANIMATION_DURATION_MS 1000
 #define ANIMATION_SCALE 100
 #define BORDER_ANIMATION_DURATION_MS 1000
+// MQTT can dispatch a small batch of topology updates before the display draws
+// its next frame. Let the final update in that frame replace the target while
+// preserving the original border as the animation's start state.
+#define BORDER_TARGET_REPLACE_WINDOW_MS 16
 #define DISPLAY_STARTUP_DELAY_MS 600
 #define HALL_SENSOR_CHECK_INTERVAL_MS 50  /* Hall sensor polling interval (matches NFC read rate) */
 
@@ -580,7 +584,8 @@ public:
                                 border_from_left(0), border_from_right(0),
                                 pending_border_top(0), pending_border_bottom(0),
                                 pending_border_left(0), pending_border_right(0),
-                                border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
+                                border_animation_start_time(0), border_animation_active(false),
+                                border_target_pending(false),
                                 border_preview_side(0), border_preview_start_time(0),
                                 border_preview_until(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
@@ -688,9 +693,6 @@ public:
     if (border_animation_active) {
       if (current_time - border_animation_start_time >= BORDER_ANIMATION_DURATION_MS) {
         if (border_target_pending) {
-          // Finish the frame already on screen, then start the newer target.
-          // This deliberately trades at most one display-only animation period
-          // for a continuous border; gameplay state is never delayed.
           border_from_top = hline_color_top;
           border_from_bottom = hline_color_bottom;
           border_from_left = vline_color_left;
@@ -735,30 +737,34 @@ public:
     drawBorders(false, false, vline_color_right);
   }
 
-  void beginBorderTransition() {
+  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
+                                   uint16_t left, uint16_t right) {
+    const unsigned long now = millis();
+    if (border_animation_active) {
+      if (now - border_animation_start_time <= BORDER_TARGET_REPLACE_WINDOW_MS) {
+        hline_color_top = top;
+        hline_color_bottom = bottom;
+        vline_color_left = left;
+        vline_color_right = right;
+      } else {
+        pending_border_top = top;
+        pending_border_bottom = bottom;
+        pending_border_left = left;
+        pending_border_right = right;
+        border_target_pending = true;
+      }
+      return;
+    }
     border_from_top = hline_color_top;
     border_from_bottom = hline_color_bottom;
     border_from_left = vline_color_left;
     border_from_right = vline_color_right;
-    border_animation_start_time = millis();
-    border_animation_active = true;
-  }
-
-  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
-                                   uint16_t left, uint16_t right) {
-    if (border_animation_active) {
-      pending_border_top = top;
-      pending_border_bottom = bottom;
-      pending_border_left = left;
-      pending_border_right = right;
-      border_target_pending = true;
-      return;
-    }
-    beginBorderTransition();
     hline_color_top = top;
     hline_color_bottom = bottom;
     vline_color_left = left;
     vline_color_right = right;
+    border_animation_start_time = now;
+    border_animation_active = true;
   }
 
   static bool isMiddleBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
