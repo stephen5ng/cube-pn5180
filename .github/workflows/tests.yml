@@ -74,6 +74,6 @@ jobs:
       - run: pio test -e native
 
       # Every environment that is ever flashed. v6 is what the Pi builds for
-      # production; the two hall variants differ only in a build flag, which is
+      # production; the hall variant differs only in a build flag, which is
       # exactly the kind of difference a compile catches and a test does not.
-      - run: pio run -e v1 -e v6 -e v6_with_hall -e v6_with_hall_analog
+      - run: pio run -e v1 -e v6 -e v6_with_hall_analog
