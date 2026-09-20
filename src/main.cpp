@@ -580,7 +580,8 @@ public:
                                 pending_border_top(0), pending_border_bottom(0),
                                 pending_border_left(0), pending_border_right(0),
                                 border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
-                                border_preview_side(0), border_preview_start_time(0), border_preview_until(0),
+                                border_preview_side(0), border_preview_start_time(0),
+                                border_preview_until(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
@@ -786,6 +787,19 @@ public:
         const int x = left ? line : PANEL_RES_X - BORDER_LINE_COUNT / 2 + line;
         led_display->drawFastVLine(x, 0, vertical, side);
         led_display->drawFastVLine(x, PANEL_RES_Y - vertical, vertical, side);
+      }
+    }
+  }
+  void drawPreviewSideErasing(bool left, float p, uint16_t side) {
+    // p=0 is a complete shared edge. As p grows, its two halves withdraw
+    // from the centre to their endpoints; the following preview cycle snaps
+    // straight back to the complete edge.
+    const int half = (int)(PANEL_RES_Y / 2.0f * (1.0f - p) + .5f);
+    for (uint8_t line = 0; line < BORDER_LINE_COUNT / 2; ++line) {
+      const int x = left ? line : PANEL_RES_X - BORDER_LINE_COUNT / 2 + line;
+      if (half) {
+        led_display->drawFastVLine(x, 0, half, side);
+        led_display->drawFastVLine(x, PANEL_RES_Y - half, half, side);
       }
     }
   }
@@ -1005,6 +1019,7 @@ public:
   }
 
   void handleBorderPreviewCommand(const String& message) {
+    // Protocol: E or W identifies the prospective shared edge.
     const char side = message.length() ? message.charAt(0) : 0;
     border_preview_side = (side == 'E' || side == 'W') ? side : 0;
     border_preview_start_time = millis();
@@ -1019,9 +1034,16 @@ public:
     const float inv = 1.0f - t;
     const float p = 1.0f - inv * inv * inv * inv * inv;
     const bool left = border_preview_side == 'W';
-    // Preview only the candidate connection. It is an overlay and never changes
-    // the confirmed border target maintained by /border.
-    drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, WHITE);
+    // A confirmed edge on the other side makes this cube the middle-bound
+    // half of a marginal connection, regardless of which cube read the Hall
+    // magnets. It sheds the prospective edge while the free endpoint grows it.
+    const bool has_confirmed_opposite_edge =
+        left ? vline_color_right != 0 : vline_color_left != 0;
+    if (has_confirmed_opposite_edge) {
+      drawPreviewSideErasing(left, p, WHITE);
+    } else {
+      drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, WHITE);
+    }
   }
 
 #ifdef BOARD_V6
