@@ -107,6 +107,10 @@ void initialiseNeighbourSensor() {
 #define ANIMATION_DURATION_MS 1000
 #define ANIMATION_SCALE 100
 #define BORDER_ANIMATION_DURATION_MS 1000
+// MQTT can dispatch a small batch of topology updates before the display draws
+// its next frame. Let the final update in that frame replace the target while
+// preserving the original border as the animation's start state.
+#define BORDER_TARGET_REPLACE_WINDOW_MS 16
 #define DISPLAY_STARTUP_DELAY_MS 600
 #define HALL_SENSOR_CHECK_INTERVAL_MS 50  /* Hall sensor polling interval (matches NFC read rate) */
 
@@ -242,7 +246,6 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 #define MQTT_SOCKET_TIMEOUT_S 2
 #define MQTT_CONNECTION_TIMEOUT_MS 1000
 
-// MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
 // ============= Global Variables =============
 
@@ -339,7 +342,6 @@ char last_right_published[8] = "INIT";                  // last value published 
 
 // Pre-allocated MQTT topics
 String mqtt_topic_cube;
-String mqtt_topic_game_nfc;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
 String mqtt_topic_cube_proximity;  // publishes 0-100 closeness to cube/<id>/proximity
@@ -447,7 +449,6 @@ private:
   uint16_t* image2;
   uint16_t* image;
   uint16_t* previous_image;
-  String display_string;
   uint8_t debug_line;
   unsigned long animation_start_time;
   long highlight_end_time;
@@ -456,7 +457,6 @@ private:
   uint16_t current_letter_color;
   uint16_t vline_color_right;
   uint16_t vline_color_left;
-  uint8_t vline_height;
   uint16_t hline_color_top;
   uint8_t presence_bar_height;
   unsigned long last_presence_bar_ms;
@@ -484,7 +484,6 @@ private:
   const GFXfont* current_font;
   uint8_t text_size;
   uint8_t rotation;
-  uint8_t font_size;
   bool is_dirty;
   char previous_letter;
   char current_letter;
@@ -537,16 +536,16 @@ public:
                                 debug_line(0),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
-                                text_size(1), font_size(1), is_lock(false),
+                                text_size(1), is_lock(false),
                                 vline_color_left(0), vline_color_right(0),
-                                vline_height(PANEL_RES),
                                 hline_color_top(0), presence_bar_height(0), last_presence_bar_ms(0),
                                 hline_color_bottom(0),
                                 border_from_top(0), border_from_bottom(0),
                                 border_from_left(0), border_from_right(0),
                                 pending_border_top(0), pending_border_bottom(0),
                                 pending_border_left(0), pending_border_right(0),
-                                border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
+                                border_animation_start_time(0), border_animation_active(false),
+                                border_target_pending(false),
                                 border_preview_side(0), border_preview_start_time(0),
                                 border_preview_until(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
@@ -654,9 +653,6 @@ public:
     if (border_animation_active) {
       if (current_time - border_animation_start_time >= BORDER_ANIMATION_DURATION_MS) {
         if (border_target_pending) {
-          // Finish the frame already on screen, then start the newer target.
-          // This deliberately trades at most one display-only animation period
-          // for a continuous border; gameplay state is never delayed.
           border_from_top = hline_color_top;
           border_from_bottom = hline_color_bottom;
           border_from_left = vline_color_left;
@@ -701,30 +697,34 @@ public:
     drawBorders(false, false, vline_color_right);
   }
 
-  void beginBorderTransition() {
+  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
+                                   uint16_t left, uint16_t right) {
+    const unsigned long now = millis();
+    if (border_animation_active) {
+      if (now - border_animation_start_time <= BORDER_TARGET_REPLACE_WINDOW_MS) {
+        hline_color_top = top;
+        hline_color_bottom = bottom;
+        vline_color_left = left;
+        vline_color_right = right;
+      } else {
+        pending_border_top = top;
+        pending_border_bottom = bottom;
+        pending_border_left = left;
+        pending_border_right = right;
+        border_target_pending = true;
+      }
+      return;
+    }
     border_from_top = hline_color_top;
     border_from_bottom = hline_color_bottom;
     border_from_left = vline_color_left;
     border_from_right = vline_color_right;
-    border_animation_start_time = millis();
-    border_animation_active = true;
-  }
-
-  void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
-                                   uint16_t left, uint16_t right) {
-    if (border_animation_active) {
-      pending_border_top = top;
-      pending_border_bottom = bottom;
-      pending_border_left = left;
-      pending_border_right = right;
-      border_target_pending = true;
-      return;
-    }
-    beginBorderTransition();
     hline_color_top = top;
     hline_color_bottom = bottom;
     vline_color_left = left;
     vline_color_right = right;
+    border_animation_start_time = now;
+    border_animation_active = true;
   }
 
   static bool isMiddleBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
@@ -856,37 +856,9 @@ public:
       if (isHorizontal) {
         led_display->drawFastHLine(0, pos, PANEL_RES_X, color);
       } else {
-        led_display->drawFastVLine(pos, 
-          PANEL_RES_Y - vline_height, vline_height, color);
+        led_display->drawFastVLine(pos, 0, PANEL_RES_Y, color);
       }
     }
-  }
-
-  void handleBorderFrameCommand(const String& message) {
-    debugPrintln("setting border frame due to /border_frame");
-    handleBorderTopBannerCommand(message);
-    handleBorderBottomBannerCommand(message);
-    handleBorderVLineLeftCommand(message);
-    handleBorderVLineRightCommand(message);
-    is_dirty = true;
-  }
-
-  void handleBorderVLineRightCommand(const String& message) {
-    debugPrintln("setting border vline right color due to /border_vline_right");
-    vline_color_right = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;
-  }
-
-  void handleBorderVLineLeftCommand(const String& message) {
-    debugPrintln("setting border vline left color due to /border_vline_left");
-    vline_color_left = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;
-  }
-
-  void handleBorderLineHeightCommand(const String& message) {
-    debugPrintln("setting border vline height due to /border_vline_height");
-    vline_height = message.length() == 0 ? PANEL_RES_Y : message.toInt();
-    is_dirty = true;
   }
 
   void handleFlashCommand(const String& message) {
@@ -895,22 +867,6 @@ public:
     }
     debugPrintln("flashing due to /flash");
     highlight_end_time = millis() + HIGHLIGHT_TIME_MS;
-    is_dirty = true;
-  }
-
-  void handleFontSizeCommand(const String& message) {
-    debugPrintln("setting font size due to /font_size");
-    // if (!is_image_mode) {
-    //   debugPrintln("ignoring font size change in image mode");
-    //   return;
-    // }
-
-    if (message.length() <= 0) {
-      return;
-    }
-
-    int size = max(0L, message.toInt());
-    font_size = size;
     is_dirty = true;
   }
 
@@ -973,14 +929,6 @@ public:
         drawOrientationIndicator();
       }
     } 
-
-    if (display_string.length() > 0) {
-      Serial.println("displaying string");
-      Serial.println(display_string);
-      led_display->setCursor(5, 28);
-      led_display->setTextColor(RED, BLACK);
-      led_display->print(display_string);
-    }
 
     drawBorderFrame();
     drawBorderPreview(current_time);
@@ -1059,20 +1007,6 @@ public:
 
     memcpy(image, message.c_str(), message.length());
     is_dirty = true;
-  }
-
-  void handleBorderTopBannerCommand(const String& message) {
-    debugPrintln("setting border top banner due to /border_top_banner");
-    Serial.println(message);
-    hline_color_top = strtol(message.c_str(), NULL, 16);
-    is_dirty = true;  
-  }
-
-  void handleBorderBottomBannerCommand(const String& message) {
-    debugPrintln("setting border bottom banner due to /border_bottom_banner");
-    Serial.println(message);
-    hline_color_bottom = strtol(message.c_str(), NULL, 16);    
-    is_dirty = true;  
   }
 
   void handleConsolidatedBorderCommand(const String& message) {
@@ -1158,12 +1092,6 @@ public:
     }
   }
 
-  void handleStringCommand(const String& message) {
-    debugPrintln("setting string due to /string");
-    display_string = message;
-    current_font = nullptr;  // Use default font for string mode
-    is_dirty = true;
-  }
 };
 
 
@@ -1183,13 +1111,9 @@ unsigned long timing_accumulator = 0;
 
 // Per-section timing diagnostics
 struct SectionTiming {
-  // 64-bit for the same reason as the per-outcome totals below: `long` is
-  // 32 bits here, so a microsecond accumulator wraps after 4295 s of
-  // accumulated work in that section, and these reset only on a diag request.
-  // nfc_us is the one that matters -- it is ~40% duty, so it wraps first, and
-  // it is the field the duty-cycle measurement in this PR was derived from. A
-  // wrap would have made that measurement quietly wrong rather than obviously
-  // so. (It did not: the samples used 2.5-3.2% of the 32-bit range.)
+  // 64-bit because `long` is 32 bits here, so a microsecond accumulator wraps
+  // after 4295 s of accumulated work in that section, and these reset only on
+  // a diag request. nfc_us wraps first: it runs at roughly 40% duty.
   uint64_t mqtt_us;
   uint64_t display_us;
   uint64_t udp_us;
@@ -1197,11 +1121,6 @@ struct SectionTiming {
 };
 SectionTiming section_timing_accum = {0, 0, 0, 0};
 int section_timing_count = 0;
-
-// Per-section timing diagnostics (forward declarations removed, definitions below)
-
-// ============= Utility Functions =============
-// Utility functions moved to cube_utilities.h/.cpp
 
 // ============= Hardware Setup Functions =============
 void initializeNfcReader() {
@@ -1324,12 +1243,6 @@ void setupWiFiConnection() {
 
   startWiFiConnectionAttempt();
   Serial.println("WiFi connection started; setup will continue offline");
-}
-
-void handleNfcCommand(const String& message) {
-  debugPrintln("nfc due to /nfc");
-  strncpy(last_neighbor_id, message.c_str(), sizeof(last_neighbor_id) - 1);
-  last_neighbor_id[sizeof(last_neighbor_id) - 1] = '\0';
 }
 
 void handlePingCommand(const String& message) {
@@ -1678,7 +1591,6 @@ void subscribeSlotTopics() {
   }
 
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
-  mqtt_topic_game_nfc = String(MQTT_TOPIC_PREFIX_GAME) + MQTT_TOPIC_PREFIX_NFC + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
   mqtt_topic_cube_right = String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + cube_identifier;
   mqtt_topic_cube_proximity = mqtt_topic_cube + "/proximity";
@@ -1704,19 +1616,9 @@ void subscribeSlotTopics() {
 
   auto resetActivityTimer = []() { last_activity_time = millis(); };
 
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_bottom_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "border_top_banner", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
-  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "string", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleStringCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_preview", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderPreviewCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_bottom", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderBottomBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_hline_top", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderTopBannerCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_frame", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderFrameCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_height", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderLineHeightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_left", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderVLineLeftCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_vline_right", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderVLineRightCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/font_size", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFontSizeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/imagex", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleImageBinaryCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
@@ -1727,7 +1629,6 @@ void subscribeSlotTopics() {
 #endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/rise_ms", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleRiseMsCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_game_nfc, [resetActivityTimer](const String& msg) { resetActivityTimer(); handleNfcCommand(msg); });
 
   if (sensorModeIsMagnets()) {
     mqtt_client.publish(mqtt_topic_cube_right, "-", true);
@@ -2194,8 +2095,8 @@ void handleUDP() {
       }
       // Check if message is "diag" - return detailed per-section timing breakdown
       else if (slotIsResolved() && strcmp(udpBuffer, "diag") == 0) {
-        // 640, up from 320. The per-outcome fields add to a string already ~180
-        // chars, and snprintf truncates silently rather than telling you. Worst
+        // snprintf truncates silently rather than telling you, so this is
+        // sized for the worst case rather than the typical ~180 chars. Worst
         // case with every numeric field at its type maximum -- including three
         // 64-bit microsecond totals at 20 digits each -- is 505 bytes with the
         // NUL. 512 would fit with 7 bytes spare, which is not margin.
@@ -2903,4 +2804,3 @@ void loop() {
     timing_samples_filled = true;
   }
 }
-// force rebuild
