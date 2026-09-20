@@ -2018,6 +2018,42 @@ static int restoredPresenceBaseline() {
   return plausiblePresenceBaseline(stored) ? stored : 0;
 }
 
+// The write side of restoredPresenceBaseline(), called once per poll.
+//
+// RTC every time, because it costs a word and covers every reset. NVS almost
+// never, because it is only the cold-boot seed and each write erases a sector.
+//
+// stable_mask is the debounced ID mask; 0xFF is its "not debounced yet"
+// sentinel, and an unknown mask must not be read as an undocked one.
+// shouldSavePresenceBaseline() decides the rest -- a seed is only worth keeping
+// when nothing magnetic is in range.
+static void storePresenceBaseline(uint8_t stable_mask, bool active,
+                                  unsigned long now) {
+  if (hall_presence.primed()) {
+    saved_presence_baseline = hall_presence.baseline();
+    saved_presence_magic = PRESENCE_BASELINE_MAGIC;
+  } else {
+    saved_presence_magic = 0;
+  }
+
+  // The cache only advances on a confirmed write, so a failed one is retried
+  // rather than assumed: dropping the seed silently costs a cold boot, which is
+  // the whole point of storing it. Retries are spaced because this runs at the
+  // poll rate, and a durably unavailable NVS would otherwise be hammered.
+  static int nvs_baseline = loadPresenceBaseline();
+  static unsigned long last_attempt = 0;
+  if (stable_mask == 0xFF) return;
+  if (now - last_attempt < PRESENCE_BASELINE_SAVE_RETRY_MS) return;
+  if (!shouldSavePresenceBaseline(stable_mask, active, saved_presence_baseline,
+                                  nvs_baseline)) {
+    return;
+  }
+  last_attempt = now;
+  if (savePresenceBaseline(saved_presence_baseline)) {
+    nvs_baseline = saved_presence_baseline;
+  }
+}
+
 // Clears every stored reference so the tracker primes again from the current
 // reading. A baseline taken while something was in range latches active_ and is
 // then frozen by its own activation, and it reaches NVS in the moment between
@@ -2834,31 +2870,7 @@ void loop() {
         // baseline worth carrying across a reset, and writing the magic anyway
         // would resurrect a baseline that recalibratePresence() just cleared if
         // the cube reset inside the settle window.
-        if (hall_presence.primed()) {
-          saved_presence_baseline = hall_presence.baseline();
-          saved_presence_magic = PRESENCE_BASELINE_MAGIC;
-        } else {
-          saved_presence_magic = 0;
-        }
-
-        static int nvs_presence_baseline = loadPresenceBaseline();
-        static unsigned long last_presence_save_attempt = 0;
-        // stable_raw holds its 0xFF sentinel until the ID lines have debounced, and
-        // an unknown mask must not read as an undocked one.
-        //
-        // The cache only advances on a confirmed write, so a failed one is retried
-        // rather than assumed: dropping the seed silently costs a cold boot, which
-        // is the whole point of storing it. Retries are spaced because this runs at
-        // the poll rate and a durably unavailable NVS would otherwise be hammered.
-        if (stable_raw != 0xFF &&
-            current_time - last_presence_save_attempt >= PRESENCE_BASELINE_SAVE_RETRY_MS &&
-            shouldSavePresenceBaseline(stable_raw, presence_state, saved_presence_baseline,
-                                       nvs_presence_baseline)) {
-          last_presence_save_attempt = current_time;
-          if (savePresenceBaseline(saved_presence_baseline)) {
-            nvs_presence_baseline = saved_presence_baseline;
-          }
-        }
+        storePresenceBaseline(stable_raw, presence_state, current_time);
         const bool presence_changed =
             !presence_ever_published || presence_state != published_presence_active ||
             abs(presence_delta - published_presence_delta) >= HALL_PRESENCE_PUBLISH_MIN_CHANGE;
