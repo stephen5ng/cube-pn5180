@@ -91,7 +91,6 @@ void initialiseNeighbourSensor() {
 #define PN5180_NSS 32
 #define PN5180_RST 17
 
-
 // Display Settings
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 1
@@ -108,7 +107,6 @@ void initialiseNeighbourSensor() {
 // preserving the original border as the animation's start state.
 #define BORDER_TARGET_REPLACE_WINDOW_MS 16
 #define DISPLAY_STARTUP_DELAY_MS 600
-#define HALL_SENSOR_CHECK_INTERVAL_MS 50  /* Hall sensor polling interval (matches NFC read rate) */
 
 // Sleep Configuration
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
@@ -126,10 +124,6 @@ void initialiseNeighbourSensor() {
 #define POWER_RAIL_SETTLE_MS  50  /* Let the HUB75 5V rail come up before I2S DMA drives the panel */
 #ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
-#endif
-
-#ifdef HALL_SENSOR_ANALOG
-#define HALL_SENSOR_PIN GPIO_NUM_36
 #endif
 
 // 2-of-6 Hall-sensor neighbor ID decode, an alternative to the PN5180 NFC
@@ -888,7 +882,6 @@ public:
   }
 #endif
 
-
   void handleBrightnessCommand(const String& message) {
     debugPrintln("setting brightness due to /brightness");
     uint16_t brightness = message.toInt();
@@ -980,10 +973,8 @@ public:
 
 };
 
-
 // ============= Global Variables =============
 DisplayManager* display_manager;
-
 
 // Loop timing variables
 unsigned long loop_start_time = 0;
@@ -1054,7 +1045,6 @@ void setupNfcReader() {
   Serial.println(F("Enabling RF field..."));
   nfc_reader->setupRF();
 }
-
 
 // ============= Network Functions =============
 uint8_t getCubeIpOctet() {
@@ -1407,7 +1397,6 @@ void handleSleepIntervalCommand(const String& message) {
     Serial.println("Invalid sleep interval: must be 10-300 seconds");
   }
 }
-
 
 // Retried from loop() until the broker accepts it. Only one delete is tracked:
 // a second rebinding during a sustained outage drops the earlier tombstone, and
@@ -2178,11 +2167,12 @@ void setup() {
   pinMode(POWER_SWITCH_PIN, OUTPUT);
   digitalWrite(POWER_SWITCH_PIN, is_timer_wake ? LOW : HIGH);
 
-  // Initialize Hall effect sensor on GPIO36
+  // The presence tap is read with analogRead(), so the ADC needs configuring
+  // before setupHallSensors() takes its first sample. That function sets the
+  // pin mode itself.
 #ifdef HALL_SENSOR_ANALOG
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
-  pinMode(HALL_SENSOR_PIN, INPUT);
 #endif
 #endif
   
@@ -2563,25 +2553,6 @@ void loop() {
       }
     }
   }
-
-#ifdef HALL_SENSOR_ANALOG
-  if (slotIsResolved()) {
-    static unsigned long last_hall_check = 0;
-    static int last_hall_value = -1;
-    if (current_time - last_hall_check >= HALL_SENSOR_CHECK_INTERVAL_MS) {
-      last_hall_check = current_time;
-      int hall_value = analogRead(HALL_SENSOR_PIN);
-
-      if (hall_value != last_hall_value) {
-        last_hall_value = hall_value;
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", hall_value);
-        mqtt_client.publish(mqtt_topic_cube + "/hall_analog", buf, true);
-        Serial.printf("Hall analog: %d\n", hall_value);
-      }
-    }
-  }
-#endif
 
   // Accumulate per-section timing
   section_timing_accum.mqtt_us += mqtt_us;
