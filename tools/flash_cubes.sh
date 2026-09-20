@@ -38,9 +38,10 @@ ping_once() {
 # MAC and static-IP octet for every board, from the compiled table that
 # assigns them. The table is the only place an octet is decided, so reading it
 # beats duplicating the mapping here.
+# One reader for the whole repo. This used to be a regex here, and it matched
+# nothing for a while after the table changed shape -- see tools/cube_table.py.
 mac_table_entries() {
-    sed -n '/^#else/,/^#endif/p' "$FW_DIR/src/cube_utilities.cpp" \
-        | sed -nE 's/^[[:space:]]*\{"(([0-9A-F]{2}:){5}[0-9A-F]{2})"[[:space:]]*,[^,]+,[[:space:]]*([0-9]+)[[:space:]]*\}.*/\1 \3/p'
+    "$PYTHON" "$FW_DIR/tools/cube_table.py" octets
 }
 
 # "MAC slot" for every board holding one, from the retained assignment

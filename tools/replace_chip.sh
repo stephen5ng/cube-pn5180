@@ -74,6 +74,14 @@ else
     grep -q "\"$NEW_MAC\"" "$MAC_FILE" || die "MAC table edit did not apply — $MAC_FILE is unchanged."
     echo "Updated entry: $(sed -n "/\"$NEW_MAC\"/p" "$MAC_FILE")"
 
+    # config/cube_table.json is generated from the table just edited, and every
+    # other tool reads the JSON rather than the C++. Leaving it stale would
+    # point flashing and the admin page at the chip that was just removed --
+    # and validate_mac_table.py fails the build until it is regenerated.
+    python3 "$PROJECT_DIR/tools/cube_table.py" write
+    python3 "$PROJECT_DIR/tools/validate_mac_table.py" \
+        || die "MAC table is invalid after the edit; nothing has been flashed."
+
     # The board version travels with the PCB, not the chip, so the new MAC
     # inherits whatever the replaced one was registered as.
     # Matched case-sensitively, as the rewrite below is: a read that finds a
