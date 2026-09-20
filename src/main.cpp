@@ -164,19 +164,6 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
 
-// Presence telemetry. The ID sensors are digital, so cube/N/hall_debug shows
-// whether a magnet tripped them but nothing shows how much margin the analog
-// presence reading has over HALL_PRESENCE_ON_DELTA. Rate-limited and
-// change-gated: retained, so the last value is always readable, and quiet while
-// a docked cube sits still.
-//
-// The change threshold has to clear the ADC noise or "sits still" never
-// happens. delta idles across a band of roughly 36 counts -- measured on slot 1
-// both undocked (-13..+35) and docked (135..171) -- so a smaller gate is always
-// open and the topic streams at the rate cap forever. An assert or release is
-// published regardless of size, so the events still land immediately.
-#define HALL_PRESENCE_PUBLISH_INTERVAL_MS 500
-#define HALL_PRESENCE_PUBLISH_MIN_CHANGE  40
 
 // cube/N/proximity is the 0..100 closeness of the neighbour, for driving an
 // animation or any other control. Smoothed harder than the detection path,
@@ -197,8 +184,8 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PROXIMITY_INTERVAL_MS     100
 #define HALL_PROXIMITY_MIN_CHANGE      3
 // GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
-// idle HIGH and a magnet pulls them LOW (bench-verified 2026-07-07 via
-// hall_debug: idle mask reads 111111 with HIGH as the reference level).
+// idle HIGH and a magnet pulls them LOW: an undocked cube reads hall_mask
+// 00 in the diag response, so HIGH is the no-magnet level.
 #define HALL_ID_ACTIVE_LEVEL LOW
 #define HALL_POLL_INTERVAL_MS 1     // ~1 kHz polling; each digitalRead is ~us
 #define HALL_DEBOUNCE_READS 8       // consecutive identical reads to confirm (~8 ms)
@@ -1704,7 +1691,7 @@ void onConnectionEstablished() {
 static uint8_t hallCubeIdForMask(uint8_t id_mask) {
   switch (id_mask & 0x3F) {
     // Player 1, measured with the cubes ordered A through F: each mask is what
-    // the cube immediately to its left reports through cube/{id}/hall_debug.
+    // the cube immediately to its left reports as hall_mask in its diag response.
     case 0b110000: return 11;  // P5+P6
     case 0b100010: return 12;  // P2+P6
     case 0b001100: return 13;  // P3+P4
@@ -2060,13 +2047,15 @@ void handleUDP() {
 #endif
         snprintf(diagStr, sizeof(diagStr),
           "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu"
-          "|hall_mask=%02X|hall_raw=%d|hall_base=%d|hall_delta=%d"
-          "|hall_active=%d|hall_primed=%d",
+          "|hall_mask=%02X|hall_raw=%d|hall_filt=%d|hall_base=%d"
+          "|hall_delta=%d|hall_on=%d|hall_active=%d|hall_primed=%d",
           cube_identifier.c_str(), fw_board, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, nfc_reset_count, avg_letter_interval, max_letter_interval, letter_interval_count,
           WiFi.RSSI(), section_timing_count, millis(),
-          last_hall_id_mask, last_hall_presence_raw, hall_presence.baseline(),
-          hall_presence.delta(), hall_presence.active(), hall_presence.primed());
+          last_hall_id_mask, last_hall_presence_raw, hall_presence.filtered(),
+          hall_presence.baseline(), hall_presence.delta(),
+          HALL_PRESENCE_ON_DELTA, hall_presence.active(),
+          hall_presence.primed());
 
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)diagStr, strlen(diagStr));
@@ -2455,10 +2444,6 @@ void loop() {
       static int candidate_raw_count = 0;
       static uint8_t stable_raw = 0xFF;
 
-      static unsigned long last_presence_publish = 0;
-      static int published_presence_delta = 0;
-      static bool published_presence_active = false;
-      static bool presence_ever_published = false;
 
       if (current_time - last_hall_poll >= HALL_POLL_INTERVAL_MS) {
         last_hall_poll = current_time;
@@ -2473,16 +2458,10 @@ void loop() {
           candidate_raw_count = 1;
         }
       
-        if (candidate_raw_count >= HALL_DEBOUNCE_READS && candidate_raw != stable_raw) {
+        // Not a debug artifact: stable_raw gates the NVS baseline save and
+        // picks the candidate for the border preview.
+        if (candidate_raw_count >= HALL_DEBOUNCE_READS) {
           stable_raw = candidate_raw;
-          char raw_buf[7];
-          for (int i = 0; i < 6; i++) {
-            raw_buf[i] = (stable_raw & (1 << i)) ? '1' : '0';
-          }
-          raw_buf[6] = '\0';
-          if (mqtt_client.isConnected()) {
-            mqtt_client.publish(mqtt_topic_cube + "/hall_debug", raw_buf, true);
-          }
         }
 
         uint8_t id = decodeHallNeighborId(raw);
@@ -2581,27 +2560,6 @@ void loop() {
         // would resurrect a baseline that recalibratePresence() just cleared if
         // the cube reset inside the settle window.
         storePresenceBaseline(stable_raw, presence_state, current_time);
-        const bool presence_changed =
-            !presence_ever_published || presence_state != published_presence_active ||
-            abs(presence_delta - published_presence_delta) >= HALL_PRESENCE_PUBLISH_MIN_CHANGE;
-
-        if (presence_changed &&
-            current_time - last_presence_publish >= HALL_PRESENCE_PUBLISH_INTERVAL_MS &&
-            mqtt_client.isConnected()) {
-          char presence_buf[96];
-          snprintf(presence_buf, sizeof(presence_buf),
-                   "delta=%d on=%d off=%d dist=%d drop=%d base=%d raw=%d active=%d",
-                   presence_delta, HALL_PRESENCE_ON_DELTA, HALL_PRESENCE_OFF_DELTA,
-                   hallPresenceDistance(presence_delta, HALL_PRESENCE_ON_DELTA),
-                   hallPresenceDistance(HALL_PRESENCE_OFF_DELTA, HALL_PRESENCE_ON_DELTA),
-                   hall_presence.baseline(), hall_presence.filtered(), presence_state);
-          if (mqtt_client.publish(mqtt_topic_cube + "/hall_presence", presence_buf, true)) {
-            last_presence_publish = current_time;
-            published_presence_delta = presence_delta;
-            published_presence_active = presence_state;
-            presence_ever_published = true;
-          }
-        }
       }
     }
   }
