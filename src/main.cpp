@@ -186,10 +186,11 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // reason there is a presence sensor in front of the ID sensors at all.
 //
 // A stationary cube chatters when noise can carry it above ON and later below
-// OFF, which needs ON - OFF < 2 * excursion. At 11 counts of excursion, any band
-// under 22 allows it. 30 does not, and leaves ON at 4x the excursion so nothing
-// latches on noise alone, while clearing the weakest docking by 2x.
-#define HALL_PRESENCE_ON_DELTA         45
+// OFF, which needs ON - OFF < 2 * excursion. At 11 counts of excursion, the
+// 55-count band is comfortably stable. A partial 15/16 alignment reaches about
+// 45 counts, while the weakest seated pair measured 98, leaving the threshold
+// clear of both states.
+#define HALL_PRESENCE_ON_DELTA         70
 #define HALL_PRESENCE_OFF_DELTA        15
 #define HALL_PRESENCE_FAST_SHIFT       5
 #define HALL_PRESENCE_BASE_SHIFT       7
