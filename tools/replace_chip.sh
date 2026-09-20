@@ -65,7 +65,10 @@ else
     ! grep -q "\"$NEW_MAC\"" "$MAC_FILE" || die "$NEW_MAC is already in the table; refusing to duplicate it."
 
     # --- Edit both tables -------------------------------------------------------
-    sed -i '' "s|{\"$OLD_MAC\"\(,[[:space:]]*$CUBE_NUM[[:space:]]*,\)|{\"$NEW_MAC\"\1|" "$MAC_FILE"
+    # Keyed on the MAC alone: it is the only column that identifies a row, and
+    # the rest of the entry -- panel wiring and octet -- belongs to the board
+    # the chip is going into, so it stays as it is.
+    sed -i '' "s|{\"$OLD_MAC\"|{\"$NEW_MAC\"|" "$MAC_FILE"
     # A sed that matches nothing still exits 0, so the edit is read back rather
     # than assumed.
     grep -q "\"$NEW_MAC\"" "$MAC_FILE" || die "MAC table edit did not apply — $MAC_FILE is unchanged."

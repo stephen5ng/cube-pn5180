@@ -80,15 +80,17 @@ Add it there first, then re-run."
 ENV="$VERSION"
 echo "Environment: $ENV"
 
-# --- 3. Expected cube id --------------------------------------------------------
-# The compiled table is what decides the board's identity, so the boot check in
-# step 7 compares against this rather than against whatever the board prints.
-EXPECT_CUBE_ID=$(sed -n '/^#else/,/^#endif/p' "$MAC_FILE" \
-    | sed -nE "s/^[[:space:]]*\{\"$MAC\"[[:space:]]*,[[:space:]]*([A-Za-z0-9_]+).*/\1/p" | head -1)
-[ -n "$EXPECT_CUBE_ID" ] \
+# --- 3. Expected static-IP octet ------------------------------------------------
+# The table no longer records which slot a board plays -- the roster assigns
+# that at run time -- so the octet is the only identity it still fixes, and it
+# is what the boot check in step 7 compares. A MAC with no row is fatal rather
+# than degraded: getCubeIpOctet() halts on one it cannot find.
+EXPECT_OCTET=$(sed -n '/^#else/,/^#endif/p' "$MAC_FILE" \
+    | sed -nE "s/^[[:space:]]*\{\"$MAC\"[[:space:]]*,[^,]+,[[:space:]]*([0-9]+)[[:space:]]*\}.*/\1/p" | head -1)
+[ -n "$EXPECT_OCTET" ] \
     || die "MAC $MAC is in $CUBE_VERSIONS_FILE but not in the compiled table in $MAC_FILE.
 The board would boot into 'FATAL: MAC not in cube table'. Add it there first."
-echo "Cube id:     $EXPECT_CUBE_ID"
+echo "IP octet:    $EXPECT_OCTET"
 
 # --- 4. Native tests (mandatory) ----------------------------------------------
 echo ""
@@ -130,17 +132,14 @@ if echo "$BOOT_LOG" | grep -qi "FATAL: MAC not in cube table"; then
     die "board booted into 'MAC not in cube table' — the flashed firmware does not know $MAC"
 fi
 
-BOOTED_CUBE_ID=$(echo "$BOOT_LOG" | sed -nE 's/^cube_id:[[:space:]]*([0-9]+).*/\1/p' | head -1)
-[ -n "$BOOTED_CUBE_ID" ] || { echo "$BOOT_LOG" | tail -20; die "board never printed a cube_id"; }
-
-# A spare carries the CUBE_ID_NONE sentinel, whose numeric value is an
-# implementation detail, so only a numeric table entry can be compared directly.
-if [[ "$EXPECT_CUBE_ID" =~ ^[0-9]+$ ]] && [ "$BOOTED_CUBE_ID" != "$EXPECT_CUBE_ID" ]; then
+BOOTED_OCTET=$(echo "$BOOT_LOG" | sed -nE 's/^ip octet:[[:space:]]*([0-9]+).*/\1/p' | head -1)
+[ -n "$BOOTED_OCTET" ] || { echo "$BOOT_LOG" | tail -20; die "board never printed an ip octet"; }
+if [ "$BOOTED_OCTET" != "$EXPECT_OCTET" ]; then
     echo "$BOOT_LOG" | tail -20
-    die "booted cube_id $BOOTED_CUBE_ID does not match the table's $EXPECT_CUBE_ID for $MAC"
+    die "booted octet $BOOTED_OCTET does not match the table's $EXPECT_OCTET for $MAC"
 fi
 
-echo "Boot verified: MAC $MAC, cube_id $BOOTED_CUBE_ID, environment $ENV"
+echo "Boot verified: MAC $MAC, octet $BOOTED_OCTET, environment $ENV"
 echo ""
-echo "If this Mac is on the cube network, finish with an MQTT ping:
-  mosquitto_rr -h 192.168.8.247 -t 'cube/$BOOTED_CUBE_ID/ping' -e 'cube/$BOOTED_CUBE_ID/echo' -m test -W 3"
+echo "The board has no slot until the roster assigns one. Check it directly:
+  python3 tools/udp_query.py 192.168.8.$BOOTED_OCTET 54321 diag"

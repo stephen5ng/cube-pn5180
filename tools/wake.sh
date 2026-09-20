@@ -21,20 +21,14 @@ table_macs() {
         | tr -d ':'
 }
 
-# The board holding a slot. Retained assignments are asked first because they
-# outrank the compiled table whenever an operator has moved a cube; the table is
-# the fallback for a board running on its compiled identity.
+# The board holding a slot, from the retained assignments. There is no table
+# fallback: the compiled table records a board's octet and panel wiring, not
+# which slot it plays, so with no assignment nothing knows the answer.
 mac_for_slot() {
-    local slot=$1 mac
-    mac=$(mosquitto_sub -h "$MQTT_HOST" -t 'cube/assign/+' -v -W 2 2>/dev/null \
+    local slot=$1
+    mosquitto_sub -h "$MQTT_HOST" -t 'cube/assign/+' -v -W 2 2>/dev/null \
         | sed -nE "s#^cube/assign/([0-9A-Fa-f]{12})[[:space:]].*\"slot\"[[:space:]]*:[[:space:]]*${slot}[[:space:]]*[,}].*#\1#p" \
-        | head -1 | tr 'a-f' 'A-F')
-    if [ -z "$mac" ]; then
-        mac=$(sed -n '/^#else/,/^#endif/p' "$MAC_FILE" \
-            | sed -nE "s/^[[:space:]]*\{\"(([0-9A-F]{2}:){5}[0-9A-F]{2})\"[[:space:]]*,[[:space:]]*${slot}[[:space:]]*,.*/\1/p" \
-            | head -1 | tr -d ':')
-    fi
-    printf '%s' "$mac"
+        | head -1 | tr 'a-f' 'A-F'
 }
 
 clear_flag() {
@@ -51,7 +45,7 @@ if [ -z "${1:-}" ]; then
 elif [[ "$1" =~ ^[0-9]+$ ]]; then
     mac=$(mac_for_slot "$1")
     if [ -z "$mac" ]; then
-        echo "No board holds slot $1" >&2
+        echo "No retained assignment for slot $1 (is the broker up?)" >&2
         exit 1
     fi
     clear_flag "$mac"
