@@ -1912,18 +1912,24 @@ void setupHallSensors() {
   Serial.println(F("Hall neighbor sensors initialized"));
 }
 
-// Returns the neighbor's cube id, or 0 for no/invalid neighbor.
-uint8_t readHallNeighborId() {
-  // Read before the presence check rather than after it: the tracker needs to
-  // know a neighbour is there on every call, and the calls that matter for that
-  // are the ones where presence has not tripped.
+// One sample of the six ID lines, LSB = P1.
+uint8_t readHallIdMask() {
   uint8_t id_mask = 0;
   for (uint8_t i = 0; i < 6; i++) {
     if (digitalRead(HALL_ID_PINS[i]) == HALL_ID_ACTIVE_LEVEL) {
       id_mask |= (1 << i);
     }
   }
+  return id_mask;
+}
 
+// Returns the neighbor's cube id, or 0 for no/invalid neighbor.
+//
+// Takes the mask rather than sampling it, so the id decision and the debounced
+// mask the caller publishes describe the same instant. The tracker is fed on
+// every call, including the ones where presence has not tripped -- those are
+// the calls that keep its baseline from drifting onto a magnet.
+uint8_t decodeHallNeighborId(uint8_t id_mask) {
   const int presence_raw = analogRead(HALL_PRESENCE_PIN);
   last_hall_id_mask = id_mask;
   last_hall_presence_raw = presence_raw;
@@ -2560,12 +2566,8 @@ void loop() {
       if (current_time - last_hall_poll >= HALL_POLL_INTERVAL_MS) {
         last_hall_poll = current_time;
       
-        uint8_t raw = 0;
-        for (uint8_t i = 0; i < 6; i++) {
-          if (digitalRead(HALL_ID_PINS[i]) == HALL_ID_ACTIVE_LEVEL) {
-            raw |= (1 << i);
-          }
-        }
+        const uint8_t raw = readHallIdMask();
+
       
         if (raw == candidate_raw) {
           if (candidate_raw_count < HALL_DEBOUNCE_READS) candidate_raw_count++;
@@ -2586,7 +2588,7 @@ void loop() {
           }
         }
 
-        uint8_t id = readHallNeighborId();
+        uint8_t id = decodeHallNeighborId(raw);
         if (id == candidate_id) {
           if (candidate_count < HALL_DEBOUNCE_READS) candidate_count++;
         } else {
@@ -2616,7 +2618,7 @@ void loop() {
           }
         }
 
-        // readHallNeighborId() above fed the tracker this sample, so the
+        // decodeHallNeighborId() above fed the tracker this sample, so the
         // accessors describe the reading the id decision was just made on.
         const int presence_delta = hall_presence.delta();
         const bool presence_state = hall_presence.active();
