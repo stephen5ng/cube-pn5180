@@ -261,7 +261,6 @@ RTC_DATA_ATTR unsigned long last_activity_time = 0;
 #define MQTT_SOCKET_TIMEOUT_S 2
 #define MQTT_CONNECTION_TIMEOUT_MS 1000
 
-// MQTT Topic Prefixes moved to cube_utilities.h/.cpp
 
 // ============= Global Variables =============
 
@@ -1218,13 +1217,9 @@ unsigned long timing_accumulator = 0;
 
 // Per-section timing diagnostics
 struct SectionTiming {
-  // 64-bit for the same reason as the per-outcome totals below: `long` is
-  // 32 bits here, so a microsecond accumulator wraps after 4295 s of
-  // accumulated work in that section, and these reset only on a diag request.
-  // nfc_us is the one that matters -- it is ~40% duty, so it wraps first, and
-  // it is the field the duty-cycle measurement in this PR was derived from. A
-  // wrap would have made that measurement quietly wrong rather than obviously
-  // so. (It did not: the samples used 2.5-3.2% of the 32-bit range.)
+  // 64-bit because `long` is 32 bits here, so a microsecond accumulator wraps
+  // after 4295 s of accumulated work in that section, and these reset only on
+  // a diag request. nfc_us wraps first: it runs at roughly 40% duty.
   uint64_t mqtt_us;
   uint64_t display_us;
   uint64_t udp_us;
@@ -1233,11 +1228,6 @@ struct SectionTiming {
 };
 SectionTiming section_timing_accum = {0, 0, 0, 0, 0};
 int section_timing_count = 0;
-
-// Per-section timing diagnostics (forward declarations removed, definitions below)
-
-// ============= Utility Functions =============
-// Utility functions moved to cube_utilities.h/.cpp
 
 // ============= Hardware Setup Functions =============
 void initializeNfcReader() {
@@ -2246,8 +2236,8 @@ void handleUDP() {
       }
       // Check if message is "diag" - return detailed per-section timing breakdown
       else if (slotIsResolved() && strcmp(udpBuffer, "diag") == 0) {
-        // 640, up from 320. The per-outcome fields add to a string already ~180
-        // chars, and snprintf truncates silently rather than telling you. Worst
+        // snprintf truncates silently rather than telling you, so this is
+        // sized for the worst case rather than the typical ~180 chars. Worst
         // case with every numeric field at its type maximum -- including three
         // 64-bit microsecond totals at 20 digits each -- is 505 bytes with the
         // NUL. 512 would fit with 7 bytes spare, which is not margin.
@@ -2955,4 +2945,3 @@ void loop() {
     timing_samples_filled = true;
   }
 }
-// force rebuild
