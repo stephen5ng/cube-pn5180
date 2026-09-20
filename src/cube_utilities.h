@@ -33,8 +33,6 @@ extern const int NUM_CUBE_MAC_ENTRIES;
 
 // MQTT Topic Prefixes
 extern const char* MQTT_TOPIC_PREFIX_CUBE;
-extern const char* MQTT_TOPIC_PREFIX_GAME;
-extern const char* MQTT_TOPIC_PREFIX_NFC;
 extern const char* MQTT_TOPIC_PREFIX_ECHO;
 extern const char* MQTT_TOPIC_PREFIX_VERSION;
 

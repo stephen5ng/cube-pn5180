@@ -50,8 +50,6 @@ const int NUM_CUBE_MAC_ENTRIES = sizeof(CUBE_MAC_TABLE) / sizeof(CUBE_MAC_TABLE[
 
 // MQTT Topic Prefixes
 const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
-const char* MQTT_TOPIC_PREFIX_GAME = "game/";
-const char* MQTT_TOPIC_PREFIX_NFC = "nfc/";
 const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
 const char* MQTT_TOPIC_PREFIX_VERSION = "version";
 
