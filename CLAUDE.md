@@ -18,10 +18,11 @@
    ```bash
    ~/.platformio/penv/bin/platformio run -e v6
    ```
-   Environments are `v1`, `v6`, `v6_with_hall`, `v6_with_hall_analog`
-   and `native` — there is no `esp32dev` environment
-   (`esp32dev` is the *board*, set inside `[env:v1]`). `v6` is what the Pi
-   builds for production.
+   Environments are `v1`, `v6`, `v6_with_hall_analog` and `native` — there is
+   no `esp32dev` environment (`esp32dev` is the *board*, set inside
+   `[env:v1]`). `v6` is what the Pi builds for production and the default for
+   a bare `pio run`. No board is `v1` any more; that environment exists so CI
+   keeps compiling the socket-board pin mapping.
    - Verify code compiles for target hardware
    - Catch syntax errors, missing declarations, type mismatches
    - Ensure memory usage is within acceptable limits
@@ -54,9 +55,21 @@
   git worktree has it empty and the build fails on `EspMQTTClient.h not found`;
   run `git submodule update --init --recursive` there first. `src/secrets.h` is
   gitignored, so a new worktree needs a copy of it too
-- `tools/` - Cube management: `flash_cubes.sh`, `flash_cube_wired.sh`, `replace_chip.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `check_cubes.sh`, `show_cube_numbers.py`, diagnostics
+- `tools/` - Cube management: `flash_cubes.sh`, `flash_cube_wired.sh`,
+  `replace_chip.sh`, `reboot.sh`, `wake.sh`, `sleep.sh`, `diag_cubes.sh`,
+  diagnostics
+- `tools/cube_table.py` - **the only thing that parses the MAC table.** It
+  generates `config/cube_table.json`, which every other tool reads. Five
+  separate regexes over `cube_utilities.cpp` used to exist, and three broke
+  silently when the table changed shape. Add a consumer of the JSON, never a
+  second parser; `validate_mac_table.py` fails the build if the two disagree
+  or the artifact is stale
 - `docs/` - Planning docs, hardware debugging notes, analysis write-ups
-- `config/cube_board_versions.txt` - Maps MAC address to board version (v6/v6_with_hall); read by flashing/diagnostic scripts
+- `config/cube_board_versions.txt` - Maps MAC address to board version
+  (`v6` / `v6_with_hall_analog`); read by flashing/diagnostic scripts
+- `config/cube_table.json` - Generated from the compiled MAC table: each
+  board's static-IP octet and panel wiring. Do not hand-edit; run
+  `tools/cube_table.py write`
 - Sleep mode wakes on GPIO 0, the boot button (`SLEEP_PIN`, `src/main.cpp`). GPIO 5 is `POWER_SWITCH_PIN`, the HUB75 power gate — see the sleep-mode section below
 - MAC address table determines cube configuration and RGB pin assignments
 
@@ -65,7 +78,9 @@
 - **Cube IP Mapping**: firmware assigns each MAC its own static-IP octet
   (`findCubeIpOctet`): primary-set MACs get `192.168.8.{20+N}`, backup-set
   MACs `192.168.8.{40+N}`. A cube's address therefore depends on which
-  physical board holds the slot — probe both octets (as
+  physical board holds the slot, and nine boards sit at `.41`–`.49` where no
+  arithmetic on a slot number reaches them. Resolve an address from the
+  retained assignments and `config/cube_table.json` (as
   `tools/flash_cubes.sh` does) rather than assuming `20+N`.
 - **Python Game Directory**: `/Users/stephenng/programming/blockwords/cubes/`
   - This is where responsiveness tests and main game code are located
@@ -95,7 +110,7 @@ The ESP32 firmware has been optimized to achieve **99.7% of theoretical maximum 
 - **Border Message Filtering**: Identified as primary bottleneck (99% improvement when filtered)
 
 ### Tested and REJECTED Approaches:
-1. **ESP32-side Message Deduplication**: Instrumentation showed 66% duplicate messages, but deduplication overhead (2ms+ per message) would exceed benefits. See `docs/mqtt_deduplication_analysis.md` for detailed analysis.
+1. **ESP32-side Message Deduplication**: Instrumentation showed 66% duplicate messages, but deduplication overhead (2ms+ per message) would exceed the benefit.
 2. **Complex Performance Instrumentation**: Simple solutions (30 FPS throttling) were more effective than complex measurement systems.
 
 ### Recommended Future Optimizations:
@@ -114,8 +129,8 @@ When bottleneck is message volume, **reduce message count at source** rather tha
 ### Implementation:
 - **New Protocol**: `"NSW:0xF800"` format consolidates multiple border directions with single color
 - **ESP32 Firmware**: Added `handleConsolidatedBorderCommand()` with N/S/E/W direction parsing  
-- **Python Game**: Updated `cubes_to_game.py` to use consolidated messaging for word borders and clearing
-- **Backward Compatibility**: Legacy individual border topics still supported
+- **Python Game**: `src/hardware/cubes_to_game/` uses consolidated messaging for word borders and clearing
+- **Sole protocol**: the per-side topics it replaced were removed once nothing published them
 
 ### Protocol Examples:
 - `ENSW:0xF800` → Full red frame (single letter word)
@@ -130,9 +145,10 @@ When bottleneck is message volume, **reduce message count at source** rather tha
 - **Verified working** with RGB565 color format (`0xF800` = red)
 
 ### Code Locations:
-- ESP32: `src/main.cpp:559` - `handleConsolidatedBorderCommand()`
-- Python: `cubes_to_game.py:185` - `_mark_tiles_for_guess()` updated
-- Topic: `cube/{id}/border` (consolidated) vs `cube/{id}/border_hline_top` (legacy)
+Named rather than numbered, because line numbers rot and these already had.
+- ESP32: `handleConsolidatedBorderCommand()` in `src/main.cpp`
+- Python: `_mark_tiles_for_guess()` in `src/hardware/cubes_to_game/`
+- Topic: `cube/{id}/border`
 
 ## Sleep Mode: HUB75 Power-Off (v6 boards)
 
@@ -150,7 +166,9 @@ The v6 PCB has a TPS22975 load switch on GPIO5 that gates 5V to the HUB75 panel.
 ## Testing Notes
 - Native tests run utility functions without ESP32 dependencies
 - All tests must pass before deployment
-- Segfault protection implemented for unrecognized MAC addresses
+- A MAC the compiled table does not know is fatal by design, not tolerated:
+  `getCubeIpOctet()` prints `FATAL: MAC not in cube table` and halts, because
+  a board with no octet has no address to be reached at
 - A sleeping cube checks in every `sleep_interval_s` seconds (default **20**,
   overridable via `cube/{id}/sleep_interval`), holding the radio up for
   `KEEPALIVE_CHECKIN_WINDOW_MS` each time. That dwell is also the current pulse
