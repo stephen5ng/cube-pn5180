@@ -580,7 +580,8 @@ public:
                                 pending_border_top(0), pending_border_bottom(0),
                                 pending_border_left(0), pending_border_right(0),
                                 border_animation_start_time(0), border_animation_active(false), border_target_pending(false),
-                                border_preview_side(0), border_preview_start_time(0), border_preview_until(0),
+                                border_preview_side(0), border_preview_start_time(0),
+                                border_preview_until(0),
                                 image1(nullptr), image2(nullptr), image(nullptr), previous_image(nullptr),
                                 previous_letter(' '), current_letter(' ') {
     int cube_id_int = cube_id.toInt();    
@@ -786,6 +787,19 @@ public:
         const int x = left ? line : PANEL_RES_X - BORDER_LINE_COUNT / 2 + line;
         led_display->drawFastVLine(x, 0, vertical, side);
         led_display->drawFastVLine(x, PANEL_RES_Y - vertical, vertical, side);
+      }
+    }
+  }
+  void drawPreviewSideErasing(bool left, float p, uint16_t side) {
+    // p=0 is a complete shared edge. As p grows, its two halves withdraw
+    // from the centre to their endpoints; the following preview cycle snaps
+    // straight back to the complete edge.
+    const int half = (int)(PANEL_RES_Y / 2.0f * (1.0f - p) + .5f);
+    for (uint8_t line = 0; line < BORDER_LINE_COUNT / 2; ++line) {
+      const int x = left ? line : PANEL_RES_X - BORDER_LINE_COUNT / 2 + line;
+      if (half) {
+        led_display->drawFastVLine(x, 0, half, side);
+        led_display->drawFastVLine(x, PANEL_RES_Y - half, half, side);
       }
     }
   }
@@ -1005,6 +1019,7 @@ public:
   }
 
   void handleBorderPreviewCommand(const String& message) {
+    // Protocol: E or W identifies the prospective shared edge.
     const char side = message.length() ? message.charAt(0) : 0;
     border_preview_side = (side == 'E' || side == 'W') ? side : 0;
     border_preview_start_time = millis();
@@ -1019,9 +1034,16 @@ public:
     const float inv = 1.0f - t;
     const float p = 1.0f - inv * inv * inv * inv * inv;
     const bool left = border_preview_side == 'W';
-    // Preview only the candidate connection. It is an overlay and never changes
-    // the confirmed border target maintained by /border.
-    drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, WHITE);
+    // A confirmed edge on the other side makes this cube the middle-bound
+    // half of a marginal connection, regardless of which cube read the Hall
+    // magnets. It sheds the prospective edge while the free endpoint grows it.
+    const bool has_confirmed_opposite_edge =
+        left ? vline_color_right != 0 : vline_color_left != 0;
+    if (has_confirmed_opposite_edge) {
+      drawPreviewSideErasing(left, p, WHITE);
+    } else {
+      drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, WHITE);
+    }
   }
 
 #ifdef BOARD_V6
@@ -1926,27 +1948,25 @@ uint8_t getWakeupReason() {
 // each cube's ID magnets carry the pattern that decodes to its game id.
 static uint8_t hallCubeIdForMask(uint8_t id_mask) {
   switch (id_mask & 0x3F) {
-    // Player 1, read off the boards on 2026-09-18: each cube's mask is what its
-    // left-hand neighbour reported over cube/{id}/hall_debug with the row lined
-    // up, so these follow the magnets rather than the magnets following these.
+    // Player 1, measured with the cubes ordered A through F: each mask is what
+    // the cube immediately to its left reports through cube/{id}/hall_debug.
     case 0b110000: return 11;  // P5+P6
-    case 0b010010: return 12;  // P2+P5
+    case 0b100010: return 12;  // P2+P6
     case 0b001100: return 13;  // P3+P4
-    case 0b010001: return 14;  // P1+P5
+    case 0b101000: return 14;  // P4+P6
     case 0b000101: return 15;  // P1+P3
-    case 0b001001: return 16;  // P1+P4
+    case 0b100100: return 16;  // P3+P6
     // Player 0 has no magnets fitted -- those boards still run NFC -- so these are
     // a free choice, taken from what player 1 left and preferring the pins that
     // are not GPIO 34/35. Fit magnets to match, or renumber these to match the
-    // magnets, whichever comes first. P1+P2 is spare and is the safest pair
-    // available, so it is the one to move slot 11 onto if its magnets are ever
-    // repositioned.
+    // magnets, whichever comes first. P1+P2 is free after the Player 1 mapping,
+    // so it avoids overlapping a physical Player 1 ID.
     case 0b000110: return 1;   // P2+P3
     case 0b001010: return 2;   // P2+P4
     case 0b010100: return 3;   // P3+P5
     case 0b011000: return 4;   // P4+P5
     case 0b100001: return 5;   // P1+P6
-    case 0b100010: return 6;   // P2+P6
+    case 0b000011: return 6;   // P1+P2
     default:       return 0;
   }
 }
