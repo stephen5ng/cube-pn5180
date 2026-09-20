@@ -14,11 +14,10 @@ MQTT_HOST=${MQTT_SERVER:-192.168.8.247}
 FW_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MAC_FILE="$FW_DIR/src/cube_utilities.cpp"
 
-# Every board the firmware knows, colon-free, from the compiled table.
+# Every board the firmware knows, colon-free. tools/cube_table.py is the only
+# thing that reads the compiled table; everything else asks it.
 table_macs() {
-    sed -n '/^#else/,/^#endif/p' "$MAC_FILE" \
-        | sed -nE 's/^[[:space:]]*\{"(([0-9A-F]{2}:){5}[0-9A-F]{2})".*/\1/p' \
-        | tr -d ':'
+    python3 "$FW_DIR/tools/cube_table.py" macs
 }
 
 # The board holding a slot, from the retained assignments. There is no table

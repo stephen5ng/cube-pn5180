@@ -1,0 +1,111 @@
+{
+  "_generated": "by tools/cube_table.py from src/cube_utilities.cpp -- do not edit",
+  "protocol": 1,
+  "boards": [
+    {
+      "mac": "CC:DB:A7:9F:C2:84",
+      "rgb_order": "BGR",
+      "ip_octet": 21
+    },
+    {
+      "mac": "3C:8A:1F:77:DF:8C",
+      "rgb_order": "BGR",
+      "ip_octet": 22
+    },
+    {
+      "mac": "8C:4F:00:37:7C:DC",
+      "rgb_order": "BGR",
+      "ip_octet": 23
+    },
+    {
+      "mac": "CC:DB:A7:9B:5D:9C",
+      "rgb_order": "BGR",
+      "ip_octet": 24
+    },
+    {
+      "mac": "04:83:08:59:76:98",
+      "rgb_order": "BGR",
+      "ip_octet": 25
+    },
+    {
+      "mac": "EC:E3:34:79:8A:BC",
+      "rgb_order": "BGR",
+      "ip_octet": 26
+    },
+    {
+      "mac": "EC:E3:34:79:9D:2C",
+      "rgb_order": "RGB",
+      "ip_octet": 31
+    },
+    {
+      "mac": "20:50:0D:1A:04:AC",
+      "rgb_order": "RGB",
+      "ip_octet": 32
+    },
+    {
+      "mac": "20:50:0D:30:95:48",
+      "rgb_order": "RGB",
+      "ip_octet": 33
+    },
+    {
+      "mac": "94:54:C5:EE:89:4C",
+      "rgb_order": "RGB",
+      "ip_octet": 34
+    },
+    {
+      "mac": "20:50:0D:19:FB:C8",
+      "rgb_order": "RGB",
+      "ip_octet": 35
+    },
+    {
+      "mac": "D8:BC:38:F9:39:30",
+      "rgb_order": "RGB",
+      "ip_octet": 36
+    },
+    {
+      "mac": "80:F3:DA:54:53:B8",
+      "rgb_order": "BGR",
+      "ip_octet": 41
+    },
+    {
+      "mac": "B4:BF:E9:60:C0:68",
+      "rgb_order": "RGB",
+      "ip_octet": 42
+    },
+    {
+      "mac": "5C:01:3B:64:E2:84",
+      "rgb_order": "RGB",
+      "ip_octet": 43
+    },
+    {
+      "mac": "D4:8A:FC:9F:B0:C0",
+      "rgb_order": "BGR",
+      "ip_octet": 44
+    },
+    {
+      "mac": "D8:BC:38:E5:A8:38",
+      "rgb_order": "RGB",
+      "ip_octet": 45
+    },
+    {
+      "mac": "5C:01:3B:4A:87:4C",
+      "rgb_order": "RGB",
+      "ip_octet": 46
+    },
+    {
+      "mac": "8C:4F:00:36:7A:88",
+      "rgb_order": "BGR",
+      "ip_octet": 47
+    },
+    {
+      "mac": "5C:01:3B:65:F2:74",
+      "rgb_order": "RGB",
+      "ip_octet": 48
+    },
+    {
+      "mac": "20:50:0D:0A:9F:A8",
+      "rgb_order": "RGB",
+      "ip_octet": 49
+    }
+  ]
+}

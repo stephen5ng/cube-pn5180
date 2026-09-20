@@ -85,8 +85,7 @@ echo "Environment: $ENV"
 # that at run time -- so the octet is the only identity it still fixes, and it
 # is what the boot check in step 7 compares. A MAC with no row is fatal rather
 # than degraded: getCubeIpOctet() halts on one it cannot find.
-EXPECT_OCTET=$(sed -n '/^#else/,/^#endif/p' "$MAC_FILE" \
-    | sed -nE "s/^[[:space:]]*\{\"$MAC\"[[:space:]]*,[^,]+,[[:space:]]*([0-9]+)[[:space:]]*\}.*/\1/p" | head -1)
+EXPECT_OCTET=$("$PIO_PYTHON" "$FW_DIR/tools/cube_table.py" octet "$MAC" 2>/dev/null)
 [ -n "$EXPECT_OCTET" ] \
     || die "MAC $MAC is in $CUBE_VERSIONS_FILE but not in the compiled table in $MAC_FILE.
 The board would boot into 'FATAL: MAC not in cube table'. Add it there first."
