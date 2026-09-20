@@ -40,7 +40,7 @@ ping_once() {
 # beats duplicating the mapping here.
 mac_table_entries() {
     sed -n '/^#else/,/^#endif/p' "$FW_DIR/src/cube_utilities.cpp" \
-        | sed -nE 's/^[[:space:]]*\{"(([0-9A-F]{2}:){5}[0-9A-F]{2})"[[:space:]]*,[^,]+,[^,]+,[[:space:]]*([0-9]+)[[:space:]]*\}.*/\1 \3/p'
+        | sed -nE 's/^[[:space:]]*\{"(([0-9A-F]{2}:){5}[0-9A-F]{2})"[[:space:]]*,[^,]+,[[:space:]]*([0-9]+)[[:space:]]*\}.*/\1 \3/p'
 }
 
 # "MAC slot" for every board holding one, from the retained assignment
