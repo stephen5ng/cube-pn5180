@@ -1,14 +1,3 @@
-// #include "cube_messages.h"
-typedef struct MessageLetter {
-  char letter;
-  char secret;
-} MessageLetter;
-
-#define NFCID_LENGTH 8
-
-typedef struct MessageNfcId {
-  char id[NFCID_LENGTH*2 + 1];
-} MessageNfcId;
 #include "cube_utilities.h"
 #include "hall_presence.h"
 #include "sensor_mode.h"
@@ -19,10 +8,8 @@ typedef struct MessageNfcId {
 #include <EspMQTTClient.h>
 #include <PN5180ISO15693.h>
 #include <SPI.h>
-#include "mbedtls/base64.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <Wire.h>
 #include <secrets.h>
 #include "font.h"
 #include "esp_system.h"
@@ -102,8 +89,6 @@ void initialiseNeighbourSensor() {
 #define PIXEL_COUNT (PANEL_RES_X * PANEL_RES_Y)
 #define IMAGE_SIZE (PIXEL_COUNT * sizeof(uint16_t))
 
-#define BAND_COUNT 4
-#define BAND_WIDTH (PANEL_RES_X/BAND_COUNT)
 #define BORDER_LINE_COUNT 4
 
 // Pin Definitions
@@ -112,7 +97,6 @@ void initialiseNeighbourSensor() {
 
 
 // Display Settings
-#define BIG_ROW 0
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 1
 #define BRIGHTNESS 255
@@ -120,8 +104,6 @@ void initialiseNeighbourSensor() {
 #define PRINT_DEBUG true
 
 // Timing Constants
-#define NFC_DEBOUNCE_TIME_MS 200
-#define NFC_MIN_PUBLISH_INTERVAL_MS 100
 #define ANIMATION_DURATION_MS 1000
 #define ANIMATION_SCALE 100
 #define BORDER_ANIMATION_DURATION_MS 1000
@@ -236,7 +218,6 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_DEBOUNCE_READS 8       // consecutive identical reads to confirm (~8 ms)
 
 // Sleep state management
-RTC_DATA_ATTR unsigned long sleep_start_time = 0;
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 // How long a sleeping cube stays down between keep-alive check-ins. Survives
 // deep sleep in RTC memory, and cube/{id}/sleep_interval overrides it.
@@ -302,17 +283,8 @@ HUB75_I2S_CFG display_config(
 PN5180ISO15693* nfc_reader = nullptr;  // Will be initialized after cube ID is determined
 
 // Message Objects
-MessageLetter letter_message;
-MessageNfcId nfc_message;
 
 // NFC State
-uint8_t last_nfc_id[NFCID_LENGTH];
-uint8_t DEBUG_NFC_ID[NFCID_LENGTH] = {
-  0xdd, 0x11, 0xf8, 0xb8,
-  0x50, 0x01, 0x04, 0xe0};
-uint8_t NO_DEBUG_NFC_ID[NFCID_LENGTH] = {
-  0xbc, 0x10, 0xf8, 0xb8,
-  0x50, 0x01, 0x04, 0xe0};
 
 struct NfcWorkerResult {
   ISO15693ErrorCode read_result;
@@ -337,7 +309,6 @@ EspMQTTClient mqtt_client(
   "",
   ""
 );
-WiFiClient wifi_client;
 static String cube_identifier;
 static int compiled_cube_id = -1;
 static int applied_slot = -1;
@@ -358,7 +329,6 @@ static String mqtt_topic_presence;
 static String mqtt_topic_liveness_response;
 static const unsigned long ASSIGNMENT_WAIT_MS = 3000;
 static RgbOrder current_rgb_order = RGB_ORDER_BGR;
-const char* nfc_topic_out;
 static bool wifi_connection_attempt_active = false;
 static unsigned long wifi_connection_attempt_started = 0;
 static unsigned long next_wifi_connection_attempt = 0;
@@ -366,7 +336,6 @@ static unsigned long next_wifi_connection_attempt = 0;
 // Animation
 char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value read
 char last_right_published[8] = "INIT";                  // last value published to /right
-unsigned long last_nfc_publish_time = 0;
 
 // Pre-allocated MQTT topics
 String mqtt_topic_cube;
@@ -428,7 +397,6 @@ void debugPrintln(const __FlashStringHelper* message) {
 }
 
 // MQTT letter latency tracking (forward-declared for use in DisplayManager)
-unsigned long last_letter_recv_time = 0;
 unsigned long letter_interval_accum = 0;
 int letter_interval_count = 0;
 unsigned long max_letter_interval = 0;
@@ -480,9 +448,7 @@ private:
   uint16_t* image;
   uint16_t* previous_image;
   String display_string;
-  bool is_border_word;
   uint8_t debug_line;
-  uint16_t border_color;
   unsigned long animation_start_time;
   long highlight_end_time;
   bool is_lock;
@@ -568,7 +534,7 @@ private:
 
 public:
   DisplayManager(String cube_id) : is_image_mode(false), is_dirty(true),
-                                is_border_word(false), debug_line(0),
+                                debug_line(0),
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), font_size(1), is_lock(false),
@@ -1173,7 +1139,6 @@ public:
         max_letter_interval = time_since_last;
       }
     }
-    last_letter_recv_time = current_time;
 
     last_message_time = current_time;
 
@@ -1229,9 +1194,8 @@ struct SectionTiming {
   uint64_t display_us;
   uint64_t udp_us;
   uint64_t nfc_us;
-  uint64_t total_us;
 };
-SectionTiming section_timing_accum = {0, 0, 0, 0, 0};
+SectionTiming section_timing_accum = {0, 0, 0, 0};
 int section_timing_count = 0;
 
 // Per-section timing diagnostics (forward declarations removed, definitions below)
@@ -1464,7 +1428,6 @@ void enterSleepMode() {
   // Enable timer wake-up using configurable interval
   esp_sleep_enable_timer_wakeup((uint64_t)sleep_interval_s * uS_TO_S_FACTOR);
 
-  sleep_start_time = millis();
 
   // Send debug via UDP
   char dbg[64];
@@ -1932,21 +1895,6 @@ void onConnectionEstablished() {
 }
 
 // ============= System Functions =============
-uint8_t getWakeupReason() {
-  esp_sleep_wakeup_cause_t wakeup_reason;
-  wakeup_reason = esp_sleep_get_wakeup_cause();
-
-  switch(wakeup_reason) {
-    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
-    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
-  }
-  return wakeup_reason;
-}
-
 // ============= Hall Neighbor Functions =============
 // Maps a 6-bit ID mask (bits P6 P5 P4 P3 P2 P1) to a neighbor cube id;
 // 0 = invalid pattern. Player 0 is cubes 1-6, player 1 is cubes 11-16, and
@@ -2290,7 +2238,7 @@ void handleUDP() {
         last_activity_time = millis();
 
         // Reset accumulators after reading
-        section_timing_accum = {0, 0, 0, 0, 0};
+        section_timing_accum = {0, 0, 0, 0};
         section_timing_count = 0;
         letter_interval_accum = 0;
         letter_interval_count = 0;
