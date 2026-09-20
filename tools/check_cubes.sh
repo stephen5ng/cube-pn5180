@@ -9,7 +9,12 @@ MQTT_HOST=192.168.8.247
 
 # Thresholds
 MAX_LOOP_US=5000
-MAX_NFC_US=5000
+# Per-READ worst case, not the nfc= average. nfc= is total NFC time divided by
+# main loop iterations, and most iterations dequeue no result, so it reads
+# ~0.12ms while a read actually costs tens of milliseconds -- a failing reader
+# passes it comfortably. nfc_max is a single read, so it means what it says.
+# 60ms sits above the two plateaus measured across the rig (~31ms and ~47ms).
+MAX_NFC_MAX_US=60000
 MAX_LETTER_AVG_MS=600
 MIN_RSSI=-75
 
@@ -92,7 +97,7 @@ for cube_id in "${CUBES[@]}"; do
 
   # Evaluate each metric
   loop_ok=true;       [ "$loop"       -gt $MAX_LOOP_US ]       && loop_ok=false
-  nfc_ok=true;        [ "$nfc"        -gt $MAX_NFC_US ]         && nfc_ok=false
+  nfc_ok=true;        [ "$nfc_max"    -gt $MAX_NFC_MAX_US ]     && nfc_ok=false
   letter_ok=true;     [ "$letter_avg" -gt $MAX_LETTER_AVG_MS ]  && letter_ok=false
   rssi_ok=true;       [ "$rssi"       -lt $MIN_RSSI ]            && rssi_ok=false
 
@@ -108,7 +113,7 @@ for cube_id in "${CUBES[@]}"; do
 
   # Print any individual failures
   $loop_ok   || printf "       └─ loop time ${loop}us exceeds ${MAX_LOOP_US}us\n"
-  $nfc_ok    || printf "       └─ NFC avg ${nfc}us exceeds ${MAX_NFC_US}us (NFC hardware issue?)\n"
+  $nfc_ok    || printf "       └─ slowest NFC read ${nfc_max}us exceeds ${MAX_NFC_MAX_US}us (NFC hardware issue?)\n"
   $letter_ok || printf "       └─ letter_avg ${letter_avg}ms exceeds ${MAX_LETTER_AVG_MS}ms (is random_letters.sh running?)\n"
   $rssi_ok   || printf "       └─ RSSI ${rssi}dBm below ${MIN_RSSI}dBm\n"
 done

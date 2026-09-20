@@ -51,7 +51,11 @@ try:
 
     # Simple pass/fail
     loop_ok = loop_us < 5000
-    nfc_ok = nfc_us < 5000
+    # nfc_max, not nfc: the latter is a per-iteration average diluted by every
+    # loop that dequeued no NFC result, so it reads ~0.12ms while a read costs
+    # tens of milliseconds. 60ms clears the ~31ms and ~47ms plateaus measured
+    # across the rig.
+    nfc_ok = nfc_max < 60000
     letter_ok = letter_avg < 600 or letter_avg == 0
 
     if loop_ok and nfc_ok and letter_ok:
@@ -61,7 +65,7 @@ try:
         if not loop_ok:
             print(f"  - Loop time is SLOW ({loop_us}us, threshold 5000us)")
         if not nfc_ok:
-            print(f"  - NFC is SLOW ({nfc_us}us, threshold 5000us)")
+            print(f"  - NFC is SLOW (slowest read {nfc_max}us, threshold 60000us)")
             print(f"    → Cube may need NFC hardware swap (BUSY pin stuck?)")
         if not letter_ok and letter_avg > 0:
             print(f"  - Letter interval is LONG ({letter_avg}ms, threshold 600ms)")
