@@ -13,7 +13,6 @@
 #include <secrets.h>
 #include "font.h"
 #include "esp_system.h"
-#include "esp_task_wdt.h"
 #include "driver/rtc_io.h"
 
 // ============= Configuration =============
@@ -2212,9 +2211,6 @@ void setup() {
 
   Serial.printf("Model: %d, Cores: %d, Revision: %d\n", chip_info.model, chip_info.cores, chip_info.revision);
 
-  // Initialize watchdog timer
-  // esp_task_wdt_init(10, true); 
-  // esp_task_wdt_add(NULL);      // Add current thread to WDT watch
   
   // Configure Pin 0 for momentary switch (with internal pull-up)
   pinMode(0, INPUT_PULLUP);
@@ -2395,7 +2391,6 @@ void loop() {
     enterSleepMode();
   }
 
-  esp_task_wdt_reset();  // Feed the watchdog timer
 
   // Throttle display updates to 30 FPS for improved MQTT responsiveness
   static unsigned long last_display_update = 0;
