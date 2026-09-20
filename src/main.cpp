@@ -1046,8 +1046,7 @@ public:
     if (has_confirmed_edge) {
       drawPreviewSideErasing(left, p, WHITE);
     } else {
-      drawEndPath(left, (64.0f + 32.0f * p) / 96.0f,
-                  WHITE, WHITE, WHITE);
+      drawEndPath(left, p, WHITE, WHITE, WHITE);
     }
   }
 
