@@ -20,39 +20,25 @@ enum RgbOrder {
 
 // Physical facts about a board, keyed by the MAC that never changes: which
 // static-IP octet it answers on and how its panel is wired. Which slot it plays
-// is not among them -- the roster assigns that at run time -- so cube_id is
-// CUBE_ID_NONE on every production row, and the field remains only as the
-// fallback's input while the authority marker is still unpublished.
+// is not among them -- the roster assigns that at run time, and a board with no
+// assignment shows NO SLOT rather than guessing.
 struct CubeMacEntry {
   const char *mac;
-  int cube_id;
   RgbOrder rgb_order;
   int ip_octet;
 };
-
-// The absence of a slot. Every production row carries it, so the fallback
-// below has nothing to hand back and a board with no assignment stays
-// unassigned rather than adopting a slot someone else holds -- which is what a
-// compiled slot did once its board had moved. A board that has been assigned is
-// unaffected: the stored slot in NVS is preferred over this, and survives a
-// reboot without the broker.
-constexpr int CUBE_ID_NONE = 0;
 
 extern const CubeMacEntry CUBE_MAC_TABLE[];
 extern const int NUM_CUBE_MAC_ENTRIES;
 
 // MQTT Topic Prefixes
 extern const char* MQTT_TOPIC_PREFIX_CUBE;
-extern const char* MQTT_TOPIC_PREFIX_GAME;
-extern const char* MQTT_TOPIC_PREFIX_NFC;
 extern const char* MQTT_TOPIC_PREFIX_ECHO;
 extern const char* MQTT_TOPIC_PREFIX_VERSION;
 
 // Returns pointer into CUBE_MAC_TABLE for the given MAC, or nullptr if unknown.
 const CubeMacEntry* findCubeEntry(const char *mac_address);
 
-// Returns cube_id for the given MAC address, or -1 if unknown.
-int findCubeId(const char *mac_address);
 // Returns the physical IP octet for the given MAC, or -1 if unknown.
 int findCubeIpOctet(const char *mac_address);
 
@@ -71,26 +57,23 @@ struct CubeAssignment {
 AssignmentParseResult parseAssignmentRecord(const char* json, CubeAssignment* out);
 bool assignmentRecordIsActionable(AssignmentParseResult result);
 int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
-                        bool authority_latched, int compiled_cube_id);
+                        bool authority_latched, int fallback_slot);
 
 // The boot screen's identity line: "c12 ip32".
 //
 // Both numbers are needed because neither alone identifies a cube. The slot is
 // what the admin page calls it; the octet is what the network calls it; and for
-// a spare the two are unrelated -- one sitting at .47 with a stored slot of 1
-// reads "c1 ip47", which is precisely the pairing that cannot be guessed from
-// either number on its own.
+// a spare the two are unrelated -- one sitting at .47 assigned to slot 1 reads
+// "c1 ip47", which is precisely the pairing that cannot be guessed from either
+// number on its own.
 //
-// The slot argument order mirrors the fallback in setup()'s assignment-wait
-// path: a stored slot wins over the compiled one, because that is what a spare
-// assigned from the admin page is running as. With neither, the cube does not
-// yet know its slot and prints "c?" rather than a wrong number -- applySlot()
-// paints NO SLOT a moment later.
+// slot comes from NVS. A board that has never been assigned has none, and
+// prints "c?" rather than a wrong number -- applySlot() paints NO SLOT a moment
+// later.
 //
 // Output stays inside the ~10 characters displayDebugMessage() fits at size 1
 // on a 64px panel, above which it wraps onto a second line.
-void formatBootIdentity(char* out, size_t out_size, int stored_slot,
-                        int compiled_slot, int ip_octet);
+void formatBootIdentity(char* out, size_t out_size, int slot, int ip_octet);
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer);
 
 enum NfcObservationAction {

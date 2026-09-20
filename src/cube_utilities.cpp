@@ -6,55 +6,50 @@
 // Test MAC table - stable values that never change
 // Hardware replacements should NOT require test updates
 const CubeMacEntry CUBE_MAC_TABLE[] = {
-  {"AA:AA:AA:AA:AA:AA",  1, RGB_ORDER_BGR, 21},
-  {"BB:BB:BB:BB:BB:BB",  2, RGB_ORDER_BGR, 22},
-  {"CC:CC:CC:CC:CC:CC",  3, RGB_ORDER_BGR, 23},
-  {"DD:DD:DD:DD:DD:DD",  4, RGB_ORDER_BGR, 24},
-  {"EE:EE:EE:EE:EE:EE",  5, RGB_ORDER_BGR, 25},
-  {"FF:FF:FF:FF:FF:FF",  6, RGB_ORDER_BGR, 26},
-  {"01:01:01:01:01:01", 11, RGB_ORDER_RGB, 31},
-  {"02:02:02:02:02:02", 12, RGB_ORDER_RGB, 32},
-  {"03:03:03:03:03:03", 13, RGB_ORDER_RGB, 33},
-  {"04:04:04:04:04:04", 14, RGB_ORDER_RGB, 34},
-  {"05:05:05:05:05:05", 15, RGB_ORDER_RGB, 35},
-  {"06:06:06:06:06:06", 16, RGB_ORDER_RGB, 36},
-  {"A1:A1:A1:A1:A1:A1",  1, RGB_ORDER_RGB, 41},
+  {"AA:AA:AA:AA:AA:AA", RGB_ORDER_BGR, 21},
+  {"BB:BB:BB:BB:BB:BB", RGB_ORDER_BGR, 22},
+  {"CC:CC:CC:CC:CC:CC", RGB_ORDER_BGR, 23},
+  {"DD:DD:DD:DD:DD:DD", RGB_ORDER_BGR, 24},
+  {"EE:EE:EE:EE:EE:EE", RGB_ORDER_BGR, 25},
+  {"FF:FF:FF:FF:FF:FF", RGB_ORDER_BGR, 26},
+  {"01:01:01:01:01:01", RGB_ORDER_RGB, 31},
+  {"02:02:02:02:02:02", RGB_ORDER_RGB, 32},
+  {"03:03:03:03:03:03", RGB_ORDER_RGB, 33},
+  {"04:04:04:04:04:04", RGB_ORDER_RGB, 34},
+  {"05:05:05:05:05:05", RGB_ORDER_RGB, 35},
+  {"06:06:06:06:06:06", RGB_ORDER_RGB, 36},
+  {"A1:A1:A1:A1:A1:A1", RGB_ORDER_RGB, 41},
 };
 #else
 // Production MAC addresses - actual hardware
 const CubeMacEntry CUBE_MAC_TABLE[] = {
-  {"CC:DB:A7:9F:C2:84",  CUBE_ID_NONE, RGB_ORDER_BGR, 21},  // 30-pin
-  {"3C:8A:1F:77:DF:8C",  CUBE_ID_NONE, RGB_ORDER_BGR, 22},  // 30-pin
-  {"8C:4F:00:37:7C:DC",  CUBE_ID_NONE, RGB_ORDER_BGR, 23},  // 30-pin
-  {"CC:DB:A7:9B:5D:9C",  CUBE_ID_NONE, RGB_ORDER_BGR, 24},  // 30-pin (moved from cube 11)
-  {"04:83:08:59:76:98",  CUBE_ID_NONE, RGB_ORDER_BGR, 25},
-  {"EC:E3:34:79:8A:BC",  CUBE_ID_NONE, RGB_ORDER_BGR, 26},  // 30-pin
-  {"EC:E3:34:79:9D:2C", CUBE_ID_NONE, RGB_ORDER_RGB, 31},
-  {"20:50:0D:1A:04:AC", CUBE_ID_NONE, RGB_ORDER_RGB, 32},  // 30-pin
-  {"20:50:0D:30:95:48", CUBE_ID_NONE, RGB_ORDER_RGB, 33},
-  {"94:54:C5:EE:89:4C", CUBE_ID_NONE, RGB_ORDER_RGB, 34},  // 30-pin
-  {"20:50:0D:19:FB:C8", CUBE_ID_NONE, RGB_ORDER_RGB, 35},
-  {"D8:BC:38:F9:39:30", CUBE_ID_NONE, RGB_ORDER_RGB, 36},  // 30-pin
-  {"80:F3:DA:54:53:B8",  CUBE_ID_NONE, RGB_ORDER_BGR, 41},
-  {"B4:BF:E9:60:C0:68",  CUBE_ID_NONE, RGB_ORDER_RGB, 42},
-  {"5C:01:3B:64:E2:84",  CUBE_ID_NONE, RGB_ORDER_RGB, 43},  // spare
-  {"D4:8A:FC:9F:B0:C0",  CUBE_ID_NONE, RGB_ORDER_BGR, 44},
-  {"D8:BC:38:E5:A8:38",  CUBE_ID_NONE, RGB_ORDER_RGB, 45},
-  {"5C:01:3B:4A:87:4C",  CUBE_ID_NONE, RGB_ORDER_RGB, 46},
-  // CUBE_ID_NONE is a board holding no slot. It displays NO SLOT until an
-  // operator assigns it one from the admin page, and the roster is what
-  // decides: a compiled id is only the fallback for a board no record covers.
-  {"8C:4F:00:36:7A:88", CUBE_ID_NONE, RGB_ORDER_BGR, 47},  // spare
-  {"5C:01:3B:65:F2:74",  CUBE_ID_NONE, RGB_ORDER_RGB, 48},
-  {"20:50:0D:0A:9F:A8", CUBE_ID_NONE, RGB_ORDER_RGB, 49},  // spare
+  {"CC:DB:A7:9F:C2:84", RGB_ORDER_BGR, 21},  // 30-pin
+  {"3C:8A:1F:77:DF:8C", RGB_ORDER_BGR, 22},  // 30-pin
+  {"8C:4F:00:37:7C:DC", RGB_ORDER_BGR, 23},  // 30-pin
+  {"CC:DB:A7:9B:5D:9C", RGB_ORDER_BGR, 24},  // 30-pin (moved from cube 11)
+  {"04:83:08:59:76:98", RGB_ORDER_BGR, 25},
+  {"EC:E3:34:79:8A:BC", RGB_ORDER_BGR, 26},  // 30-pin
+  {"EC:E3:34:79:9D:2C", RGB_ORDER_RGB, 31},
+  {"20:50:0D:1A:04:AC", RGB_ORDER_RGB, 32},  // 30-pin
+  {"20:50:0D:30:95:48", RGB_ORDER_RGB, 33},
+  {"94:54:C5:EE:89:4C", RGB_ORDER_RGB, 34},  // 30-pin
+  {"20:50:0D:19:FB:C8", RGB_ORDER_RGB, 35},
+  {"D8:BC:38:F9:39:30", RGB_ORDER_RGB, 36},  // 30-pin
+  {"80:F3:DA:54:53:B8", RGB_ORDER_BGR, 41},
+  {"B4:BF:E9:60:C0:68", RGB_ORDER_RGB, 42},
+  {"5C:01:3B:64:E2:84", RGB_ORDER_RGB, 43},  // spare
+  {"D4:8A:FC:9F:B0:C0", RGB_ORDER_BGR, 44},
+  {"D8:BC:38:E5:A8:38", RGB_ORDER_RGB, 45},
+  {"5C:01:3B:4A:87:4C", RGB_ORDER_RGB, 46},
+  {"8C:4F:00:36:7A:88", RGB_ORDER_BGR, 47},  // spare
+  {"5C:01:3B:65:F2:74", RGB_ORDER_RGB, 48},
+  {"20:50:0D:0A:9F:A8", RGB_ORDER_RGB, 49},  // spare
 };
 #endif
 const int NUM_CUBE_MAC_ENTRIES = sizeof(CUBE_MAC_TABLE) / sizeof(CUBE_MAC_TABLE[0]);
 
 // MQTT Topic Prefixes
 const char* MQTT_TOPIC_PREFIX_CUBE = "cube/";
-const char* MQTT_TOPIC_PREFIX_GAME = "game/";
-const char* MQTT_TOPIC_PREFIX_NFC = "nfc/";
 const char* MQTT_TOPIC_PREFIX_ECHO = "echo";
 const char* MQTT_TOPIC_PREFIX_VERSION = "version";
 
@@ -65,11 +60,6 @@ const CubeMacEntry* findCubeEntry(const char *mac_address) {
     }
   }
   return nullptr;
-}
-
-int findCubeId(const char *mac_address) {
-  const CubeMacEntry* entry = findCubeEntry(mac_address);
-  return entry ? entry->cube_id : -1;
 }
 
 int findCubeIpOctet(const char *mac_address) {
@@ -150,20 +140,18 @@ bool assignmentRecordIsActionable(AssignmentParseResult result) {
 }
 
 int resolveAssignedSlot(AssignmentParseResult result, int record_slot,
-                        bool authority_latched, int compiled_cube_id) {
+                        bool authority_latched, int fallback_slot) {
   switch (result) {
     case ASSIGNMENT_OK:
       return record_slot;
     case ASSIGNMENT_UNASSIGNED:
       return -1;
     default:
-      return authority_latched ? -1 : compiled_cube_id;
+      return authority_latched ? -1 : fallback_slot;
   }
 }
 
-void formatBootIdentity(char* out, size_t out_size, int stored_slot,
-                        int compiled_slot, int ip_octet) {
-  int slot = stored_slot > 0 ? stored_slot : compiled_slot;
+void formatBootIdentity(char* out, size_t out_size, int slot, int ip_octet) {
   if (slot > 0) {
     snprintf(out, out_size, "c%d ip%d", slot, ip_octet);
   } else {
