@@ -802,6 +802,11 @@ public:
         led_display->drawFastVLine(x, 0, half, side);
         led_display->drawFastVLine(x, PANEL_RES_Y - half, half, side);
       }
+      // A settled border can already occupy this edge. Mask its middle before
+      // drawing the remaining halves so the withdrawal is visible in either
+      // topology.
+      const int gap = PANEL_RES_Y - 2 * half;
+      if (gap) led_display->drawFastVLine(x, half, gap, BLACK);
     }
   }
   void drawAnimatedBorder(float p) {
@@ -1035,15 +1040,14 @@ public:
     const float inv = 1.0f - t;
     const float p = 1.0f - inv * inv * inv * inv * inv;
     const bool left = border_preview_side == 'W';
-    // A confirmed edge on the other side makes this cube the middle-bound
-    // half of a marginal connection, regardless of which cube read the Hall
-    // magnets. It sheds the prospective edge while the free endpoint grows it.
-    const bool has_confirmed_opposite_edge =
-        left ? vline_color_right != 0 : vline_color_left != 0;
-    if (has_confirmed_opposite_edge) {
+    // Any settled vertical edge makes this cube part of a series rather than a
+    // free endpoint. It sheds the prospective edge while a free endpoint grows
+    // the complete three-sided end shape.
+    const bool has_confirmed_edge = vline_color_left != 0 || vline_color_right != 0;
+    if (has_confirmed_edge) {
       drawPreviewSideErasing(left, p, WHITE);
     } else {
-      drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, WHITE);
+      drawEndPath(left, p, WHITE, WHITE, WHITE);
     }
   }
 
