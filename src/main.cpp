@@ -808,6 +808,10 @@ public:
       return;
     }
 
+    // flipDMABuffer() queues a swap at the DMA end-of-frame boundary. Clear
+    // the known back buffer before drawing, never immediately after a flip
+    // while the old front buffer may still be scanning.
+    led_display->clearScreen();
     led_display->setFont(current_font);
     led_display->setTextSize(text_size);
     led_display->setRotation(rotation);
@@ -826,7 +830,6 @@ public:
     drawBorderPreview(current_time);
     drawPresenceBar();
     led_display->flipDMABuffer();
-    led_display->clearScreen();
     is_dirty = false;
   }
 
