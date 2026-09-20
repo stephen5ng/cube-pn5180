@@ -2802,7 +2802,9 @@ void loop() {
           if (mqtt_client.isConnected()) {
             mqtt_client.publish(mqtt_topic_cube + "/border_preview", wanted_preview ? "E" : "", false);
             if (preview_candidate) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(preview_candidate) + "/border_preview", "", false);
-            if (wanted_preview) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(wanted_preview) + "/border_preview", "W", false);
+            // The consolidated border protocol renders this physical shared
+            // edge as east on both participants, including the endpoint.
+            if (wanted_preview) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(wanted_preview) + "/border_preview", "E", false);
             preview_candidate = wanted_preview;
             last_preview_publish = current_time;
           }
