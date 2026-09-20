@@ -593,6 +593,21 @@ public:
   void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
                                    uint16_t left, uint16_t right) {
     const unsigned long now = millis();
+    const bool matches_current = top == hline_color_top &&
+                                 bottom == hline_color_bottom &&
+                                 left == vline_color_left &&
+                                 right == vline_color_right;
+    const bool matches_pending = top == pending_border_top &&
+                                 bottom == pending_border_bottom &&
+                                 left == pending_border_left &&
+                                 right == pending_border_right;
+    // MQTT retained deliveries and idle border refreshes can repeat a target.
+    // A repeated target must not start another 600 ms redraw or replace an
+    // animation that is already headed to that exact frame.
+    if (matches_current ||
+        (border_animation_active && border_target_pending && matches_pending)) {
+      return;
+    }
     if (border_animation_active) {
       if (now - border_animation_start_time <= BORDER_TARGET_REPLACE_WINDOW_MS) {
         hline_color_top = top;
