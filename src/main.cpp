@@ -896,8 +896,35 @@ public:
     digitalWrite(POWER_SWITCH_PIN, LOW);
   }
 
+  // Drive the control lines to their inactive levels. shutdownForSleep()
+  // tri-states all fourteen, so without this the rail comes up under FLOATING
+  // CLK/LAT/OE: noise clocks garbage into the shift registers and a floating
+  // OE -- which is active low -- lets it light. That is the flash of random
+  // colour on resume.
+  //
+  // Driven before the rail rather than after, because "after" is the whole
+  // problem: there is no way to hold OE inactive on a powered panel through a
+  // pin that is not being driven. The back-feed window this opens is the
+  // microseconds until the next line, against the 50ms float window it closes.
+  void holdPanelQuiescent() {
+    pinMode(display_config.gpio.oe, OUTPUT);
+    digitalWrite(display_config.gpio.oe, HIGH);   // outputs disabled
+    const int quiet_low[] = {
+      display_config.gpio.clk, display_config.gpio.lat,
+      display_config.gpio.r1, display_config.gpio.g1, display_config.gpio.b1,
+      display_config.gpio.r2, display_config.gpio.g2, display_config.gpio.b2,
+      display_config.gpio.a,  display_config.gpio.b,  display_config.gpio.c,
+      display_config.gpio.d,  display_config.gpio.e
+    };
+    for (int pin : quiet_low) {
+      pinMode(pin, OUTPUT);
+      digitalWrite(pin, LOW);
+    }
+  }
+
   void powerUpPanel() {
     if (panel_powered) return;
+    holdPanelQuiescent();
     digitalWrite(POWER_SWITCH_PIN, HIGH);
     // The rail has to be up before I2S DMA drives the panel -- the same
     // settle the wake path takes.
