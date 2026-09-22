@@ -345,9 +345,32 @@ int nfc_reset_count = 0;
 
 
 // ============= DisplayManager Class =============
+
+// The library stops DMA but will not start it again: `begin()` returns early
+// once `initialized` is set ("we don't do this twice or more!"), which is what
+// its "forever black until next ESP reboot" note on stopDMAoutput() is really
+// describing. The silicon has no such limit -- dma_transfer_stop/start only
+// toggle I2S registers, and the descriptors are allocated in
+// allocate_dma_desc_memory(), which init() never calls. So a stop/start cycle
+// allocates and frees nothing, and init() re-runs the peripheral setup and the
+// gpio_matrix_out routing (via _gpio_pin_init, which also restores
+// GPIO_MODE_OUTPUT on the pins shutdownForSleep() tri-stated).
+//
+// dma_bus is protected, so reaching it is what this subclass is for.
+class RestartableMatrixPanel : public MatrixPanel_I2S_DMA {
+public:
+  explicit RestartableMatrixPanel(const HUB75_I2S_CFG& cfg)
+      : MatrixPanel_I2S_DMA(cfg) {}
+
+  void restartDMAoutput() {
+    dma_bus.init();
+    dma_bus.dma_transfer_start();
+  }
+};
+
 class DisplayManager {
 private:
-  MatrixPanel_I2S_DMA* led_display;
+  RestartableMatrixPanel* led_display;
   uint8_t debug_line;
   unsigned long animation_start_time;
   long highlight_end_time;
@@ -362,6 +385,12 @@ private:
   uint16_t pending_border_top, pending_border_bottom, pending_border_left, pending_border_right;
   unsigned long border_animation_start_time;
   bool border_animation_active, border_target_pending;
+#ifdef BOARD_V6
+  // The panel rail is up AND the DMA engine is running. Both go together:
+  // driving a tri-stated pin set or an unpowered panel is what the pairing
+  // exists to prevent.
+  bool panel_powered;
+#endif
   char border_preview_side;
   unsigned long border_preview_start_time;
   unsigned long border_preview_until;
@@ -442,6 +471,11 @@ public:
                                 pending_border_left(0), pending_border_right(0),
                                 border_animation_start_time(0), border_animation_active(false),
                                 border_target_pending(false),
+#ifdef BOARD_V6
+                                // setup() raises the rail and the constructor
+                                // below runs begin(), so the panel is live here.
+                                panel_powered(true),
+#endif
                                 border_preview_side(0), border_preview_start_time(0),
                                 border_preview_until(0),
                                 previous_letter(' '), current_letter(' ') {
@@ -464,7 +498,7 @@ public:
     display_config.gpio.r2 = rgb[3];
     display_config.gpio.g2 = rgb[4];
     display_config.gpio.b2 = rgb[5];
-    led_display = new MatrixPanel_I2S_DMA(display_config);
+    led_display = new RestartableMatrixPanel(display_config);
     led_display->begin();
     led_display->setBrightness(saved_brightness);  // Use saved brightness (persistent across sleep)
     led_display->setRotation(rotation);
@@ -490,6 +524,12 @@ public:
   }
 
   void displayDebugMessage(const char* message) {
+#ifdef BOARD_V6
+    // Writes straight to the DMA buffers and flips, bypassing updateDisplay --
+    // so it has to raise the panel itself or a runtime notice ("NO SLOT")
+    // would be drawn into an engine that is not scanning.
+    powerUpPanel();
+#endif
     int y_pos = debug_line * 8 + 8;
 
     // setFont(NULL) shifts the cursor up 6px when a custom font was active, so it
@@ -767,6 +807,12 @@ public:
       return;
     }
 
+#ifdef BOARD_V6
+    // Something changed, so whatever it is has to be shown: bring the panel
+    // back before drawing into a buffer no DMA engine is scanning.
+    powerUpPanel();
+#endif
+
     // flipDMABuffer() queues a swap at the DMA end-of-frame boundary. Clear
     // the known back buffer before drawing, never immediately after a flip
     // while the old front buffer may still be scanning.
@@ -780,8 +826,11 @@ public:
     }
     drawLetter(percent_complete, current_letter, current_letter_color);
 
-    // Draw orientation indicator only when letter animation is complete
-    if (percent_complete >= 100) {
+    // Draw orientation indicator only when letter animation is complete, and
+    // only when there is a letter to orient. The dots exist to disambiguate
+    // rotationally symmetric glyphs; a blank cube has nothing to disambiguate,
+    // so it goes fully dark instead of showing two red dots on an empty panel.
+    if (percent_complete >= 100 && current_letter != ' ') {
       drawOrientationIndicator();
     }
 
@@ -789,6 +838,14 @@ public:
     drawBorderPreview(current_time);
     led_display->flipDMABuffer();
     is_dirty = false;
+
+#ifdef BOARD_V6
+    // AFTER the flip, so the blank frame is what the panel was last given. The
+    // rail then goes down over a dark panel rather than mid-letter.
+    if (displayIsBlank(current_time)) {
+      powerDownPanel();
+    }
+#endif
   }
 
   void handleBorderPreviewCommand(const String& message) {
@@ -819,7 +876,69 @@ public:
   }
 
 #ifdef BOARD_V6
+  // EVERY DRAW THIS FRAME WOULD MAKE, not just the letter. updateDisplay draws
+  // the letter, the border frame and the border preview; a predicate that
+  // forgot one would cut power with that element still owed. Anything added
+  // to updateDisplay belongs here too.
+  bool displayIsBlank(unsigned long now) const {
+    if (current_letter != ' ' || previous_letter != ' ') return false;
+    if (percent_complete < 100) return false;          // a letter is animating
+    if (border_animation_active || border_target_pending) return false;
+    if (hline_color_top || hline_color_bottom ||
+        vline_color_left || vline_color_right) return false;
+    if (border_preview_side && now < border_preview_until) return false;
+    return true;
+  }
+
+  void powerDownPanel() {
+    if (!panel_powered) return;
+    shutdownForSleep();   // stops DMA, tri-states the pins, clears the flag
+    digitalWrite(POWER_SWITCH_PIN, LOW);
+  }
+
+  // Drive the control lines to their inactive levels. shutdownForSleep()
+  // tri-states all fourteen, so without this the rail comes up under FLOATING
+  // CLK/LAT/OE: noise clocks garbage into the shift registers and a floating
+  // OE -- which is active low -- lets it light. That is the flash of random
+  // colour on resume.
+  //
+  // Driven before the rail rather than after, because "after" is the whole
+  // problem: there is no way to hold OE inactive on a powered panel through a
+  // pin that is not being driven. The back-feed window this opens is the
+  // microseconds until the next line, against the 50ms float window it closes.
+  void holdPanelQuiescent() {
+    pinMode(display_config.gpio.oe, OUTPUT);
+    digitalWrite(display_config.gpio.oe, HIGH);   // outputs disabled
+    const int quiet_low[] = {
+      display_config.gpio.clk, display_config.gpio.lat,
+      display_config.gpio.r1, display_config.gpio.g1, display_config.gpio.b1,
+      display_config.gpio.r2, display_config.gpio.g2, display_config.gpio.b2,
+      display_config.gpio.a,  display_config.gpio.b,  display_config.gpio.c,
+      display_config.gpio.d,  display_config.gpio.e
+    };
+    for (int pin : quiet_low) {
+      pinMode(pin, OUTPUT);
+      digitalWrite(pin, LOW);
+    }
+  }
+
+  void powerUpPanel() {
+    if (panel_powered) return;
+    holdPanelQuiescent();
+    digitalWrite(POWER_SWITCH_PIN, HIGH);
+    // The rail has to be up before I2S DMA drives the panel -- the same
+    // settle the wake path takes.
+    delay(POWER_RAIL_SETTLE_MS);
+    led_display->restartDMAoutput();
+    // Re-applied because they are panel state, not driver state: the chip lost
+    // them with the rail.
+    led_display->setBrightness(saved_brightness);
+    led_display->setRotation(rotation);
+    panel_powered = true;
+  }
+
   void shutdownForSleep() {
+    if (!panel_powered) return;   // already down; stopping twice is not a no-op
     led_display->stopDMAoutput();
     const int hub75_pins[] = {
       display_config.gpio.r1, display_config.gpio.g1, display_config.gpio.b1,
@@ -831,6 +950,11 @@ public:
     for (int pin : hub75_pins) {
       pinMode(pin, INPUT);
     }
+    // The DMA engine is stopped and the pins are tri-stated, so the panel is
+    // no longer live whether or not the caller also drops the rail. Set here
+    // rather than in powerDownPanel so the sleep path -- which calls this
+    // directly -- leaves the same state behind.
+    panel_powered = false;
   }
 #endif
 
