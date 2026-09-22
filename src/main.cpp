@@ -357,8 +357,6 @@ private:
   uint16_t vline_color_right;
   uint16_t vline_color_left;
   uint16_t hline_color_top;
-  uint8_t presence_bar_height;
-  unsigned long last_presence_bar_ms;
   uint16_t hline_color_bottom;
   uint16_t border_from_top, border_from_bottom, border_from_left, border_from_right;
   uint16_t pending_border_top, pending_border_bottom, pending_border_left, pending_border_right;
@@ -437,8 +435,7 @@ public:
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), is_lock(false),
                                 vline_color_left(0), vline_color_right(0),
-                                hline_color_top(0), presence_bar_height(0), last_presence_bar_ms(0),
-                                hline_color_bottom(0),
+                                hline_color_top(0), hline_color_bottom(0),
                                 border_from_top(0), border_from_bottom(0),
                                 border_from_left(0), border_from_right(0),
                                 pending_border_top(0), pending_border_bottom(0),
@@ -704,48 +701,6 @@ public:
   }
   void drawBorderFrameStatic() { drawBorders(true, true, hline_color_top); drawBorders(true, false, hline_color_bottom); drawBorders(false, true, vline_color_left); drawBorders(false, false, vline_color_right); }
 
-  // Debug aid for the hall presence sensor: a green bar up the left edge whose
-  // height is the neighbour's closeness, empty at 0 and full height when
-  // seated. Nothing sets it on an NFC build, so it stays empty there.
-  // Full panel height: the bar is read by eye, and 16 steps across 64px is twice
-  // the resolution of 8 across 32.
-  static const uint8_t PRESENCE_BAR_MAX = PANEL_RES_Y;
-  // There is no way to repaint one edge on its own: the frame lives in a DMA
-  // buffer that gets swapped whole, so any change to the bar costs a full redraw
-  // of the letter and borders as well. A raw proximity value wanders constantly,
-  // which turned a debug aid into a 30 FPS full-frame redraw. Coarse steps and a
-  // floor on how often it may change cut that to a handful of redraws per
-  // second, which is all a human can read off the bar anyway.
-  static const uint8_t PRESENCE_BAR_STEP = 4;
-  static const unsigned long PRESENCE_BAR_MIN_INTERVAL_MS = 250;
-
-  void setPresencePercent(int percent, unsigned long now) {
-    uint8_t height = percent <= 0    ? 0
-                   : percent >= 100  ? PRESENCE_BAR_MAX
-                   : (uint8_t)((percent * PRESENCE_BAR_MAX) / 100);
-    height -= height % PRESENCE_BAR_STEP;
-    if (height == presence_bar_height) {
-      return;
-    }
-    // Empty and full are the two the eye is actually waiting for, so they land
-    // immediately; everything between is a rate-limited approximation.
-    const bool endpoint = (height == 0 || height == PRESENCE_BAR_MAX);
-    if (!endpoint && now - last_presence_bar_ms < PRESENCE_BAR_MIN_INTERVAL_MS) {
-      return;
-    }
-    last_presence_bar_ms = now;
-    presence_bar_height = height;
-    is_dirty = true;
-  }
-
-  void drawPresenceBar() {
-    if (presence_bar_height == 0) {
-      return;
-    }
-    led_display->drawFastVLine(0, PANEL_RES_Y - presence_bar_height,
-                               presence_bar_height, GREEN);
-  }
-
   void drawOrientationIndicator() {
     // Draw 2x2 red dots in bottom-left and bottom-right corners
     // Indicates which way is up for rotationally symmetric letters (N, S, O, X, H, Z)
@@ -832,7 +787,6 @@ public:
 
     drawBorderFrame();
     drawBorderPreview(current_time);
-    drawPresenceBar();
     led_display->flipDMABuffer();
     is_dirty = false;
   }
@@ -2420,9 +2374,6 @@ void loop() {
         }
         const int proximity = hallPresenceCloseness(
             (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
-        // Fed every poll rather than on the publish deadband below, so the bar
-        // follows the sensor rather than the reporting rate.
-        display_manager->setPresencePercent(proximity, current_time);
 
         // A debounced 2-of-6 Hall mask identifies the candidate before the
         // presence latch confirms a neighbour. Preview the prospective shared
