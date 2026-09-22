@@ -780,8 +780,11 @@ public:
     }
     drawLetter(percent_complete, current_letter, current_letter_color);
 
-    // Draw orientation indicator only when letter animation is complete
-    if (percent_complete >= 100) {
+    // Draw orientation indicator only when letter animation is complete, and
+    // only when there is a letter to orient. The dots exist to disambiguate
+    // rotationally symmetric glyphs; a blank cube has nothing to disambiguate,
+    // so it goes fully dark instead of showing two red dots on an empty panel.
+    if (percent_complete >= 100 && current_letter != ' ') {
       drawOrientationIndicator();
     }
 
