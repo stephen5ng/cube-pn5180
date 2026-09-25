@@ -2,6 +2,7 @@
 #include "hall_presence.h"
 #include "sensor_mode.h"
 #include "cube_slot_store.h"
+#include "border_transition.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -377,14 +378,7 @@ private:
   bool is_lock;
   uint8_t percent_complete;
   uint16_t current_letter_color;
-  uint16_t vline_color_right;
-  uint16_t vline_color_left;
-  uint16_t hline_color_top;
-  uint16_t hline_color_bottom;
-  uint16_t border_from_top, border_from_bottom, border_from_left, border_from_right;
-  uint16_t pending_border_top, pending_border_bottom, pending_border_left, pending_border_right;
-  unsigned long border_animation_start_time;
-  bool border_animation_active, border_target_pending;
+  BorderTransition border;
 #ifdef BOARD_V6
   // The panel rail is up AND the DMA engine is running. Both go together:
   // driving a tri-stated pin set or an unpowered panel is what the pairing
@@ -463,14 +457,6 @@ public:
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), is_lock(false),
-                                vline_color_left(0), vline_color_right(0),
-                                hline_color_top(0), hline_color_bottom(0),
-                                border_from_top(0), border_from_bottom(0),
-                                border_from_left(0), border_from_right(0),
-                                pending_border_top(0), pending_border_bottom(0),
-                                pending_border_left(0), pending_border_right(0),
-                                border_animation_start_time(0), border_animation_active(false),
-                                border_target_pending(false),
 #ifdef BOARD_V6
                                 // setup() raises the rail and the constructor
                                 // below runs begin(), so the panel is live here.
@@ -580,30 +566,7 @@ public:
         }
       }
     }
-    if (border_animation_active) {
-      if (current_time - border_animation_start_time >= BORDER_ANIMATION_DURATION_MS) {
-        if (border_target_pending) {
-          border_from_top = hline_color_top;
-          border_from_bottom = hline_color_bottom;
-          border_from_left = vline_color_left;
-          border_from_right = vline_color_right;
-          hline_color_top = pending_border_top;
-          hline_color_bottom = pending_border_bottom;
-          vline_color_left = pending_border_left;
-          vline_color_right = pending_border_right;
-          border_target_pending = false;
-          border_animation_start_time = current_time;
-          is_dirty = true;
-        } else {
-          border_animation_active = false;
-          // Draw a settled static frame after the final eased frame so neither
-          // DMA buffer can retain a rounded-short segment of the animation.
-          is_dirty = true;
-        }
-      } else {
-        is_dirty = true;  // display-only redraw while the border interpolates
-      }
-    }
+    if (border.tick(current_time, BORDER_ANIMATION_DURATION_MS)) is_dirty = true;
     if (border_preview_side) is_dirty = true;
   }
 
@@ -617,63 +580,28 @@ public:
   }
     
   void drawBorderFrame() {
-    if (border_animation_active) {
-      const float t = min(1.0f, (float)(millis() - border_animation_start_time) /
+    if (border.active) {
+      const float t = min(1.0f, (float)(millis() - border.start_ms) /
                                BORDER_ANIMATION_DURATION_MS);
       const float inv = 1.0f - t;
       const float p = 1.0f - inv * inv * inv * inv * inv;  // easeOutQuint
       drawAnimatedBorder(p);
       return;
     }
-    drawBorders(true, true, hline_color_top);
-    drawBorders(true, false, hline_color_bottom);
-    drawBorders(false, true, vline_color_left);
-    drawBorders(false, false, vline_color_right);
+    drawBorders(true, true, border.to.top);
+    drawBorders(true, false, border.to.bottom);
+    drawBorders(false, true, border.to.left);
+    drawBorders(false, false, border.to.right);
   }
 
   void setConsolidatedBorderTarget(uint16_t top, uint16_t bottom,
                                    uint16_t left, uint16_t right) {
-    const unsigned long now = millis();
-    const bool matches_current = top == hline_color_top &&
-                                 bottom == hline_color_bottom &&
-                                 left == vline_color_left &&
-                                 right == vline_color_right;
-    const bool matches_pending = top == pending_border_top &&
-                                 bottom == pending_border_bottom &&
-                                 left == pending_border_left &&
-                                 right == pending_border_right;
-    // MQTT retained deliveries and idle border refreshes can repeat a target.
-    // A repeated target must not start another 600 ms redraw or replace an
-    // animation that is already headed to that exact frame.
-    if (matches_current ||
-        (border_animation_active && border_target_pending && matches_pending)) {
-      return;
-    }
-    if (border_animation_active) {
-      if (now - border_animation_start_time <= BORDER_TARGET_REPLACE_WINDOW_MS) {
-        hline_color_top = top;
-        hline_color_bottom = bottom;
-        vline_color_left = left;
-        vline_color_right = right;
-      } else {
-        pending_border_top = top;
-        pending_border_bottom = bottom;
-        pending_border_left = left;
-        pending_border_right = right;
-        border_target_pending = true;
-      }
-      return;
-    }
-    border_from_top = hline_color_top;
-    border_from_bottom = hline_color_bottom;
-    border_from_left = vline_color_left;
-    border_from_right = vline_color_right;
-    hline_color_top = top;
-    hline_color_bottom = bottom;
-    vline_color_left = left;
-    vline_color_right = right;
-    border_animation_start_time = now;
-    border_animation_active = true;
+    BorderSides target;
+    target.top = top;
+    target.bottom = bottom;
+    target.left = left;
+    target.right = right;
+    border.set(target, millis(), BORDER_TARGET_REPLACE_WINDOW_MS);
   }
 
   static bool isMiddleBorder(uint16_t top, uint16_t bottom, uint16_t left, uint16_t right) {
@@ -725,21 +653,21 @@ public:
     }
   }
   void drawAnimatedBorder(float p) {
-    const bool from_empty = isEmptyBorder(border_from_top, border_from_bottom, border_from_left, border_from_right);
-    const bool to_empty = isEmptyBorder(hline_color_top, hline_color_bottom, vline_color_left, vline_color_right);
-    const bool from_middle = isMiddleBorder(border_from_top, border_from_bottom, border_from_left, border_from_right);
-    const bool to_middle = isMiddleBorder(hline_color_top, hline_color_bottom, vline_color_left, vline_color_right);
-    const bool from_end = isEndBorder(border_from_top, border_from_bottom, border_from_left, border_from_right);
-    const bool to_end = isEndBorder(hline_color_top, hline_color_bottom, vline_color_left, vline_color_right);
-    if (from_empty && to_middle) { drawHorizontalFromMiddle(p, hline_color_top, hline_color_bottom); return; }
-    if (from_middle && to_empty) { drawHorizontalFromMiddle(1.0f - p, border_from_top, border_from_bottom); return; }
-    if (from_empty && to_end) { const bool left = vline_color_left != 0; drawEndPath(left, p, hline_color_top, hline_color_bottom, left ? vline_color_left : vline_color_right); return; }
-    if (from_end && to_empty) { const bool left = border_from_left != 0; drawEndPath(left, 1.0f - p, border_from_top, border_from_bottom, left ? border_from_left : border_from_right); return; }
-    if (from_middle && to_end) { drawBorders(true, true, hline_color_top); drawBorders(true, false, hline_color_bottom); const bool left = vline_color_left != 0; drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, left ? vline_color_left : vline_color_right); return; }
-    if (from_end && to_middle) { drawBorders(true, true, border_from_top); drawBorders(true, false, border_from_bottom); const bool left = border_from_left != 0; drawEndPath(left, (64.0f + 32.0f * (1.0f - p)) / 96.0f, 0, 0, left ? border_from_left : border_from_right); return; }
+    const bool from_empty = isEmptyBorder(border.from.top, border.from.bottom, border.from.left, border.from.right);
+    const bool to_empty = isEmptyBorder(border.to.top, border.to.bottom, border.to.left, border.to.right);
+    const bool from_middle = isMiddleBorder(border.from.top, border.from.bottom, border.from.left, border.from.right);
+    const bool to_middle = isMiddleBorder(border.to.top, border.to.bottom, border.to.left, border.to.right);
+    const bool from_end = isEndBorder(border.from.top, border.from.bottom, border.from.left, border.from.right);
+    const bool to_end = isEndBorder(border.to.top, border.to.bottom, border.to.left, border.to.right);
+    if (from_empty && to_middle) { drawHorizontalFromMiddle(p, border.to.top, border.to.bottom); return; }
+    if (from_middle && to_empty) { drawHorizontalFromMiddle(1.0f - p, border.from.top, border.from.bottom); return; }
+    if (from_empty && to_end) { const bool left = border.to.left != 0; drawEndPath(left, p, border.to.top, border.to.bottom, left ? border.to.left : border.to.right); return; }
+    if (from_end && to_empty) { const bool left = border.from.left != 0; drawEndPath(left, 1.0f - p, border.from.top, border.from.bottom, left ? border.from.left : border.from.right); return; }
+    if (from_middle && to_end) { drawBorders(true, true, border.to.top); drawBorders(true, false, border.to.bottom); const bool left = border.to.left != 0; drawEndPath(left, (64.0f + 32.0f * p) / 96.0f, 0, 0, left ? border.to.left : border.to.right); return; }
+    if (from_end && to_middle) { drawBorders(true, true, border.from.top); drawBorders(true, false, border.from.bottom); const bool left = border.from.left != 0; drawEndPath(left, (64.0f + 32.0f * (1.0f - p)) / 96.0f, 0, 0, left ? border.from.left : border.from.right); return; }
     drawBorderFrameStatic();
   }
-  void drawBorderFrameStatic() { drawBorders(true, true, hline_color_top); drawBorders(true, false, hline_color_bottom); drawBorders(false, true, vline_color_left); drawBorders(false, false, vline_color_right); }
+  void drawBorderFrameStatic() { drawBorders(true, true, border.to.top); drawBorders(true, false, border.to.bottom); drawBorders(false, true, border.to.left); drawBorders(false, false, border.to.right); }
 
   void drawOrientationIndicator() {
     // Draw 2x2 red dots in bottom-left and bottom-right corners
@@ -867,7 +795,7 @@ public:
     // Any settled vertical edge makes this cube part of a series rather than a
     // free endpoint. It sheds the prospective edge while a free endpoint grows
     // the complete three-sided end shape.
-    const bool has_confirmed_edge = vline_color_left != 0 || vline_color_right != 0;
+    const bool has_confirmed_edge = border.to.left != 0 || border.to.right != 0;
     if (has_confirmed_edge) {
       drawPreviewSideErasing(left, p, WHITE);
     } else {
@@ -883,9 +811,9 @@ public:
   bool displayIsBlank(unsigned long now) const {
     if (current_letter != ' ' || previous_letter != ' ') return false;
     if (percent_complete < 100) return false;          // a letter is animating
-    if (border_animation_active || border_target_pending) return false;
-    if (hline_color_top || hline_color_bottom ||
-        vline_color_left || vline_color_right) return false;
+    if (border.active || border.has_pending) return false;
+    if (border.to.top || border.to.bottom ||
+        border.to.left || border.to.right) return false;
     if (border_preview_side && now < border_preview_until) return false;
     return true;
   }
