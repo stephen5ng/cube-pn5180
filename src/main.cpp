@@ -73,8 +73,8 @@ void initialiseNeighbourSensor() {
 #define MAGENTA  0xF81F
 #define YELLOW   0xFFE0 
 // Dark enough that the yellow lock and the letter stay the foreground.
-#define CURTAIN_RED   0x4000
-#define CURTAIN_GREEN 0x0200
+#define CURTAIN_RED   0x1800
+#define CURTAIN_GREEN 0x0080
 #define WHITE    0xFFFF
 
 // Display Colors
