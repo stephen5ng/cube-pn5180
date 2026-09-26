@@ -1474,7 +1474,9 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLockCommand(msg); });
-  // No resetActivityTimer: a colour set at game start is not play.
+  // No resetActivityTimer: the topic is retained, so the broker re-sends it on
+  // every reconnect, and a reset here would let a cube hold itself awake just
+  // by reconnecting. It is also not play.
   mqtt_client.subscribe(mqtt_topic_cube + "/letter_color", [](const String& msg) { display_manager->handleLetterColorCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
 #ifdef BOARD_V6
