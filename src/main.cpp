@@ -4,6 +4,7 @@
 #include "cube_slot_store.h"
 #include "border_transition.h"
 #include "curtain.h"
+#include "letter_color.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -385,6 +386,8 @@ private:
   Curtain curtain;
   uint8_t percent_complete;
   uint16_t current_letter_color;
+  // The player colour in 2P, LETTER_COLOR otherwise; highlight and lock override it.
+  uint16_t resting_letter_color = LETTER_COLOR;
   BorderTransition border;
 #ifdef BOARD_V6
   // The panel rail is up AND the DMA engine is running. Both go together:
@@ -547,7 +550,7 @@ public:
   void animate(unsigned long current_time) {
     static uint16_t last_letter_color = -1;
 
-    current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : LETTER_COLOR;
+    current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : resting_letter_color;
     if (is_lock) {
       current_letter_color = YELLOW;
     }
@@ -745,6 +748,11 @@ public:
       curtain.clear();
       is_dirty = true;
     }
+  }
+
+  // animate() notices the change and redraws.
+  void handleLetterColorCommand(const String& message) {
+    resting_letter_color = parseLetterColor(message.c_str(), LETTER_COLOR);
   }
 
   void handleLockCommand(const String& message) {
@@ -1466,6 +1474,10 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLockCommand(msg); });
+  // No resetActivityTimer: the topic is retained, so the broker re-sends it on
+  // every reconnect, and a reset here would let a cube hold itself awake just
+  // by reconnecting. It is also not play.
+  mqtt_client.subscribe(mqtt_topic_cube + "/letter_color", [](const String& msg) { display_manager->handleLetterColorCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
 #ifdef BOARD_V6
   mqtt_client.subscribe(mqtt_topic_cube + "/power_test", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePowerTestCommand(msg); });
