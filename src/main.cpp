@@ -72,7 +72,9 @@ void initialiseNeighbourSensor() {
 #define CYAN     0x07FF
 #define MAGENTA  0xF81F
 #define YELLOW   0xFFE0 
-// Dark enough that the yellow lock and the letter stay the foreground.
+// Dark enough that the yellow lock and the letter stay the foreground. Tuned
+// by eye on the bench, not to match each other numerically: green's field
+// fraction is deliberately lower than red's.
 #define CURTAIN_RED   0x1800
 #define CURTAIN_GREEN 0x0080
 #define WHITE    0xFFFF
@@ -578,7 +580,9 @@ public:
   void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
     // Serial.println("displayLetter");
     int16_t row = (PANEL_RES_Y * vertical_position) / 100;
-    // Transparent background: an opaque cell would cut a box through the curtain.
+    // Transparent background: an opaque cell would cut a box through the
+    // curtain. Safe only because updateDisplay clears the whole panel before
+    // every redraw; without that clear, letters would smear.
     led_display->setTextColor(color);
     led_display->setTextSize(BIG_TEXT_SIZE);
     led_display->setCursor(BIG_COL, row-4);
