@@ -25,14 +25,20 @@ show_inventory() {
     echo ""
 }
 
-ping_once() {
-    local ip=$1
-    if command -v ip >/dev/null 2>&1; then
-        ping -c 1 -W 1 "$ip" >/dev/null 2>&1
-    else
-        # macOS ping: -t is the timeout in seconds.
-        ping -c 1 -t 1 "$ip" >/dev/null 2>&1
-    fi
+# UP TO THREE PROBES, STOPPING AT THE FIRST ANSWER. An idle cube's radio is in
+# WiFi modem sleep and routinely drops the first ping after a quiet spell, so a
+# single 1s probe reported healthy cubes as unreachable.
+ping_answers() {
+    local ip=$1 attempt
+    for attempt in 1 2 3; do
+        if command -v ip >/dev/null 2>&1; then
+            ping -c 1 -W 1 "$ip" >/dev/null 2>&1 && return 0
+        else
+            # macOS ping: -t is the timeout in seconds.
+            ping -c 1 -t 1 "$ip" >/dev/null 2>&1 && return 0
+        fi
+    done
+    return 1
 }
 
 # MAC and static-IP octet for every board, from the compiled table that
@@ -84,13 +90,13 @@ resolve_cube_ip() {
             return 1
         fi
         ip="192.168.8.$octet"
-        ping_once "$ip" && { echo "$ip"; return 0; }
+        ping_answers "$ip" && { echo "$ip"; return 0; }
         return 1
     fi
 
     for base in 20 40; do
         ip="192.168.8.$((cube_id + base))"
-        if ping_once "$ip"; then
+        if ping_answers "$ip"; then
             echo "$ip"
             return 0
         fi
