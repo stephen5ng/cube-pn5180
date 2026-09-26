@@ -71,6 +71,10 @@ jobs:
       # compiles in a slot.
       - run: python3 tools/validate_mac_table.py
 
+      # The flash script's address probe must survive a radio that drops the
+      # first ping; nothing else covers this shell code.
+      - run: tools/test_flash_ping.sh
+
       - run: pio test -e native
 
       # Every environment that is ever flashed. v6 is what the Pi builds for
