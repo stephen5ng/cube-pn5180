@@ -3,6 +3,7 @@
 #include "sensor_mode.h"
 #include "cube_slot_store.h"
 #include "border_transition.h"
+#include "curtain.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -71,6 +72,11 @@ void initialiseNeighbourSensor() {
 #define CYAN     0x07FF
 #define MAGENTA  0xF81F
 #define YELLOW   0xFFE0 
+// Dark enough that the yellow lock and the letter stay the foreground. Tuned
+// by eye on the bench, not to match each other numerically: green's field
+// fraction is deliberately lower than red's.
+#define CURTAIN_RED   0x1800
+#define CURTAIN_GREEN 0x0080
 #define WHITE    0xFFFF
 
 // Display Colors
@@ -376,6 +382,7 @@ private:
   unsigned long animation_start_time;
   long highlight_end_time;
   bool is_lock;
+  Curtain curtain;
   uint8_t percent_complete;
   uint16_t current_letter_color;
   BorderTransition border;
@@ -573,7 +580,10 @@ public:
   void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
     // Serial.println("displayLetter");
     int16_t row = (PANEL_RES_Y * vertical_position) / 100;
-    led_display->setTextColor(color, BLACK);
+    // Transparent background: an opaque cell would cut a box through the
+    // curtain. Safe only because updateDisplay clears the whole panel before
+    // every redraw; without that clear, letters would smear.
+    led_display->setTextColor(color);
     led_display->setTextSize(BIG_TEXT_SIZE);
     led_display->setCursor(BIG_COL, row-4);
     led_display->print(letter);
@@ -722,6 +732,21 @@ public:
     // at a phase the running animation was not computed against.
   }
 
+  // A blank cube is not in play and shows no curtain: redrawing it would
+  // power the panel up for nothing, and displayIsBlank would cut it again.
+  bool curtainShows() const { return curtain.color && curtain.rows && current_letter != ' '; }
+
+  void handleCurtainCommand(const String& message) {
+    if (curtain.set(message.c_str(), PANEL_RES_Y) && current_letter != ' ') is_dirty = true;
+  }
+
+  void clearCurtain() {
+    if (curtain.color) {
+      curtain.clear();
+      is_dirty = true;
+    }
+  }
+
   void handleLockCommand(const String& message) {
     debugPrintln("locking due to /lock");
     is_lock = message.length() > 0 && message.charAt(0) == '1';
@@ -748,6 +773,12 @@ public:
     led_display->setFont(current_font);
     led_display->setTextSize(text_size);
     led_display->setRotation(rotation);
+
+    // After the rotation, so it descends from the letter's top.
+    if (curtainShows()) {
+      led_display->fillRect(0, 0, PANEL_RES_X, curtain.rows,
+                            curtain.color == 'R' ? CURTAIN_RED : CURTAIN_GREEN);
+    }
 
     if (current_letter != previous_letter) {
       drawLetter(100 + percent_complete, previous_letter, RED);
@@ -1579,6 +1610,12 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBrightnessCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleRebootCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep_now", handleSleepNowCommand);
+  // Not retained on the broker, so a reconnecting cube starts clear and the
+  // next row change repaints it.
+  if (display_manager != nullptr) display_manager->clearCurtain();
+  // No resetActivityTimer: this arrives every row of every fall, and would
+  // keep an idle seat's cubes awake for the whole game.
+  mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "curtain", [](const String& msg) { display_manager->handleCurtainCommand(msg); });
   mqtt_client.subscribe("cube/device/" + mac_nocolons + "/recalibrate",
                         [](const String&) { recalibratePresence(); });
   mqtt_client.subscribe("cube/resend", [](const String&) {
