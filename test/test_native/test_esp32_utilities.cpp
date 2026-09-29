@@ -233,6 +233,89 @@ void test_candidate_preview_stops_when_presence_is_confirmed() {
     TEST_ASSERT_FALSE(shouldPreviewHallCandidate(94, true));
 }
 
+// Cube 11 slid one column reads as cube 4 while presence is still latched. The
+// change is only believed at docked strength; below it the gate reports no
+// neighbour rather than the wrong one.
+static constexpr int kDocked = 70;
+
+void test_id_change_to_another_cube_needs_a_docked_reading() {
+    TEST_ASSERT_EQUAL_UINT8(0, gateHallNeighborChange(4, 11, 45, kDocked));
+    TEST_ASSERT_EQUAL_UINT8(0, gateHallNeighborChange(15, 14, kDocked - 1, kDocked));
+    TEST_ASSERT_EQUAL_UINT8(15, gateHallNeighborChange(15, 14, kDocked, kDocked));
+}
+
+// A loosely seated cube that drops out and comes back is the same cube; holding
+// it to the docked bar would strand it at "no neighbour".
+void test_id_change_gate_lets_the_seated_cube_return_weakly() {
+    TEST_ASSERT_EQUAL_UINT8(11, gateHallNeighborChange(11, 11, 20, kDocked));
+}
+
+// Latching presence already required the docked reading, and "no neighbour" must
+// never be held back.
+void test_id_change_gate_passes_the_first_id_and_absence() {
+    TEST_ASSERT_EQUAL_UINT8(13, gateHallNeighborChange(13, 0, 20, kDocked));
+    TEST_ASSERT_EQUAL_UINT8(0, gateHallNeighborChange(0, 11, 200, kDocked));
+}
+
+// The tracker and the debounce together, sampled at the 1 kHz poll with the
+// production presence tuning. What gets reported is what reaches cube/right.
+struct HallRig {
+    HallPresenceTracker tracker;
+    HallNeighborDebounce neighbor;
+    uint32_t now = 0;
+    int reported = -1;       // last ID reported, -1 before the first
+    bool reported_4 = false;
+
+    explicit HallRig(uint16_t settle_reads) : neighbor{8, settle_reads, 70} {
+        tracker.begin(HallPresenceConfig{1, 70, 15, 5, 7, 250});
+        feed(kIdle, 0, 0, 1000);  // prime the baseline with nothing docked
+    }
+    static constexpr int kIdle = 1800;
+
+    // `id` is what the ID magnets decode to while `mask` is what they read.
+    void feed(int raw, uint8_t mask, uint8_t id, int ms) {
+        for (int i = 0; i < ms; i++) {
+            const bool active = tracker.update(raw, now += 1, mask);
+            if (neighbor.update(active ? id : 0, active, tracker.delta()) &&
+                neighbor.candidate != reported) {
+                reported = neighbor.candidate;
+                if (reported == 4) reported_4 = true;
+                neighbor.reported();
+            }
+        }
+    }
+};
+
+// Cube 11 docked, then slid one column so its magnets read as cube 4 (mask
+// P4+P5). The filtered delta is still above docked strength for the first few
+// ms of the slide, so without the settle the plain 8-read debounce reports 4.
+void test_sliding_off_a_neighbour_never_reports_the_alias() {
+    HallRig rig(100);
+    rig.feed(HallRig::kIdle + 127, 0x30, 11, 500);
+    TEST_ASSERT_EQUAL_INT(11, rig.reported);
+
+    rig.feed(HallRig::kIdle + 45, 0x18, 4, 500);
+    TEST_ASSERT_FALSE(rig.reported_4);
+    TEST_ASSERT_EQUAL_INT(0, rig.reported);
+}
+
+// A genuine swap straight to another cube at docked strength still lands.
+void test_a_docked_swap_to_another_cube_is_reported_after_settling() {
+    HallRig rig(100);
+    rig.feed(HallRig::kIdle + 127, 0x30, 11, 500);
+    rig.feed(HallRig::kIdle + 127, 0x22, 12, 99);
+    TEST_ASSERT_EQUAL_INT(11, rig.reported);
+    rig.feed(HallRig::kIdle + 127, 0x22, 12, 1);
+    TEST_ASSERT_EQUAL_INT(12, rig.reported);
+}
+
+// An ordinary dock is not slowed down by the settle.
+void test_a_fresh_dock_is_reported_at_the_plain_debounce() {
+    HallRig rig(100);
+    rig.feed(HallRig::kIdle + 127, 0x30, 11, 60);
+    TEST_ASSERT_EQUAL_INT(11, rig.reported);
+}
+
 // A neighbour close enough to trip the ID sensors but not the presence threshold
 // left the baseline free to adapt, so it walked up to the magnet and the reading
 // decayed to nothing over a couple of minutes -- observed on cube c. The ID
@@ -1133,6 +1216,12 @@ int main(void) {
     RUN_TEST(test_closeness_spans_nothing_to_docked);
     RUN_TEST(test_closeness_rises_smoothly_between_the_endpoints);
     RUN_TEST(test_candidate_preview_stops_when_presence_is_confirmed);
+    RUN_TEST(test_id_change_to_another_cube_needs_a_docked_reading);
+    RUN_TEST(test_id_change_gate_lets_the_seated_cube_return_weakly);
+    RUN_TEST(test_id_change_gate_passes_the_first_id_and_absence);
+    RUN_TEST(test_sliding_off_a_neighbour_never_reports_the_alias);
+    RUN_TEST(test_a_docked_swap_to_another_cube_is_reported_after_settling);
+    RUN_TEST(test_a_fresh_dock_is_reported_at_the_plain_debounce);
     RUN_TEST(test_baseline_holds_while_the_id_sensors_see_a_neighbour);
     RUN_TEST(test_baseline_still_adapts_with_no_neighbour);
     RUN_TEST(test_priming_waits_for_a_sample_with_no_neighbour);

@@ -179,6 +179,10 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_ID_ACTIVE_LEVEL LOW
 #define HALL_POLL_INTERVAL_MS 1     // ~1 kHz polling; each digitalRead is ~us
 #define HALL_DEBOUNCE_READS 8       // consecutive identical reads to confirm (~8 ms)
+// A change straight to a different cube waits ~100 ms: three time constants of
+// the presence filter (2^HALL_PRESENCE_FAST_SHIFT = 32 samples), so the filtered
+// strength has caught up with a slide before it is trusted.
+#define HALL_ID_CHANGE_SETTLE_READS 100
 
 // Sleep state management
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
@@ -2401,8 +2405,9 @@ void loop() {
     // cube id to cube/right/<sender> exactly as the NFC path does.
     if (slotIsResolved()) {
       static unsigned long last_hall_poll = 0;
-      static uint8_t candidate_id = 0;
-      static int candidate_count = 0;
+      static HallNeighborDebounce neighbor{HALL_DEBOUNCE_READS,
+                                           HALL_ID_CHANGE_SETTLE_READS,
+                                           HALL_PRESENCE_ON_DELTA};
       static uint8_t stable_id = 0xFF;  // sentinel forces first real publish
     
       // For debugging raw ID sensors U1-U6
@@ -2430,14 +2435,11 @@ void loop() {
           stable_raw = candidate_raw;
         }
 
-        uint8_t id = decodeHallNeighborId(raw);
-        if (id == candidate_id) {
-          if (candidate_count < HALL_DEBOUNCE_READS) candidate_count++;
-        } else {
-          candidate_id = id;
-          candidate_count = 1;
-        }
-        if (candidate_count >= HALL_DEBOUNCE_READS && candidate_id != stable_id) {
+        const bool settled = neighbor.update(decodeHallNeighborId(raw),
+                                             hall_presence.active(),
+                                             hall_presence.delta());
+        const uint8_t candidate_id = neighbor.candidate;
+        if (settled && candidate_id != stable_id) {
           char buf[8];
           if (candidate_id > 0) {
             snprintf(buf, sizeof(buf), "%d", candidate_id);
@@ -2458,6 +2460,7 @@ void loop() {
             stable_id = candidate_id;
             Serial.printf("Hall neighbor -> %s\n", buf);
           }
+          if (stable_id == candidate_id) neighbor.reported();
         }
 
         // decodeHallNeighborId() above fed the tracker this sample, so the
