@@ -80,6 +80,70 @@ inline int hallPresenceCloseness(int delta, int on_delta) {
   return 100 * (far - distance) / (far - near_by);
 }
 
+// Whether a decoded neighbour ID may be believed, given the ID already seated during
+// this presence latch (0 if none yet).
+//
+// A cube offset against its neighbour shows the ID sensors a real, stable pattern that
+// belongs to another cube: slid one column, cube 11's P5+P6 magnets sit over P4+P5,
+// which is cube 4, and a one-row offset turns 14 into 15. At Maker Faire 2026-09, 94
+// of 105 out-of-set IDs were exactly that "4". Presence does not stop it: the
+// hysteresis that keeps a docked cube latched down to off_delta keeps it latched
+// through the slide too.
+//
+// So a *change* to a different ID is only believed from a neighbour that reads docked,
+// while everything else passes as before:
+//  - no ID, so that "no neighbour" is never held back;
+//  - the seated ID coming back after a dropout, so a loosely seated cube that
+//    glitches is not stranded at "no neighbour" until someone pushes it in;
+//  - the first ID of a latch, because latching already required on_delta.
+// Swaps within one latch are rare: 5 direct ID-to-ID changes against 6709 re-links
+// through "no neighbour" over the same weekend.
+inline uint8_t gateHallNeighborChange(uint8_t id, uint8_t seated_id, int delta,
+                                      int docked_delta) {
+  if (id == 0 || seated_id == 0 || id == seated_id) return id;
+  return delta >= docked_delta ? id : 0;
+}
+
+// The neighbour ID a hall cube settles on, one decoded sample at a time.
+//
+// A dock or undock is reported after debounce_reads identical samples. A change
+// from the seated cube to a different one waits settle_reads instead, because
+// the strength check reads the tracker's filtered delta, and that lags a slide by
+// about 2^fast_shift samples: a cube slid off its neighbour still reads docked
+// for the first few milliseconds, long enough for a plain debounce to report the
+// alias. settle_reads has to span several of those time constants.
+struct HallNeighborDebounce {
+  HallNeighborDebounce(uint16_t debounce_reads, uint16_t settle_reads, int docked_delta)
+      : debounce_reads(debounce_reads), settle_reads(settle_reads),
+        docked_delta(docked_delta) {}
+
+  uint16_t debounce_reads;
+  uint16_t settle_reads;
+  int docked_delta;
+  uint8_t candidate = 0;
+  uint16_t count = 0;
+  uint8_t seated = 0;  // last ID reported during this presence latch
+
+  // True once `candidate` has held long enough to be reported.
+  bool update(uint8_t decoded, bool presence_active, int delta) {
+    if (!presence_active) seated = 0;
+    const uint8_t id = gateHallNeighborChange(decoded, seated, delta, docked_delta);
+    if (id == candidate) {
+      if (count < UINT16_MAX) count++;
+    } else {
+      candidate = id;
+      count = 1;
+    }
+    const bool change = candidate != 0 && seated != 0 && candidate != seated;
+    return count >= (change ? settle_reads : debounce_reads);
+  }
+
+  // Call once `candidate` has actually been reported.
+  void reported() {
+    if (candidate != 0) seated = candidate;
+  }
+};
+
 // The shared-edge animation is an approach hint, not a second representation of
 // a confirmed neighbour. A real dock can settle below the calibrated 100% point,
 // so the presence latch, rather than closeness alone, ends the preview.
