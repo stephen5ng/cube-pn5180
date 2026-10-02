@@ -5,6 +5,7 @@
 #include "border_transition.h"
 #include "curtain.h"
 #include "letter_color.h"
+#include "panel_text.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -102,6 +103,9 @@ void initialiseNeighbourSensor() {
 // Display Settings
 #define BIG_COL 10
 #define BIG_TEXT_SIZE 1
+// A message of more than one glyph -- "GAME OVER" -- in the built-in font.
+#define MESSAGE_TEXT_SIZE 2
+#define MESSAGE_LINES_MAX 4
 #define BRIGHTNESS 255
 #define HIGHLIGHT_TIME_MS 2000
 #define PRINT_DEBUG true
@@ -434,8 +438,27 @@ private:
   uint8_t text_size;
   uint8_t rotation;
   bool is_dirty;
-  char previous_letter;
-  char current_letter;
+  // The WHOLE payload of `cube/{id}/letter`, not one glyph: at game over the
+  // server sends "GAME OVER", which lands on the same curve a letter does.
+  static const uint8_t MESSAGE_MAX = 12;
+  char previous_message[MESSAGE_MAX];
+  char current_message[MESSAGE_MAX];
+
+  static void setMessage(char* destination, const char* source) {
+    strncpy(destination, source, MESSAGE_MAX - 1);
+    destination[MESSAGE_MAX - 1] = '\0';
+  }
+
+  // A cube is blanked with " ", so a blank message is not an empty one.
+  static bool isBlank(const char* message) {
+    return message[0] == '\0' || (message[0] == ' ' && message[1] == '\0');
+  }
+  static bool isWords(const char* message) {
+    return !isBlank(message) && message[1] != '\0';
+  }
+  static bool isLetter(const char* message) {
+    return !isBlank(message) && !isWords(message);
+  }
 
   // `Ease::BounceOut`, re-proportioned so the travel segment lasts `rise_ms`
   // instead of the library's fixed 4/11 of the duration. Mirrors
@@ -492,8 +515,9 @@ public:
                                 panel_powered(true),
 #endif
                                 border_preview_side(0), border_preview_start_time(0),
-                                border_preview_until(0),
-                                previous_letter(' '), current_letter(' ') {
+                                border_preview_until(0) {
+    setMessage(previous_message, " ");
+    setMessage(current_message, " ");
     // Player 0's panels are mounted upside down relative to player 1's. The
     // slot is not known yet at construction, so start where a player 0 cube
     // needs to be; applySlot() calls setSlotRotation() once the roster answers.
@@ -578,11 +602,11 @@ public:
       is_dirty = true;
     }
 
-    if (previous_letter != current_letter) {
+    if (strcmp(previous_message, current_message) != 0) {
       static uint8_t previous_percent_complete = -1;
       if (current_time - animation_start_time >= ANIMATION_DURATION_MS) {
         // complete animation
-        previous_letter = current_letter;
+        setMessage(previous_message, current_message);
         percent_complete = ANIMATION_SCALE;
         is_dirty = true;
       } 
@@ -606,9 +630,48 @@ public:
     // curtain. Safe only because updateDisplay clears the whole panel before
     // every redraw; without that clear, letters would smear.
     led_display->setTextColor(color);
+    // Set here rather than inherited from updateDisplay: one frame can draw an
+    // outgoing message and an incoming one that need different fonts.
+    led_display->setFont(current_font);
     led_display->setTextSize(BIG_TEXT_SIZE);
     led_display->setCursor(BIG_COL, row-4);
     led_display->print(letter);
+  }
+
+  // The words of a longer message, one per line, centered as a block.
+  void drawWords(uint16_t vertical_position, const char* message, uint16_t color) {
+    PanelTextLine lines[MESSAGE_LINES_MAX];
+    const uint8_t count = layoutPanelText(message, PANEL_RES_X, PANEL_RES_Y,
+                                          MESSAGE_TEXT_SIZE, vertical_position,
+                                          lines, MESSAGE_LINES_MAX);
+    led_display->setTextColor(color);
+    // Before setCursor: setFont(NULL) shifts the cursor when a custom font was
+    // active, as displayDebugMessage also has to allow for.
+    led_display->setFont(NULL);
+    led_display->setTextSize(MESSAGE_TEXT_SIZE);
+    for (uint8_t line = 0; line < count; ++line) {
+      led_display->setCursor(lines[line].x, lines[line].y);
+      for (uint8_t i = 0; i < lines[line].length; ++i) {
+        led_display->write(lines[line].begin[i]);
+      }
+    }
+  }
+
+  void drawMessage(uint16_t vertical_position, const char* message, uint16_t color) {
+    if (isBlank(message)) {
+      return;
+    }
+    if (isWords(message)) {
+      drawWords(vertical_position, message, color);
+      return;
+    }
+    drawLetter(vertical_position, message[0], color);
+  }
+
+  // GAME OVER is red whatever the letters are wearing: the lock colour and the
+  // highlight belong to a tile in play, and the round is over.
+  uint16_t messageColor(const char* message) const {
+    return isWords(message) ? RED : current_letter_color;
   }
     
   void drawBorderFrame() {
@@ -756,10 +819,10 @@ public:
 
   // A blank cube is not in play and shows no curtain: redrawing it would
   // power the panel up for nothing, and displayIsBlank would cut it again.
-  bool curtainShows() const { return curtain.color && curtain.rows && current_letter != ' '; }
+  bool curtainShows() const { return curtain.color && curtain.rows && !isBlank(current_message); }
 
   void handleCurtainCommand(const String& message) {
-    if (curtain.set(message.c_str(), PANEL_RES_Y) && current_letter != ' ') is_dirty = true;
+    if (curtain.set(message.c_str(), PANEL_RES_Y) && !isBlank(current_message)) is_dirty = true;
   }
 
   void clearCurtain() {
@@ -807,16 +870,17 @@ public:
                             curtain.color == 'R' ? CURTAIN_RED : CURTAIN_GREEN);
     }
 
-    if (current_letter != previous_letter) {
-      drawLetter(100 + percent_complete, previous_letter, RED);
+    if (strcmp(current_message, previous_message) != 0) {
+      drawMessage(100 + percent_complete, previous_message, RED);
     }
-    drawLetter(percent_complete, current_letter, current_letter_color);
+    drawMessage(percent_complete, current_message, messageColor(current_message));
 
-    // Draw orientation indicator only when letter animation is complete, and
-    // only when there is a letter to orient. The dots exist to disambiguate
+    // Draw orientation indicator only when the animation is complete, and only
+    // when there is a letter to orient. The dots exist to disambiguate
     // rotationally symmetric glyphs; a blank cube has nothing to disambiguate,
-    // so it goes fully dark instead of showing two red dots on an empty panel.
-    if (percent_complete >= 100 && current_letter != ' ') {
+    // so it goes fully dark instead of showing two red dots on an empty panel,
+    // and a message of several words reads the same way round either way.
+    if (percent_complete >= 100 && isLetter(current_message)) {
       drawOrientationIndicator();
     }
 
@@ -867,7 +931,7 @@ public:
   // forgot one would cut power with that element still owed. Anything added
   // to updateDisplay belongs here too.
   bool displayIsBlank(unsigned long now) const {
-    if (current_letter != ' ' || previous_letter != ' ') return false;
+    if (!isBlank(current_message) || !isBlank(previous_message)) return false;
     if (percent_complete < 100) return false;          // a letter is animating
     if (border.active || border.has_pending) return false;
     if (border.to.top || border.to.bottom ||
@@ -1020,12 +1084,12 @@ public:
 
     Serial.printf("[%lu] MQTT letter '%s' delta=%lu ms\n", current_time, message.c_str(), time_since_last);
     
-    if (previous_letter != current_letter) {
-      previous_letter = current_letter;
+    if (strcmp(previous_message, current_message) != 0) {
+      setMessage(previous_message, current_message);
     }
-      
+
     if (message.length() > 0) {
-      current_letter = message.charAt(0);
+      setMessage(current_message, message.c_str());
       animation_start_time = millis();
       current_font = &Roboto_Mono_Bold_78;  // Restore custom font for letter mode
       text_size = 1;  // Always use size 1 for letter mode
