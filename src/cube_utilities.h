@@ -140,7 +140,14 @@ WakeAction resolveWakeAction(bool wifi_connected,
                              bool mqtt_connected,
                              bool device_requests_sleep);
 
-enum WakeReason { WAKE_REASON_TIMER, WAKE_REASON_BUTTON, WAKE_REASON_OTHER };
+// POWER_ON is a cold boot: on the battery board, unplugging USB-C. OTHER is
+// every other reset -- brownout, watchdog, crash.
+enum WakeReason {
+  WAKE_REASON_TIMER,
+  WAKE_REASON_BUTTON,
+  WAKE_REASON_POWER_ON,
+  WAKE_REASON_OTHER
+};
 
 struct WakeCheckInPorts {
   virtual ~WakeCheckInPorts() {}

@@ -166,12 +166,19 @@ WakeAction resolveWakeAction(bool wifi_connected, bool mqtt_connected,
 }
 
 void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
-  if (wake_reason == WAKE_REASON_BUTTON) { ports.stayAwake(); return; }
+  // Someone deciding to use the cube: the button, or a cold boot, which on the
+  // battery board is unplugging USB-C -- the morning routine, and the way a
+  // cube backed off for hours (checkInIntervalS) is brought back. A jostled
+  // battery contact also cold-boots, and costs one ten-minute awake spell.
+  if (wake_reason == WAKE_REASON_BUTTON || wake_reason == WAKE_REASON_POWER_ON) {
+    ports.stayAwake();
+    return;
+  }
 
-  // A reset -- brownout, watchdog, crash, a jostled battery contact -- reads
-  // the sleep flag just as a timer wake does. It is not someone deciding to
-  // use the cube, so a stored cube that glitches goes back to sleep instead of
-  // burning ten minutes of battery and making the next glitch likelier.
+  // Any other reset -- brownout, watchdog, crash -- reads the sleep flag just
+  // as a timer wake does. It is not someone deciding to use the cube, so a
+  // stored cube that glitches goes back to sleep instead of burning ten
+  // minutes of battery and making the next glitch likelier.
   const bool is_reset = (wake_reason == WAKE_REASON_OTHER);
 
   bool wifi = ports.awaitWifi();
