@@ -862,8 +862,18 @@ void test_runWakeCheckIn_button_wake_ignores_network() {
     TEST_ASSERT_EQUAL_STRING("stayAwake,", ports.calls);
 }
 
-// A reset -- brownout, watchdog, crash, a jostled battery contact -- is not
-// someone deciding to use the cube. Until now any of them came up fully awake
+// Unplugging USB-C cold-boots a battery cube. That is someone getting the cube
+// out, so it wakes like the button even with the sleep flag set -- otherwise a
+// cube that slept last night would see its own flag and go straight back.
+void test_runWakeCheckIn_power_on_wakes_despite_a_set_sleep_flag() {
+    FakeWakeCheckInPorts ports;
+    ports.sleep_requested = true;
+    runWakeCheckIn(WAKE_REASON_POWER_ON, ports);
+    TEST_ASSERT_EQUAL_STRING("stayAwake,", ports.calls);
+}
+
+// A reset -- brownout, watchdog, crash -- is not someone deciding to use the
+// cube. Until now any of them came up fully awake
 // and ignored the sleep flag entirely, so a stored cube woke for 10 minutes
 // every time it glitched, and a weak battery made the next glitch likelier.
 // The window for the retained flag is finite, so a slow broker or weak RF can
@@ -1228,6 +1238,7 @@ int main(void) {
     RUN_TEST(test_runWakeCheckIn_flag_set_sleeps_without_clearing);
     RUN_TEST(test_runWakeCheckIn_flag_clear_clears_then_stays_awake);
         RUN_TEST(test_runWakeCheckIn_button_wake_ignores_network);
+    RUN_TEST(test_runWakeCheckIn_power_on_wakes_despite_a_set_sleep_flag);
     RUN_TEST(test_runWakeCheckIn_unconfirmed_flag_read_does_not_clear_or_wake);
     RUN_TEST(test_runWakeCheckIn_reset_with_unconfirmed_flag_read_stays_awake);
     RUN_TEST(test_runWakeCheckIn_reset_obeys_a_set_sleep_flag);

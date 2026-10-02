@@ -1428,8 +1428,11 @@ void handleWakeUp() {
   } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
     reason = WAKE_REASON_BUTTON;
     debugPrintln("Woken by external signal (Pin 0 released)");
+  } else if (esp_reset_reason() == ESP_RST_POWERON) {
+    reason = WAKE_REASON_POWER_ON;
+    debugPrintln("Power-on boot - staying awake");
   } else {
-    debugPrintln("Normal boot - staying awake");
+    debugPrintln("Reset - checking the sleep flag");
   }
 
   KeepAliveCheckInPorts ports;
