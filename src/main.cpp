@@ -140,6 +140,14 @@ void initialiseNeighbourSensor() {
 // table. Order is P1..P6, mapping to id_mask bits 0..5.
 static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 #define HALL_PRESENCE_PIN 36        // existing v6 hall tap (GPIO36, input-only)
+
+#ifdef BATTERY_SENSE
+// The power board's cell voltage reaches GPIO39 through a 1 MΩ/1 MΩ divider
+// (lexacube_pcb power-board/docs/battery-sense-divider.md), so the pin sees half.
+#define BATTERY_SENSE_PIN 39
+#define BATTERY_SENSE_SAMPLES 16
+#define BATTERY_PUBLISH_INTERVAL_MS 60000UL
+#endif
 // DRV5055 analog presence sensor. Thresholds are deltas from a tracked baseline, not
 // absolute ADC values; see hall_presence.h.
 #define HALL_PRESENCE_DIRECTION        1    // +1: presence magnet drives the reading up
@@ -1446,6 +1454,17 @@ void handleSleepIntervalCommand(const String& message) {
 }
 
 
+#ifdef BATTERY_SENSE
+void publishBatteryMillivolts() {
+  uint32_t sum = 0;
+  for (int i = 0; i < BATTERY_SENSE_SAMPLES; i++) {
+    sum += analogReadMilliVolts(BATTERY_SENSE_PIN);
+  }
+  uint32_t cell_mv = sum / BATTERY_SENSE_SAMPLES * 2;
+  mqtt_client.publish(mqtt_topic_cube + "/battery_mv", String(cell_mv), true);
+}
+#endif
+
 void subscribeSlotTopics() {
   mqtt_topic_cube = MQTT_TOPIC_PREFIX_CUBE + cube_identifier;
   mqtt_topic_echo = createMqttTopic(cube_identifier, MQTT_TOPIC_PREFIX_ECHO);
@@ -1460,6 +1479,10 @@ void subscribeSlotTopics() {
   // outside the is_first_boot guard above.
   mqtt_client.publish(mqtt_topic_cube + "/sensor_mode",
                       sensorModeIsMagnets() ? "magnets" : "nfc", true);
+
+#ifdef BATTERY_SENSE
+  publishBatteryMillivolts();
+#endif
 
   // cube/device/{MAC}/nfc is retained, so a tag read before a cable swap
   // outlives the swap. The game server resolves neighbours from that topic, so
@@ -2331,6 +2354,15 @@ void loop() {
   unsigned long udp_start = micros();
   handleUDP();
   unsigned long udp_us = micros() - udp_start;
+
+#ifdef BATTERY_SENSE
+  static unsigned long last_battery_publish = 0;
+  if (slotIsResolved() && mqtt_client.isConnected() &&
+      current_time - last_battery_publish >= BATTERY_PUBLISH_INTERVAL_MS) {
+    publishBatteryMillivolts();
+    last_battery_publish = current_time;
+  }
+#endif
 
   unsigned long nfc_us = 0;
   if (!sensorModeIsMagnets()) {
