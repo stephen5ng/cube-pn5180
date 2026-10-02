@@ -755,10 +755,62 @@ struct FakeWakeCheckInPorts : public WakeCheckInPorts {
     *out = sleep_requested;
     return flag_confirmed;
   }
+  int reachable = -1;  // -1 until recordReachable() is called
+  void recordReachable(bool r) override { reachable = r ? 1 : 0; }
   void clearSleepFlag() override { record("clearSleepFlag"); }
   void enterSleep() override { record("enterSleep"); }
   void stayAwake() override { record("stayAwake"); }
 };
+
+// No router or no Pi: each failed check-in doubles the sleep up to the cap, so
+// a rig packed away overnight stops waking every 20 s to fail.
+void test_checkInIntervalS_doubles_per_unreachable_checkin_up_to_the_cap() {
+    TEST_ASSERT_EQUAL_UINT32(20, checkInIntervalS(20, 0, 300));
+    TEST_ASSERT_EQUAL_UINT32(40, checkInIntervalS(20, 1, 300));
+    TEST_ASSERT_EQUAL_UINT32(160, checkInIntervalS(20, 3, 300));
+    TEST_ASSERT_EQUAL_UINT32(300, checkInIntervalS(20, 4, 300));
+    TEST_ASSERT_EQUAL_UINT32(300, checkInIntervalS(20, 255, 300));
+}
+
+// The production cap is a day; a counter run up all week still lands on it.
+void test_checkInIntervalS_reaches_a_day_without_overflowing() {
+    TEST_ASSERT_EQUAL_UINT32(20u << 11, checkInIntervalS(20, 11, 86400));
+    TEST_ASSERT_EQUAL_UINT32(86400, checkInIntervalS(20, 13, 86400));
+    TEST_ASSERT_EQUAL_UINT32(86400, checkInIntervalS(20, 255, 86400));
+}
+
+// An interval someone set longer than the cap is never shortened.
+void test_checkInIntervalS_leaves_a_longer_configured_interval_alone() {
+    TEST_ASSERT_EQUAL_UINT32(600, checkInIntervalS(600, 0, 300));
+    TEST_ASSERT_EQUAL_UINT32(600, checkInIntervalS(600, 5, 300));
+}
+
+// Reaching the broker is what counts: a missing router and a missing Pi both
+// fail; a check-in that connected but read no flag still reached it.
+void test_runWakeCheckIn_records_whether_the_broker_was_reached() {
+    FakeWakeCheckInPorts no_wifi; no_wifi.wifi_result = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, no_wifi);
+    TEST_ASSERT_EQUAL_INT(0, no_wifi.reachable);
+
+    FakeWakeCheckInPorts no_broker; no_broker.mqtt_result = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, no_broker);
+    TEST_ASSERT_EQUAL_INT(0, no_broker.reachable);
+
+    FakeWakeCheckInPorts slow_flag; slow_flag.flag_confirmed = false;
+    runWakeCheckIn(WAKE_REASON_TIMER, slow_flag);
+    TEST_ASSERT_EQUAL_INT(1, slow_flag.reachable);
+
+    FakeWakeCheckInPorts up;
+    runWakeCheckIn(WAKE_REASON_TIMER, up);
+    TEST_ASSERT_EQUAL_INT(1, up.reachable);
+}
+
+// A button wake skips the network entirely, so it says nothing about it.
+void test_runWakeCheckIn_button_wake_records_nothing() {
+    FakeWakeCheckInPorts ports;
+    runWakeCheckIn(WAKE_REASON_BUTTON, ports);
+    TEST_ASSERT_EQUAL_INT(-1, ports.reachable);
+}
 
 void test_runWakeCheckIn_wifi_timeout() {
     FakeWakeCheckInPorts ports;
@@ -1166,6 +1218,11 @@ int main(void) {
     // Wake decision tests
     RUN_TEST(test_resolveWakeAction_network_failure_stays_asleep);
         RUN_TEST(test_resolveWakeAction_obeys_the_device_flag);
+    RUN_TEST(test_checkInIntervalS_doubles_per_unreachable_checkin_up_to_the_cap);
+    RUN_TEST(test_checkInIntervalS_leaves_a_longer_configured_interval_alone);
+    RUN_TEST(test_checkInIntervalS_reaches_a_day_without_overflowing);
+    RUN_TEST(test_runWakeCheckIn_records_whether_the_broker_was_reached);
+    RUN_TEST(test_runWakeCheckIn_button_wake_records_nothing);
     RUN_TEST(test_runWakeCheckIn_wifi_timeout);
     RUN_TEST(test_runWakeCheckIn_mqtt_connect_fails);
     RUN_TEST(test_runWakeCheckIn_flag_set_sleeps_without_clearing);
