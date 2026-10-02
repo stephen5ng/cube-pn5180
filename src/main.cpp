@@ -197,6 +197,13 @@ RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 // How long a sleeping cube stays down between keep-alive check-ins. Survives
 // deep sleep in RTC memory, and cube/{id}/sleep_interval overrides it.
 RTC_DATA_ATTR uint32_t sleep_interval_s = 20;
+// Check-ins in a row that could not reach the broker; stretches the sleep up
+// to CHECKIN_BACKOFF_CAP_S. See checkInIntervalS(). The cap is a day rather
+// than minutes because unplugging USB-C cold-boots a cube, which is how a
+// backed-off cube is brought back; one check-in a day only guarantees that
+// a cube is never lost for good.
+RTC_DATA_ATTR uint8_t unreachable_checkins = 0;
+#define CHECKIN_BACKOFF_CAP_S 86400
 RTC_DATA_ATTR uint16_t saved_brightness = BRIGHTNESS;  // Persist brightness across sleep
 
 // Auto-sleep inactivity tracking
@@ -1272,15 +1279,16 @@ void enterSleepMode() {
   rtc_gpio_pulldown_dis(SLEEP_PIN);
   rtc_gpio_pullup_en(SLEEP_PIN);
 
-  // Enable timer wake-up using configurable interval
-  esp_sleep_enable_timer_wakeup((uint64_t)sleep_interval_s * uS_TO_S_FACTOR);
+  const uint32_t interval_s = checkInIntervalS(
+      sleep_interval_s, unreachable_checkins, CHECKIN_BACKOFF_CAP_S);
+  esp_sleep_enable_timer_wakeup((uint64_t)interval_s * uS_TO_S_FACTOR);
 
 
   // Send debug via UDP
   char dbg[64];
-  snprintf(dbg, sizeof(dbg), "sleeping for %lu seconds", sleep_interval_s);
+  snprintf(dbg, sizeof(dbg), "sleeping for %lu seconds", (unsigned long)interval_s);
   debugSend(dbg);
-  Serial.printf("Will wake on Pin 0 release or every %lu seconds...\n", sleep_interval_s);
+  Serial.printf("Will wake on Pin 0 release or in %lu seconds...\n", (unsigned long)interval_s);
   Serial.flush();
   
   esp_deep_sleep_start();
@@ -1373,6 +1381,14 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
     debugSend(dbg);
     *out = sleep_requested_;
     return marker_seen_;
+  }
+
+  void recordReachable(bool reachable) override {
+    if (reachable) {
+      unreachable_checkins = 0;
+    } else if (unreachable_checkins < UINT8_MAX) {
+      unreachable_checkins++;
+    }
   }
 
   void clearSleepFlag() override {

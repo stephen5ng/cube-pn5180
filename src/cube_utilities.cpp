@@ -176,6 +176,7 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
 
   bool wifi = ports.awaitWifi();
   bool mqtt = wifi && ports.connectMqtt();
+  ports.recordReachable(mqtt);
   if (!mqtt) {
     // The two wakes disagree about what silence means. A timer wake was
     // already asleep, so leaving it there costs nothing. A reset has no such
@@ -198,6 +199,16 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
   if (action == WAKE_ACTION_STAY_ASLEEP) { ports.enterSleep(); return; }
   ports.clearSleepFlag();
   ports.stayAwake();
+}
+
+uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
+                          uint32_t cap_s) {
+  if (base_s >= cap_s) return base_s;
+  uint32_t interval_s = base_s;
+  for (uint8_t i = 0; i < unreachable_checkins && interval_s < cap_s; i++) {
+    interval_s *= 2;
+  }
+  return interval_s < cap_s ? interval_s : cap_s;
 }
 
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {

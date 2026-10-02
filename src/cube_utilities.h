@@ -151,6 +151,8 @@ struct WakeCheckInPorts {
   // empty retained topic delivers nothing, so an unconfirmed read carries no
   // information at all.
   virtual bool readSleepFlag(bool* out) = 0;
+  // Whether this check-in reached the broker; see checkInIntervalS().
+  virtual void recordReachable(bool reachable) = 0;
   virtual void clearSleepFlag() = 0;
   // Disconnects an active keep-alive client, then sleeps. Does not return on
   // hardware, so every call site returns immediately after it.
@@ -159,6 +161,13 @@ struct WakeCheckInPorts {
 };
 
 void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports);
+
+// The sleep before the next keep-alive check-in. Each check-in in a row that
+// could not reach the broker doubles it, up to cap_s: no router or no Pi means
+// the rig is packed away, and every failed join holds the radio up for its
+// whole timeout. A configured base already at or above cap_s is left alone.
+uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
+                          uint32_t cap_s);
 
 #ifdef NATIVE_TESTING
 // Native C versions for testing
