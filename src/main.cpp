@@ -20,10 +20,9 @@
 #include "driver/rtc_io.h"
 
 // ============= Configuration =============
-// Hardware pin configuration is determined at compile time by board type:
-//   BOARD_V6 (v6 board): MISO=34, PN5180_BUSY=35, A_PIN=19, GPIO5=TPS22975 power switch
-//   Default (v1 board):  MISO=39, PN5180_BUSY=36, A_PIN=19
-// Pin definitions (set by configurePins based on board type)
+// Hardware pins (v6 board and later): MISO=34, PN5180_BUSY=35, A_PIN=19,
+// GPIO5=TPS22975 power switch. The v1 socket board is retired.
+// Pin definitions (set by configurePins)
 static int miso_pin = 0;        // Will be set by configurePins()
 static int pn5180_busy_pin = 0; // Will be set by configurePins()
 
@@ -43,18 +42,11 @@ static constexpr SensorMode sensor_mode = SENSOR_MODE_NFC;
 
 static bool sensorModeIsMagnets() { return sensor_mode == SENSOR_MODE_MAGNETS; }
 
-// Function to configure pins based on board type (compile-time)
+// Function to configure pins
 void configurePins() {
-#ifdef BOARD_V6
   miso_pin = 34;
   pn5180_busy_pin = 35;
   Serial.printf("38-pin board - MISO=%d, PN5180_BUSY=%d\n", miso_pin, pn5180_busy_pin);
-#else
-  miso_pin = 39;
-  pn5180_busy_pin = 36;
-  Serial.printf("socket board - MISO=%d, PN5180_BUSY=%d\n", miso_pin, pn5180_busy_pin);
-#endif
-
 }
 
 // Called once the sensor mode is known. configurePins() must have run first:
@@ -134,9 +126,7 @@ void initialiseNeighbourSensor() {
 // slow; the common case ends at KEEPALIVE_CHECKIN_WINDOW_MS above.
 #define KEEPALIVE_FLAG_READ_TIMEOUT_MS  3000UL
 #define POWER_RAIL_SETTLE_MS  50  /* Let the HUB75 5V rail come up before I2S DMA drives the panel */
-#ifdef BOARD_V6
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
-#endif
 
 // 2-of-6 Hall-sensor neighbor ID decode, an alternative to the PN5180 NFC
 // neighbor path. See cubes/docs/hall_sensor_replacement_design.md.
@@ -239,11 +229,7 @@ HUB75_I2S_CFG::i2s_pins display_pins = {
   0,  //R2_PIN,
   0,  //G2_PIN,
   0,  //B2_PIN,
-#ifdef BOARD_V6
   19,  //A_PIN (38-pin board: GPIO5 used for TPS22975 power switch)
-#else
-  19,  //A_PIN (socket board)
-#endif
   21,  //B_PIN,
   4,   //C_PIN,
   22,  //D_PIN,
@@ -412,12 +398,10 @@ private:
   // The player colour in 2P, LETTER_COLOR otherwise; highlight and lock override it.
   uint16_t resting_letter_color = LETTER_COLOR;
   BorderTransition border;
-#ifdef BOARD_V6
   // The panel rail is up AND the DMA engine is running. Both go together:
   // driving a tri-stated pin set or an unpowered panel is what the pairing
   // exists to prevent.
   bool panel_powered;
-#endif
   char border_preview_side;
   unsigned long border_preview_start_time;
   unsigned long border_preview_until;
@@ -509,11 +493,9 @@ public:
                                 animation_start_time(0), highlight_end_time(0), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), is_lock(false),
-#ifdef BOARD_V6
                                 // setup() raises the rail and the constructor
                                 // below runs begin(), so the panel is live here.
                                 panel_powered(true),
-#endif
                                 border_preview_side(0), border_preview_start_time(0),
                                 border_preview_until(0) {
     setMessage(previous_message, " ");
@@ -563,12 +545,10 @@ public:
   }
 
   void displayDebugMessage(const char* message) {
-#ifdef BOARD_V6
     // Writes straight to the DMA buffers and flips, bypassing updateDisplay --
     // so it has to raise the panel itself or a runtime notice ("NO SLOT")
     // would be drawn into an engine that is not scanning.
     powerUpPanel();
-#endif
     int y_pos = debug_line * 8 + 8;
 
     // setFont(NULL) shifts the cursor up 6px when a custom font was active, so it
@@ -850,11 +830,9 @@ public:
       return;
     }
 
-#ifdef BOARD_V6
     // Something changed, so whatever it is has to be shown: bring the panel
     // back before drawing into a buffer no DMA engine is scanning.
     powerUpPanel();
-#endif
 
     // flipDMABuffer() queues a swap at the DMA end-of-frame boundary. Clear
     // the known back buffer before drawing, never immediately after a flip
@@ -889,13 +867,11 @@ public:
     led_display->flipDMABuffer();
     is_dirty = false;
 
-#ifdef BOARD_V6
     // AFTER the flip, so the blank frame is what the panel was last given. The
     // rail then goes down over a dark panel rather than mid-letter.
     if (displayIsBlank(current_time)) {
       powerDownPanel();
     }
-#endif
   }
 
   void handleBorderPreviewCommand(const String& message) {
@@ -925,7 +901,6 @@ public:
     }
   }
 
-#ifdef BOARD_V6
   // EVERY DRAW THIS FRAME WOULD MAKE, not just the letter. updateDisplay draws
   // the letter, the border frame and the border preview; a predicate that
   // forgot one would cut power with that element still owed. Anything added
@@ -1006,7 +981,6 @@ public:
     // directly -- leaves the same state behind.
     panel_powered = false;
   }
-#endif
 
   void handleBrightnessCommand(const String& message) {
     debugPrintln("setting brightness due to /brightness");
@@ -1314,7 +1288,6 @@ void enterSleepMode() {
     delay(100);
   }
 
-#ifdef BOARD_V6
   // Stop DMA and tri-state HUB75 pins to prevent backfeed through panel clamping diodes.
   // Hold all GPIO states through deep sleep so tri-stated pins don't float on power-down.
   // On a check-in re-sleep the panel was never powered and DMA never started, so there
@@ -1325,7 +1298,6 @@ void enterSleepMode() {
   digitalWrite(POWER_SWITCH_PIN, LOW);
   gpio_hold_en(POWER_SWITCH_PIN);
   gpio_deep_sleep_hold_en();
-#endif
 
   // Read current pin state and store it in RTC memory
   pin0_state_at_sleep = digitalRead(SLEEP_PIN);
@@ -1509,7 +1481,6 @@ void handleSleepNowCommand(const String& /*message*/) {
   enterSleepMode();
 }
 
-#ifdef BOARD_V6
 void handlePowerTestCommand(const String& message) {
   if (message == "0") {
     display_manager->shutdownForSleep();
@@ -1520,7 +1491,6 @@ void handlePowerTestCommand(const String& message) {
     debugSend("GPIO5 HIGH - reboot to restore display");
   }
 }
-#endif
 
 void handleSleepIntervalCommand(const String& message) {
   uint32_t new_interval = message.toInt();
@@ -1589,9 +1559,7 @@ void subscribeSlotTopics() {
   // by reconnecting. It is also not play.
   mqtt_client.subscribe(mqtt_topic_cube + "/letter_color", [](const String& msg) { display_manager->handleLetterColorCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
-#ifdef BOARD_V6
   mqtt_client.subscribe(mqtt_topic_cube + "/power_test", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePowerTestCommand(msg); });
-#endif
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/rise_ms", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleRiseMsCommand(msg); });
 
@@ -2119,11 +2087,7 @@ void handleUDP() {
         unsigned long avg_letter_interval = letter_interval_count > 0 ? letter_interval_accum / letter_interval_count : 0;
 
         const char* fw_board =
-#ifdef BOARD_V6
           "v6";
-#else
-          "v1";
-#endif
         snprintf(diagStr, sizeof(diagStr),
           "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu"
           "|hall_mask=%02X|hall_raw=%d|hall_filt=%d|hall_base=%d"
@@ -2248,7 +2212,6 @@ void setup() {
   // Configure Pin 0 for momentary switch (with internal pull-up)
   pinMode(0, INPUT_PULLUP);
 
-#ifdef BOARD_V6
   // Release holds set in enterSleepMode(). A timer-wake check-in keeps the
   // TPS22975 (and HUB75 panel) off so the wake draws only WiFi current; the
   // panel is powered later, in the full-wake path, once we commit to waking.
@@ -2263,7 +2226,6 @@ void setup() {
 #ifdef HALL_SENSOR_ANALOG
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
-#endif
 #endif
   
   // Initialize WiFi and get cube identifier
@@ -2318,7 +2280,6 @@ void setup() {
 
   // Reaching here means we are fully waking: first boot, button wake, or a
   // check-in whose auto_sleep flag was cleared.
-#ifdef BOARD_V6
   // Power the panel now. On a timer wake the rail was held off above, so raise
   // it and let the 5V rail settle before I2S DMA starts driving the panel. On a
   // button/first boot the rail was raised early and WiFi setup already gave it
@@ -2327,7 +2288,6 @@ void setup() {
     digitalWrite(POWER_SWITCH_PIN, HIGH);
     delay(POWER_RAIL_SETTLE_MS);
   }
-#endif
 
   debugSend("setup: continuing normally");
 
