@@ -18,11 +18,11 @@
    ```bash
    ~/.platformio/penv/bin/platformio run -e v6
    ```
-   Environments are `v1`, `v6`, `v6_with_hall_analog` and `native` — there is
-   no `esp32dev` environment (`esp32dev` is the *board*, set inside
-   `[env:v1]`). `v6` is what the Pi builds for production and the default for
-   a bare `pio run`. No board is `v1` any more; that environment exists so CI
-   keeps compiling the socket-board pin mapping.
+   Environments are `v6`, `v6_with_hall_analog`, `v6_battery` and `native` —
+   there is no `esp32dev` environment (`esp32dev` is the *board*, set inside
+   `[env:v6]`). `v6` is what the Pi builds for production and the default for
+   a bare `pio run`. The v1 socket board is retired and its environment and
+   pin mapping are gone; every build drives the GPIO5 panel switch.
    - Verify code compiles for target hardware
    - Catch syntax errors, missing declarations, type mismatches
    - Ensure memory usage is within acceptable limits

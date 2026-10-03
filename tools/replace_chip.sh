@@ -94,7 +94,7 @@ else
         echo "Board version: $NEW_MAC=$OLD_VERSION (inherited from $OLD_MAC)"
     else
         echo "WARNING: $OLD_MAC had no entry in $BOARD_FILE, so none was inherited."
-        echo "         Add '$NEW_MAC=<v1|v6|v6_with_hall_analog|v6_battery>' there before flashing."
+        echo "         Add '$NEW_MAC=<v6|v6_with_hall_analog|v6_battery>' there before flashing."
     fi
 fi
 
