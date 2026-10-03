@@ -18,7 +18,8 @@
    ```bash
    ~/.platformio/penv/bin/platformio run -e v6
    ```
-   Environments are `v6`, `v6_with_hall_analog`, `v6_battery` and `native` —
+   Environments are `v6`, `v6_with_hall_analog`, `v6_battery`, `v8` (hall +
+   battery sense, for the v8.0 board) and `native` —
    there is no `esp32dev` environment (`esp32dev` is the *board*, set inside
    `[env:v6]`). `v6` is what the Pi builds for production and the default for
    a bare `pio run`. The v1 socket board is retired and its environment and
@@ -66,7 +67,8 @@
   or the artifact is stale
 - `docs/` - Planning docs, hardware debugging notes, analysis write-ups
 - `config/cube_board_versions.txt` - Maps MAC address to board version
-  (`v6` / `v6_with_hall_analog`); read by flashing/diagnostic scripts
+  (`v6` / `v6_with_hall_analog` / `v6_battery` / `v8`; the value is the
+  platformio environment); read by flashing/diagnostic scripts
 - `config/cube_table.json` - Generated from the compiled MAC table: each
   board's static-IP octet and panel wiring. Do not hand-edit; run
   `tools/cube_table.py write`
