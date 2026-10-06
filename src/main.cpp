@@ -5,6 +5,7 @@
 #include "border_transition.h"
 #include "curtain.h"
 #include "letter_color.h"
+#include "wake_flicker.h"
 #include "panel_text.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
@@ -391,6 +392,9 @@ private:
   uint8_t debug_line;
   unsigned long animation_start_time;
   long highlight_end_time;
+  unsigned long wake_start_time;
+  bool is_waking;
+  uint16_t wake_asleep_color;
   bool is_lock;
   Curtain curtain;
   uint8_t percent_complete;
@@ -490,7 +494,8 @@ private:
 public:
   DisplayManager() : is_dirty(true),
                                 debug_line(0),
-                                animation_start_time(0), highlight_end_time(0), percent_complete(100),
+                                animation_start_time(0), highlight_end_time(0), wake_start_time(0), is_waking(false),
+                                wake_asleep_color(LETTER_COLOR), percent_complete(100),
                                 current_letter_color(LETTER_COLOR), current_font(&Roboto_Mono_Bold_78),
                                 text_size(1), is_lock(false),
                                 // setup() raises the rail and the constructor
@@ -573,7 +578,16 @@ public:
   void animate(unsigned long current_time) {
     static uint16_t last_letter_color = -1;
 
-    current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : resting_letter_color;
+    uint16_t awake_color = resting_letter_color;
+    if (is_waking) {
+      unsigned long elapsed = current_time - wake_start_time;
+      if (elapsed < WAKE_FLICKER_MS) {
+        awake_color = wakeFlickerColor(elapsed, wake_asleep_color, resting_letter_color);
+      } else {
+        is_waking = false;
+      }
+    }
+    current_letter_color = current_time < highlight_end_time ? HIGHLIGHT_LETTER_COLOR : awake_color;
     if (is_lock) {
       current_letter_color = YELLOW;
     }
@@ -813,6 +827,21 @@ public:
   }
 
   // animate() notices the change and redraws.
+  // `cube/{id}/wake`: the sleeping colour the letter wakes from. Anything
+  // unparseable is ignored rather than flickering from a guessed colour;
+  // white is the sentinel, and no letter sleeps white.
+  void handleWakeCommand(const String& message) {
+    const uint16_t NOT_A_COLOR = 0xFFFF;
+    uint16_t asleep = parseLetterColor(message.c_str(), NOT_A_COLOR);
+    if (asleep == NOT_A_COLOR) {
+      return;
+    }
+    wake_asleep_color = asleep;
+    wake_start_time = millis();
+    is_waking = true;
+    is_dirty = true;
+  }
+
   void handleLetterColorCommand(const String& message) {
     resting_letter_color = parseLetterColor(message.c_str(), LETTER_COLOR);
   }
@@ -1551,6 +1580,7 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/border_preview", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderPreviewCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/wake", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleWakeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/lock", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLockCommand(msg); });
