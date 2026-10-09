@@ -128,6 +128,11 @@ void initialiseNeighbourSensor() {
 #define KEEPALIVE_FLAG_READ_TIMEOUT_MS  3000UL
 #define POWER_RAIL_SETTLE_MS  50  /* Let the HUB75 5V rail come up before I2S DMA drives the panel */
 #define POWER_SWITCH_PIN GPIO_NUM_5  /* GPIO5 controls TPS22975 HUB75 power switch */
+// Board generation reported as fw= in the diag reply. Builds for a later board
+// (env:v8) override it; the v6 feature variants share the v6 board.
+#ifndef FW_BOARD
+#define FW_BOARD "v6"
+#endif
 
 // 2-of-6 Hall-sensor neighbor ID decode, an alternative to the PN5180 NFC
 // neighbor path. See cubes/docs/hall_sensor_replacement_design.md.
@@ -2116,8 +2121,7 @@ void handleUDP() {
                                   (timing_sample_index > 0 ? timing_accumulator / timing_sample_index : 0);
         unsigned long avg_letter_interval = letter_interval_count > 0 ? letter_interval_accum / letter_interval_count : 0;
 
-        const char* fw_board =
-          "v6";
+        const char* fw_board = FW_BOARD;
         snprintf(diagStr, sizeof(diagStr),
           "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu"
           "|hall_mask=%02X|hall_raw=%d|hall_filt=%d|hall_base=%d"

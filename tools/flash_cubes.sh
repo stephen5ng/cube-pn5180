@@ -1,6 +1,6 @@
 #!/bin/bash
 # Flash firmware to cubes based on their board version
-# Usage: ./flash_cubes.sh <cube_id> [v6|v6_with_hall_analog|v6_battery]
+# Usage: ./flash_cubes.sh <cube_id> [v6|v6_with_hall_analog|v6_battery|v8]
 
 CUBE_VERSIONS_FILE="$(dirname "$0")/../config/cube_board_versions.txt"
 FW_DIR="$(dirname "$0")/.."
@@ -315,7 +315,7 @@ fi
 
 if [ $# -eq 0 ]; then
     show_inventory
-    echo "Usage: $0 <cube_id> [v6|v6_with_hall_analog|v6_battery]"
+    echo "Usage: $0 <cube_id> [v6|v6_with_hall_analog|v6_battery|v8]"
     echo "       $0 all"
     exit 1
 fi
