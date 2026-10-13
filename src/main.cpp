@@ -141,7 +141,27 @@ static const uint8_t HALL_ID_PINS[6] = {32, 17, 23, 18, 34, 35};
 // (lexacube_pcb power-board/docs/battery-sense-divider.md), so the pin sees half.
 #define BATTERY_SENSE_PIN 39
 #define BATTERY_SENSE_SAMPLES 16
-#define BATTERY_PUBLISH_INTERVAL_MS 60000UL
+#define BATTERY_SAMPLE_INTERVAL_MS 60000UL
+// Carried across sleep so a cube that has already stopped waking does not
+// forget on the next check-in, and across a reset because a brownout on a flat
+// cell is one of the drains this gate exists to stop -- RTC_DATA_ATTR is
+// re-initialised by the bootloader on every reset but a deep-sleep wake, as
+// the presence baseline below also has to allow for. Charging clears it for
+// free: the boost is disabled while VBUS is present, so the ESP32 loses power
+// and RTC memory with it.
+#define BATTERY_LOW_MAGIC 0x42415454u  // "BATT"
+RTC_NOINIT_ATTR static uint32_t battery_low_magic;
+RTC_NOINIT_ATTR static bool battery_low_latched;
+RTC_NOINIT_ATTR static uint8_t battery_low_run;
+
+// Nothing initialises the noinit segment on a cold boot, so unset reads as
+// garbage rather than as zero.
+static void restoreBatteryLowLatch() {
+  if (battery_low_magic == BATTERY_LOW_MAGIC) return;
+  battery_low_magic = BATTERY_LOW_MAGIC;
+  battery_low_latched = false;
+  battery_low_run = 0;
+}
 #endif
 // DRV5055 analog presence sensor. Thresholds are deltas from a tracked baseline, not
 // absolute ADC values; see hall_presence.h.
@@ -1294,7 +1314,12 @@ void enterSleepMode() {
   // display_manager is null on a timer-wake check-in that never powered the
   // panel — skip the "sleep..." paint and its 2s dwell so that pulse stays cheap.
   if (display_manager != nullptr) {
+#ifdef BATTERY_SENSE
+    display_manager->displayDebugMessage(battery_low_latched ? "BATTERY"
+                                                             : "sleep...");
+#else
     display_manager->displayDebugMessage("sleep...");
+#endif
     delay(2000);
   }
 
@@ -1344,8 +1369,13 @@ void enterSleepMode() {
   rtc_gpio_pulldown_dis(SLEEP_PIN);
   rtc_gpio_pullup_en(SLEEP_PIN);
 
-  const uint32_t interval_s = checkInIntervalS(
+  uint32_t interval_s = checkInIntervalS(
       sleep_interval_s, unreachable_checkins, CHECKIN_BACKOFF_CAP_S);
+#ifdef BATTERY_SENSE
+  if (battery_low_latched) {
+    interval_s = batteryLowCheckInIntervalS(sleep_interval_s, CHECKIN_BACKOFF_CAP_S);
+  }
+#endif
   esp_sleep_enable_timer_wakeup((uint64_t)interval_s * uS_TO_S_FACTOR);
 
 
@@ -1483,21 +1513,19 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
   bool sleep_requested_ = false;
 };
 
-void handleWakeUp() {
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+static WakeReason wakeReasonFromBoot(esp_sleep_wakeup_cause_t wakeup_reason) {
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) return WAKE_REASON_TIMER;
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) return WAKE_REASON_BUTTON;
+  if (esp_reset_reason() == ESP_RST_POWERON) return WAKE_REASON_POWER_ON;
+  return WAKE_REASON_OTHER;
+}
 
-  WakeReason reason = WAKE_REASON_OTHER;
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
-    reason = WAKE_REASON_TIMER;
-    debugSend("timer wake");
-  } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
-    reason = WAKE_REASON_BUTTON;
-    debugPrintln("Woken by external signal (Pin 0 released)");
-  } else if (esp_reset_reason() == ESP_RST_POWERON) {
-    reason = WAKE_REASON_POWER_ON;
-    debugPrintln("Power-on boot - staying awake");
-  } else {
-    debugPrintln("Reset - checking the sleep flag");
+void handleWakeUp(WakeReason reason) {
+  switch (reason) {
+    case WAKE_REASON_TIMER:    debugSend("timer wake"); break;
+    case WAKE_REASON_BUTTON:   debugPrintln("Woken by external signal (Pin 0 released)"); break;
+    case WAKE_REASON_POWER_ON: debugPrintln("Power-on boot - staying awake"); break;
+    case WAKE_REASON_OTHER:    debugPrintln("Reset - checking the sleep flag"); break;
   }
 
   KeepAliveCheckInPorts ports;
@@ -1537,13 +1565,30 @@ void handleSleepIntervalCommand(const String& message) {
 
 
 #ifdef BATTERY_SENSE
-void publishBatteryMillivolts() {
+uint32_t readBatteryMillivolts() {
   uint32_t sum = 0;
   for (int i = 0; i < BATTERY_SENSE_SAMPLES; i++) {
     sum += analogReadMilliVolts(BATTERY_SENSE_PIN);
   }
-  uint32_t cell_mv = sum / BATTERY_SENSE_SAMPLES * 2;
-  mqtt_client.publish(mqtt_topic_cube + "/battery_mv", String(cell_mv), true);
+  return sum / BATTERY_SENSE_SAMPLES * 2;
+}
+
+// The latch is updated on every reading, broker or no broker: a cube whose
+// link has dropped is exactly the one that needs to stop staying awake.
+void sampleBattery() {
+  const uint32_t cell_mv = readBatteryMillivolts();
+  battery_low_latched =
+      updateBatteryLowLatch(cell_mv, battery_low_latched, &battery_low_run);
+  if (!mqtt_topic_cube.isEmpty() && mqtt_client.isConnected()) {
+    mqtt_client.publish(mqtt_topic_cube + "/battery_mv", String(cell_mv), true);
+  }
+}
+
+// A whole confirmation run back to back. The spacing the in-play samples use
+// is there to outlast a white frame's sag; at boot the load is low and steady,
+// and a cube browning out on a flat cell never gets three minutes.
+void sampleBatteryRun() {
+  for (uint8_t i = 0; i < BATTERY_LOW_CONFIRM_READS; i++) sampleBattery();
 }
 #endif
 
@@ -1563,7 +1608,7 @@ void subscribeSlotTopics() {
                       sensorModeIsMagnets() ? "magnets" : "nfc", true);
 
 #ifdef BATTERY_SENSE
-  publishBatteryMillivolts();
+  sampleBattery();
 #endif
 
   // cube/device/{MAC}/nfc is retained, so a tag read before a cable swap
@@ -2202,6 +2247,9 @@ void handleUDP() {
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(0);
+#ifdef BATTERY_SENSE
+  restoreBatteryLowLatch();
+#endif
 
   debugPrintln("starting....");
   Serial.print("Chip Model: ");
@@ -2258,6 +2306,25 @@ void setup() {
   analogSetAttenuation(ADC_11db);
 #endif
   
+  const WakeReason wake_reason = wakeReasonFromBoot(wakeup_reason);
+
+#ifdef BATTERY_SENSE
+  // Ahead of setupWiFiConnection(), which fires a non-blocking WiFi.begin():
+  // on a flat cell the join is the drain, about 20 mA for its whole timeout
+  // when there is no broker to find. This is also what breaks the brownout
+  // loop, since runWakeCheckIn() deliberately keeps a reset awake when it
+  // cannot reach the broker.
+  //
+  // The battery divider is read with analogReadMilliVolts(), and only the
+  // analog-hall build configures the ADC above, so set the attenuation this
+  // reading needs rather than inheriting a default.
+  analogSetPinAttenuation(BATTERY_SENSE_PIN, ADC_11db);
+  if (batteryLowEndsWake(wake_reason, battery_low_latched)) {
+    debugSend("battery low: sleeping without joining");
+    enterSleepMode();
+  }
+#endif
+
   // Initialize WiFi and get cube identifier
   debugPrintln("setting up wifi...");
   setupWiFiConnection();
@@ -2306,7 +2373,7 @@ void setup() {
   // check-in that stays asleep this re-enters deep sleep and never returns, so
   // the debug paints below are skipped; enterSleepMode() paints "sleep..." and
   // tears the panel down when the block above has already built it.
-  handleWakeUp();
+  handleWakeUp(wake_reason);
 
   // Reaching here means we are fully waking: first boot, button wake, or a
   // check-in whose auto_sleep flag was cleared.
@@ -2329,6 +2396,19 @@ void setup() {
     display_manager->displayDebugMessage(GIT_TIMESTAMP);
   }
   delay(DISPLAY_STARTUP_DELAY_MS);
+
+#ifdef BATTERY_SENSE
+  // Every branch of runWakeCheckIn() that decided to wake arrives here, so one
+  // check covers the button, a cold boot and a cleared sleep flag alike. It
+  // sits after the panel is built on purpose: a cube that goes dark without
+  // saying why reads as dead hardware.
+  sampleBatteryRun();
+  if (battery_low_latched) {
+    debugSend("battery low: back to sleep");
+    enterSleepMode();
+  }
+#endif
+
   display_manager->displayDebugMessage((String("wake:") + String(wakeup_reason)).c_str());
   static String client_name = makeMqttClientId(WiFi.macAddress(), "");
   Serial.println(client_name);
@@ -2404,6 +2484,17 @@ void loop() {
     applySlot(slot);
   }
 
+#ifdef BATTERY_SENSE
+  // Play resets the inactivity timer below on every letter and border, so a
+  // cube in a game would otherwise run the cell down to the DW01A cutoff.
+  // No auto_sleep flag: the latch is what holds the cube down, and it needs no
+  // clearing afterwards because charging takes RTC memory with it.
+  if (battery_low_latched) {
+    debugSend("battery low: sleeping");
+    enterSleepMode();
+  }
+#endif
+
   if (last_activity_time > 0 &&
       (millis() - last_activity_time > AUTO_SLEEP_TIMEOUT_MS)) {
     debugSend("auto-sleep: inactivity timeout");
@@ -2429,11 +2520,10 @@ void loop() {
   unsigned long udp_us = micros() - udp_start;
 
 #ifdef BATTERY_SENSE
-  static unsigned long last_battery_publish = 0;
-  if (slotIsResolved() && mqtt_client.isConnected() &&
-      current_time - last_battery_publish >= BATTERY_PUBLISH_INTERVAL_MS) {
-    publishBatteryMillivolts();
-    last_battery_publish = current_time;
+  static unsigned long last_battery_sample = 0;
+  if (current_time - last_battery_sample >= BATTERY_SAMPLE_INTERVAL_MS) {
+    sampleBattery();
+    last_battery_sample = current_time;
   }
 #endif
 

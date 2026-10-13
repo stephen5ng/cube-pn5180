@@ -218,6 +218,30 @@ uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
   return interval_s < cap_s ? interval_s : cap_s;
 }
 
+uint32_t batteryLowCheckInIntervalS(uint32_t base_s, uint32_t cap_s) {
+  return base_s < cap_s ? cap_s : base_s;
+}
+
+bool batteryLowEndsWake(WakeReason wake_reason, bool battery_low) {
+  if (!battery_low) return false;
+  return wake_reason == WAKE_REASON_TIMER || wake_reason == WAKE_REASON_OTHER;
+}
+
+bool updateBatteryLowLatch(uint32_t cell_mv, bool latched, uint8_t* low_run) {
+  if (cell_mv < BATTERY_SENSE_FLOOR_MV) return latched;
+  if (latched) {
+    if (cell_mv < BATTERY_LOW_CLEAR_MV) return true;
+    *low_run = 0;
+    return false;
+  }
+  if (cell_mv >= BATTERY_LOW_MV) {
+    *low_run = 0;
+    return false;
+  }
+  if (*low_run < BATTERY_LOW_CONFIRM_READS) (*low_run)++;
+  return *low_run >= BATTERY_LOW_CONFIRM_READS;
+}
+
 void convertNfcIdToHexString(uint8_t* nfc_id, int id_length, char* hex_buffer) {
   for (int i = 0; i < id_length; i++) {
     snprintf(hex_buffer + (i * 2), 3, "%02X", nfc_id[i]);
