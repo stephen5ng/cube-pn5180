@@ -779,6 +779,114 @@ void test_checkInIntervalS_reaches_a_day_without_overflowing() {
     TEST_ASSERT_EQUAL_UINT32(86400, checkInIntervalS(20, 255, 86400));
 }
 
+// ---------------------------------------------------------------------------
+// Low-battery latch
+// ---------------------------------------------------------------------------
+// A cube in play never auto-sleeps -- every letter and border resets the
+// activity timer -- so without this gate a game night runs a cell from full to
+// the DW01A cutoff at ~0.53A and costs it some life every time. The latch is
+// what stops the cube staying awake while the cell is nearly empty.
+
+// The cell sags under a lit panel, so one low reading is a white frame, not a
+// flat cell.
+void test_battery_latch_ignores_a_single_sag() {
+    uint8_t low_run = 0;
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(3300, false, &low_run));
+}
+
+void test_battery_latches_after_consecutive_low_readings() {
+    uint8_t low_run = 0;
+    bool latched = false;
+    for (int i = 0; i < BATTERY_LOW_CONFIRM_READS - 1; i++) {
+        latched = updateBatteryLowLatch(3300, latched, &low_run);
+        TEST_ASSERT_FALSE(latched);
+    }
+    TEST_ASSERT_TRUE(updateBatteryLowLatch(3300, latched, &low_run));
+}
+
+// A good reading between sags starts the run over, so a cube at 3.5V flickering
+// under full white never latches.
+void test_battery_latch_resets_the_run_on_a_good_reading() {
+    uint8_t low_run = 0;
+    bool latched = false;
+    for (int i = 0; i < BATTERY_LOW_CONFIRM_READS - 1; i++) {
+        latched = updateBatteryLowLatch(3300, latched, &low_run);
+    }
+    latched = updateBatteryLowLatch(3800, latched, &low_run);
+    TEST_ASSERT_FALSE(latched);
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(3300, latched, &low_run));
+}
+
+// Hysteresis: recovering past the threshold is not enough, or a cube would
+// oscillate between sleeping and waking as the unloaded cell rebounds.
+void test_battery_latch_holds_until_well_clear_of_the_threshold() {
+    uint8_t low_run = 0;
+    TEST_ASSERT_TRUE(updateBatteryLowLatch(BATTERY_LOW_MV + 50, true, &low_run));
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(BATTERY_LOW_CLEAR_MV, true, &low_run));
+}
+
+// A charged cell clears the latch, and the run with it, so the next sag needs
+// a full confirmation again.
+void test_battery_latch_clears_on_a_charged_cell() {
+    uint8_t low_run = 2;
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(4100, true, &low_run));
+    TEST_ASSERT_EQUAL_UINT8(0, low_run);
+}
+
+// A BATTERY_SENSE build on a board whose divider was never wired reads near
+// zero. No running cube can be below the DW01A cutoff, so that is missing
+// hardware, not a flat cell -- latching on it would stop the cube sleeping
+// anything but immediately.
+void test_battery_latch_ignores_a_reading_no_running_cube_could_produce() {
+    uint8_t low_run = 0;
+    bool latched = false;
+    for (int i = 0; i < BATTERY_LOW_CONFIRM_READS + 1; i++) {
+        latched = updateBatteryLowLatch(0, latched, &low_run);
+    }
+    TEST_ASSERT_FALSE(latched);
+}
+
+// A latched cube never reaches runWakeCheckIn(), so the reachability backoff
+// that would otherwise stretch its sleep never advances. Left alone it would
+// wake every 20 s forever on the cell it is trying to protect.
+void test_battery_low_waits_out_the_whole_backoff_cap() {
+    TEST_ASSERT_EQUAL_UINT32(86400, batteryLowCheckInIntervalS(20, 86400));
+}
+
+// An interval someone set longer than the cap is still left alone, as
+// checkInIntervalS() leaves it alone.
+void test_battery_low_does_not_shorten_a_longer_configured_interval() {
+    TEST_ASSERT_EQUAL_UINT32(172800, batteryLowCheckInIntervalS(172800, 86400));
+}
+
+// A latched cube still has to answer its keep-alive check-ins, and on a flat
+// cell the Wi-Fi join is the drain -- about 20 mA for the whole timeout when
+// there is no broker to find. Deciding before the radio comes up is the point.
+void test_battery_low_sends_a_timer_checkin_back_to_sleep() {
+    TEST_ASSERT_TRUE(batteryLowEndsWake(WAKE_REASON_TIMER, true));
+}
+
+// A brownout on a nearly-flat cell reports as a reset, which runWakeCheckIn()
+// deliberately keeps awake when it cannot reach the broker -- so an empty cube
+// would brown out, stay awake ten minutes at full draw, and do it again.
+void test_battery_low_sends_a_reset_back_to_sleep() {
+    TEST_ASSERT_TRUE(batteryLowEndsWake(WAKE_REASON_OTHER, true));
+}
+
+// Someone is holding the cube: it comes up far enough to say why it is dark,
+// which is the whole reason the warning exists.
+void test_battery_low_still_answers_the_button_and_a_cold_boot() {
+    TEST_ASSERT_FALSE(batteryLowEndsWake(WAKE_REASON_BUTTON, true));
+    TEST_ASSERT_FALSE(batteryLowEndsWake(WAKE_REASON_POWER_ON, true));
+}
+
+void test_a_healthy_cell_ends_no_wake() {
+    TEST_ASSERT_FALSE(batteryLowEndsWake(WAKE_REASON_TIMER, false));
+    TEST_ASSERT_FALSE(batteryLowEndsWake(WAKE_REASON_OTHER, false));
+    TEST_ASSERT_FALSE(batteryLowEndsWake(WAKE_REASON_BUTTON, false));
+    TEST_ASSERT_FALSE(batteryLowEndsWake(WAKE_REASON_POWER_ON, false));
+}
+
 // An interval someone set longer than the cap is never shortened.
 void test_checkInIntervalS_leaves_a_longer_configured_interval_alone() {
     TEST_ASSERT_EQUAL_UINT32(600, checkInIntervalS(600, 0, 300));
@@ -1228,6 +1336,18 @@ int main(void) {
     // Wake decision tests
     RUN_TEST(test_resolveWakeAction_network_failure_stays_asleep);
         RUN_TEST(test_resolveWakeAction_obeys_the_device_flag);
+    RUN_TEST(test_battery_latch_ignores_a_single_sag);
+    RUN_TEST(test_battery_low_sends_a_timer_checkin_back_to_sleep);
+    RUN_TEST(test_battery_low_waits_out_the_whole_backoff_cap);
+    RUN_TEST(test_battery_low_does_not_shorten_a_longer_configured_interval);
+    RUN_TEST(test_battery_low_sends_a_reset_back_to_sleep);
+    RUN_TEST(test_battery_low_still_answers_the_button_and_a_cold_boot);
+    RUN_TEST(test_a_healthy_cell_ends_no_wake);
+    RUN_TEST(test_battery_latches_after_consecutive_low_readings);
+    RUN_TEST(test_battery_latch_resets_the_run_on_a_good_reading);
+    RUN_TEST(test_battery_latch_holds_until_well_clear_of_the_threshold);
+    RUN_TEST(test_battery_latch_clears_on_a_charged_cell);
+    RUN_TEST(test_battery_latch_ignores_a_reading_no_running_cube_could_produce);
     RUN_TEST(test_checkInIntervalS_doubles_per_unreachable_checkin_up_to_the_cap);
     RUN_TEST(test_checkInIntervalS_leaves_a_longer_configured_interval_alone);
     RUN_TEST(test_checkInIntervalS_reaches_a_day_without_overflowing);

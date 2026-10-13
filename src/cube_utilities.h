@@ -176,6 +176,39 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports);
 uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
                           uint32_t cap_s);
 
+// A cell at or below BATTERY_LOW_MV has little usable charge left. The cube
+// stops staying awake there: a cube in play never auto-sleeps -- every letter
+// and border resets the inactivity timer -- so otherwise a game night runs the
+// cell from full down to the DW01A cutoff, which costs it some life each time.
+// Firmware can only lower the floor it stops at; deep sleep still draws
+// milliamps on this hardware, so a stored cube reaches the cutoff regardless.
+#define BATTERY_LOW_MV 3400
+// Clearing needs more than crossing back: an unloaded cell rebounds, and a
+// single threshold would oscillate between sleeping and waking.
+#define BATTERY_LOW_CLEAR_MV 3550
+// The cell sags ~0.1V under load, more under a white panel, so a lone low
+// reading is a bright frame rather than a flat cell.
+#define BATTERY_LOW_CONFIRM_READS 3
+// No cube can run below the DW01A cutoff, so a reading under this is a
+// BATTERY_SENSE build on a board whose divider was never wired.
+#define BATTERY_SENSE_FLOOR_MV 2000
+
+// Whether the cell is confirmed low, given a fresh reading and the latch's
+// own state. low_run carries the consecutive low readings between calls.
+bool updateBatteryLowLatch(uint32_t cell_mv, bool latched, uint8_t* low_run);
+
+// Whether a confirmed-low cell sends this wake straight back to sleep without
+// joining the network. A button press and a cold boot are someone picking the
+// cube up and get the panel and the warning; a timer check-in and a reset are
+// not, and on a flat cell the join is what drains it.
+bool batteryLowEndsWake(WakeReason wake_reason, bool battery_low);
+
+// The sleep before the next check-in on a confirmed-low cell. A flat cube has
+// nothing to report and nothing to be told, and it never reaches
+// runWakeCheckIn() to advance the reachability backoff, so it waits out the
+// whole cap -- unless its configured interval is already longer.
+uint32_t batteryLowCheckInIntervalS(uint32_t base_s, uint32_t cap_s);
+
 #ifdef NATIVE_TESTING
 // Native C versions for testing
 void removeColonsFromMacC(const char* mac_address, char* output, size_t output_size);
