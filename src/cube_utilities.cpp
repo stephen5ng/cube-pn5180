@@ -218,10 +218,6 @@ uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
   return interval_s < cap_s ? interval_s : cap_s;
 }
 
-uint32_t batteryLowCheckInIntervalS(uint32_t base_s, uint32_t cap_s) {
-  return base_s < cap_s ? cap_s : base_s;
-}
-
 bool batteryLowEndsWake(WakeReason wake_reason, bool battery_low) {
   if (!battery_low) return false;
   return wake_reason == WAKE_REASON_TIMER || wake_reason == WAKE_REASON_OTHER;

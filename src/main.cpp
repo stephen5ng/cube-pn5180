@@ -1369,21 +1369,32 @@ void enterSleepMode() {
   rtc_gpio_pulldown_dis(SLEEP_PIN);
   rtc_gpio_pullup_en(SLEEP_PIN);
 
-  uint32_t interval_s = checkInIntervalS(
+  const uint32_t interval_s = checkInIntervalS(
       sleep_interval_s, unreachable_checkins, CHECKIN_BACKOFF_CAP_S);
 #ifdef BATTERY_SENSE
-  if (battery_low_latched) {
-    interval_s = batteryLowCheckInIntervalS(sleep_interval_s, CHECKIN_BACKOFF_CAP_S);
-  }
+  // A latched cube has nothing to spend a timer wake on. The gate in setup()
+  // runs ahead of the radio, so the wake takes no battery reading that could
+  // clear the latch and reaches no broker that could tell it anything -- it
+  // arrives back here having done nothing, a boot surge poorer, on the cell the
+  // latch exists to protect. Pin 0 and a USB-C cold boot both still bring it
+  // back.
+  const bool arm_timer = !battery_low_latched;
+#else
+  const bool arm_timer = true;
 #endif
-  esp_sleep_enable_timer_wakeup((uint64_t)interval_s * uS_TO_S_FACTOR);
+  if (arm_timer) {
+    esp_sleep_enable_timer_wakeup((uint64_t)interval_s * uS_TO_S_FACTOR);
+  }
 
-
-  // Send debug via UDP
   char dbg[64];
-  snprintf(dbg, sizeof(dbg), "sleeping for %lu seconds", (unsigned long)interval_s);
+  if (arm_timer) {
+    snprintf(dbg, sizeof(dbg), "sleeping for %lu seconds", (unsigned long)interval_s);
+  } else {
+    snprintf(dbg, sizeof(dbg), "battery low: sleeping until Pin 0 or power");
+  }
   debugSend(dbg);
-  Serial.printf("Will wake on Pin 0 release or in %lu seconds...\n", (unsigned long)interval_s);
+  Serial.printf("Will wake on Pin 0 release%s\n",
+                arm_timer ? " or on the check-in timer" : " or a USB-C cold boot");
   Serial.flush();
   
   esp_deep_sleep_start();
