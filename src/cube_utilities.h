@@ -203,12 +203,6 @@ bool updateBatteryLowLatch(uint32_t cell_mv, bool latched, uint8_t* low_run);
 // not, and on a flat cell the join is what drains it.
 bool batteryLowEndsWake(WakeReason wake_reason, bool battery_low);
 
-// The sleep before the next check-in on a confirmed-low cell. A flat cube has
-// nothing to report and nothing to be told, and it never reaches
-// runWakeCheckIn() to advance the reachability backoff, so it waits out the
-// whole cap -- unless its configured interval is already longer.
-uint32_t batteryLowCheckInIntervalS(uint32_t base_s, uint32_t cap_s);
-
 #ifdef NATIVE_TESTING
 // Native C versions for testing
 void removeColonsFromMacC(const char* mac_address, char* output, size_t output_size);

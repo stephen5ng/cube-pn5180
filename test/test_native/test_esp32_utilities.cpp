@@ -846,19 +846,6 @@ void test_battery_latch_ignores_a_reading_no_running_cube_could_produce() {
     TEST_ASSERT_FALSE(latched);
 }
 
-// A latched cube never reaches runWakeCheckIn(), so the reachability backoff
-// that would otherwise stretch its sleep never advances. Left alone it would
-// wake every 20 s forever on the cell it is trying to protect.
-void test_battery_low_waits_out_the_whole_backoff_cap() {
-    TEST_ASSERT_EQUAL_UINT32(86400, batteryLowCheckInIntervalS(20, 86400));
-}
-
-// An interval someone set longer than the cap is still left alone, as
-// checkInIntervalS() leaves it alone.
-void test_battery_low_does_not_shorten_a_longer_configured_interval() {
-    TEST_ASSERT_EQUAL_UINT32(172800, batteryLowCheckInIntervalS(172800, 86400));
-}
-
 // A latched cube still has to answer its keep-alive check-ins, and on a flat
 // cell the Wi-Fi join is the drain -- about 20 mA for the whole timeout when
 // there is no broker to find. Deciding before the radio comes up is the point.
@@ -1338,8 +1325,6 @@ int main(void) {
         RUN_TEST(test_resolveWakeAction_obeys_the_device_flag);
     RUN_TEST(test_battery_latch_ignores_a_single_sag);
     RUN_TEST(test_battery_low_sends_a_timer_checkin_back_to_sleep);
-    RUN_TEST(test_battery_low_waits_out_the_whole_backoff_cap);
-    RUN_TEST(test_battery_low_does_not_shorten_a_longer_configured_interval);
     RUN_TEST(test_battery_low_sends_a_reset_back_to_sleep);
     RUN_TEST(test_battery_low_still_answers_the_button_and_a_cold_boot);
     RUN_TEST(test_a_healthy_cell_ends_no_wake);
