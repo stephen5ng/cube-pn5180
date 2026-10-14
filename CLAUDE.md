@@ -65,8 +65,9 @@
   second parser; `validate_mac_table.py` fails the build if the two disagree
   or the artifact is stale
 - `docs/` - Planning docs, hardware debugging notes, analysis write-ups
-- `config/cube_board_versions.txt` - Maps MAC address to board version
-  (`v6` / `v6_with_hall_analog`); read by flashing/diagnostic scripts
+- `config/cube_board_versions.txt` - Maps MAC address to the PlatformIO build
+  environment used to flash that board (`v6` / `v6_with_hall_analog` /
+  `v6_battery`); read by flashing/diagnostic scripts
 - `config/cube_table.json` - Generated from the compiled MAC table: each
   board's static-IP octet and panel wiring. Do not hand-edit; run
   `tools/cube_table.py write`
