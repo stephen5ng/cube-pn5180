@@ -223,9 +223,11 @@ bool batteryLowEndsWake(WakeReason wake_reason, bool battery_low) {
   return wake_reason == WAKE_REASON_TIMER || wake_reason == WAKE_REASON_OTHER;
 }
 
-bool updateBatteryLowLatch(uint32_t cell_mv, bool latched, uint8_t* low_run) {
+bool updateBatteryLowLatch(uint32_t cell_mv, bool latched, uint8_t* low_run,
+                           BatteryReading reading) {
   if (cell_mv < BATTERY_SENSE_FLOOR_MV) return latched;
   if (latched) {
+    if (reading == BATTERY_READING_UNLOADED) return true;
     if (cell_mv < BATTERY_LOW_CLEAR_MV) return true;
     *low_run = 0;
     return false;

@@ -1593,10 +1593,11 @@ uint32_t readBatteryMillivolts() {
 
 // The latch is updated on every reading, broker or no broker: a cube whose
 // link has dropped is exactly the one that needs to stop staying awake.
-void sampleBattery() {
+void sampleBattery(BatteryReading reading) {
   const uint32_t cell_mv = readBatteryMillivolts();
   battery_low_latched =
-      updateBatteryLowLatch(cell_mv, battery_low_latched, &battery_low_run);
+      updateBatteryLowLatch(cell_mv, battery_low_latched, &battery_low_run,
+                            reading);
   if (!mqtt_topic_cube.isEmpty() && mqtt_client.isConnected()) {
     mqtt_client.publish(mqtt_topic_cube + "/battery_mv", String(cell_mv), true);
   }
@@ -1605,8 +1606,8 @@ void sampleBattery() {
 // A whole confirmation run back to back. The spacing the in-play samples use
 // is there to outlast a white frame's sag; at boot the load is low and steady,
 // and a cube browning out on a flat cell never gets three minutes.
-void sampleBatteryRun() {
-  for (uint8_t i = 0; i < BATTERY_LOW_CONFIRM_READS; i++) sampleBattery();
+void sampleBatteryRun(BatteryReading reading) {
+  for (uint8_t i = 0; i < BATTERY_LOW_CONFIRM_READS; i++) sampleBattery(reading);
 }
 #endif
 
@@ -1626,7 +1627,7 @@ void subscribeSlotTopics() {
                       sensorModeIsMagnets() ? "magnets" : "nfc", true);
 
 #ifdef BATTERY_SENSE
-  sampleBattery();
+  sampleBattery(BATTERY_READING_UNDER_LOAD);
 #endif
 
   // cube/device/{MAC}/nfc is retained, so a tag read before a cable swap
@@ -2337,6 +2338,13 @@ void setup() {
   // analog-hall build configures the ADC above, so set the attenuation this
   // reading needs rather than inheriting a default.
   analogSetPinAttenuation(BATTERY_SENSE_PIN, ADC_11db);
+  // The only reading a sleeping cube ever takes. runWakeCheckIn() sleeps
+  // without returning, so sampleBatteryRun() below is unreachable on a wake
+  // that goes back to sleep, and a cell that went flat in storage could never
+  // set the latch -- leaving the cube to spend its last charge on check-ins,
+  // twenty seconds apart, down to the DW01A cutoff. The panel is dark here, so
+  // the cell reads high and this reading may only latch.
+  sampleBatteryRun(BATTERY_READING_UNLOADED);
   if (batteryLowEndsWake(wake_reason, battery_low_latched)) {
     debugSend("battery low: sleeping without joining");
     enterSleepMode();
@@ -2420,7 +2428,7 @@ void setup() {
   // check covers the button, a cold boot and a cleared sleep flag alike. It
   // sits after the panel is built on purpose: a cube that goes dark without
   // saying why reads as dead hardware.
-  sampleBatteryRun();
+  sampleBatteryRun(BATTERY_READING_UNDER_LOAD);
   if (battery_low_latched) {
     debugSend("battery low: back to sleep");
     enterSleepMode();
@@ -2540,7 +2548,7 @@ void loop() {
 #ifdef BATTERY_SENSE
   static unsigned long last_battery_sample = 0;
   if (current_time - last_battery_sample >= BATTERY_SAMPLE_INTERVAL_MS) {
-    sampleBattery();
+    sampleBattery(BATTERY_READING_UNDER_LOAD);
     last_battery_sample = current_time;
   }
 #endif

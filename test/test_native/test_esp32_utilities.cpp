@@ -791,17 +791,17 @@ void test_checkInIntervalS_reaches_a_day_without_overflowing() {
 // flat cell.
 void test_battery_latch_ignores_a_single_sag() {
     uint8_t low_run = 0;
-    TEST_ASSERT_FALSE(updateBatteryLowLatch(3300, false, &low_run));
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(3300, false, &low_run, BATTERY_READING_UNDER_LOAD));
 }
 
 void test_battery_latches_after_consecutive_low_readings() {
     uint8_t low_run = 0;
     bool latched = false;
     for (int i = 0; i < BATTERY_LOW_CONFIRM_READS - 1; i++) {
-        latched = updateBatteryLowLatch(3300, latched, &low_run);
+        latched = updateBatteryLowLatch(3300, latched, &low_run, BATTERY_READING_UNDER_LOAD);
         TEST_ASSERT_FALSE(latched);
     }
-    TEST_ASSERT_TRUE(updateBatteryLowLatch(3300, latched, &low_run));
+    TEST_ASSERT_TRUE(updateBatteryLowLatch(3300, latched, &low_run, BATTERY_READING_UNDER_LOAD));
 }
 
 // A good reading between sags starts the run over, so a cube at 3.5V flickering
@@ -810,26 +810,49 @@ void test_battery_latch_resets_the_run_on_a_good_reading() {
     uint8_t low_run = 0;
     bool latched = false;
     for (int i = 0; i < BATTERY_LOW_CONFIRM_READS - 1; i++) {
-        latched = updateBatteryLowLatch(3300, latched, &low_run);
+        latched = updateBatteryLowLatch(3300, latched, &low_run, BATTERY_READING_UNDER_LOAD);
     }
-    latched = updateBatteryLowLatch(3800, latched, &low_run);
+    latched = updateBatteryLowLatch(3800, latched, &low_run, BATTERY_READING_UNDER_LOAD);
     TEST_ASSERT_FALSE(latched);
-    TEST_ASSERT_FALSE(updateBatteryLowLatch(3300, latched, &low_run));
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(3300, latched, &low_run, BATTERY_READING_UNDER_LOAD));
 }
 
 // Hysteresis: recovering past the threshold is not enough, or a cube would
 // oscillate between sleeping and waking as the unloaded cell rebounds.
 void test_battery_latch_holds_until_well_clear_of_the_threshold() {
     uint8_t low_run = 0;
-    TEST_ASSERT_TRUE(updateBatteryLowLatch(BATTERY_LOW_MV + 50, true, &low_run));
-    TEST_ASSERT_FALSE(updateBatteryLowLatch(BATTERY_LOW_CLEAR_MV, true, &low_run));
+    TEST_ASSERT_TRUE(updateBatteryLowLatch(BATTERY_LOW_MV + 50, true, &low_run, BATTERY_READING_UNDER_LOAD));
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(BATTERY_LOW_CLEAR_MV, true, &low_run, BATTERY_READING_UNDER_LOAD));
+}
+
+// A cube awake only for a check-in has no panel lit, so its cell reads about
+// 100 mV high. Trusting that to clear the latch would wake it onto a cell that
+// is still nearly flat, and it would latch, rebound and wake again until the
+// cutoff -- the oscillation the hysteresis exists to prevent, driven by load
+// rather than by the threshold.
+void test_battery_latch_does_not_clear_on_an_unloaded_rebound() {
+    uint8_t low_run = 0;
+    TEST_ASSERT_TRUE(updateBatteryLowLatch(BATTERY_LOW_CLEAR_MV + 100, true,
+                                           &low_run, BATTERY_READING_UNLOADED));
+}
+
+// Latching is the whole point of reading the cell on a sleeping cube: it is
+// what stops a stored cube spending its last charge on check-ins.
+void test_battery_latch_still_sets_on_unloaded_readings() {
+    uint8_t low_run = 0;
+    bool latched = false;
+    for (int i = 0; i < BATTERY_LOW_CONFIRM_READS; i++) {
+        latched = updateBatteryLowLatch(3300, latched, &low_run,
+                                        BATTERY_READING_UNLOADED);
+    }
+    TEST_ASSERT_TRUE(latched);
 }
 
 // A charged cell clears the latch, and the run with it, so the next sag needs
 // a full confirmation again.
 void test_battery_latch_clears_on_a_charged_cell() {
     uint8_t low_run = 2;
-    TEST_ASSERT_FALSE(updateBatteryLowLatch(4100, true, &low_run));
+    TEST_ASSERT_FALSE(updateBatteryLowLatch(4100, true, &low_run, BATTERY_READING_UNDER_LOAD));
     TEST_ASSERT_EQUAL_UINT8(0, low_run);
 }
 
@@ -841,7 +864,7 @@ void test_battery_latch_ignores_a_reading_no_running_cube_could_produce() {
     uint8_t low_run = 0;
     bool latched = false;
     for (int i = 0; i < BATTERY_LOW_CONFIRM_READS + 1; i++) {
-        latched = updateBatteryLowLatch(0, latched, &low_run);
+        latched = updateBatteryLowLatch(0, latched, &low_run, BATTERY_READING_UNDER_LOAD);
     }
     TEST_ASSERT_FALSE(latched);
 }
@@ -1331,6 +1354,8 @@ int main(void) {
     RUN_TEST(test_battery_latches_after_consecutive_low_readings);
     RUN_TEST(test_battery_latch_resets_the_run_on_a_good_reading);
     RUN_TEST(test_battery_latch_holds_until_well_clear_of_the_threshold);
+    RUN_TEST(test_battery_latch_does_not_clear_on_an_unloaded_rebound);
+    RUN_TEST(test_battery_latch_still_sets_on_unloaded_readings);
     RUN_TEST(test_battery_latch_clears_on_a_charged_cell);
     RUN_TEST(test_battery_latch_ignores_a_reading_no_running_cube_could_produce);
     RUN_TEST(test_checkInIntervalS_doubles_per_unreachable_checkin_up_to_the_cap);

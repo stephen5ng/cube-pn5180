@@ -193,9 +193,21 @@ uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
 // BATTERY_SENSE build on a board whose divider was never wired.
 #define BATTERY_SENSE_FLOOR_MV 2000
 
+// Whether the reading was taken with the panel lit. An idle cell rebounds --
+// 100 mV measured on cube 4, 3430 under load against 3.53 V at rest -- so a
+// reading from a cube that is only awake for a check-in is optimistic enough
+// to cross BATTERY_LOW_CLEAR_MV on a cell that is still nearly flat. Such a
+// reading may latch, never clear; charging clears the latch by cold-booting
+// the cube.
+enum BatteryReading {
+  BATTERY_READING_UNDER_LOAD,
+  BATTERY_READING_UNLOADED,
+};
+
 // Whether the cell is confirmed low, given a fresh reading and the latch's
 // own state. low_run carries the consecutive low readings between calls.
-bool updateBatteryLowLatch(uint32_t cell_mv, bool latched, uint8_t* low_run);
+bool updateBatteryLowLatch(uint32_t cell_mv, bool latched, uint8_t* low_run,
+                           BatteryReading reading);
 
 // Whether a confirmed-low cell sends this wake straight back to sleep without
 // joining the network. A button press and a cold boot are someone picking the
