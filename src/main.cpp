@@ -67,10 +67,17 @@ void initialiseNeighbourSensor() {
 #define CYAN     0x07FF
 #define MAGENTA  0xF81F
 #define YELLOW   0xFFE0 
-// Dark enough that the yellow lock and the letter stay the foreground. Tuned
-// by eye on the bench, not to match each other numerically: green's field
-// fraction is deliberately lower than red's.
-#define CURTAIN_RED   0x1800
+// Dark enough that the yellow lock and the letter stay the foreground -- the
+// letter still outshines either curtain by ~70x. Tuned by eye against a
+// descending glyph, not to match each other numerically: red is the lethal
+// one, so it reads brighter than green.
+//
+// The panel library puts these through a CIE-1931 lightness table, so what
+// looks like a dim code is dimmer again, and neither channel steps the way its
+// bit width suggests: every red code moves the duty cycle, while green's land
+// in pairs on the same one -- 0x0080 and 0x00A0 are the same colour. Compare
+// perceived brightness, not the 565 fields, when changing these.
+#define CURTAIN_RED   0x3800
 #define CURTAIN_GREEN 0x0080
 #define WHITE    0xFFFF
 
