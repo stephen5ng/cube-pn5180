@@ -169,12 +169,20 @@ struct WakeCheckInPorts {
 
 void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports);
 
-// The sleep before the next keep-alive check-in. Each check-in in a row that
-// could not reach the broker doubles it, up to cap_s: no router or no Pi means
-// the rig is packed away, and every failed join holds the radio up for its
-// whole timeout. A configured base already at or above cap_s is left alone.
-uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
-                          uint32_t cap_s);
+// The sleep before the next keep-alive check-in, or 0 to arm no timer at all.
+//
+// Three things decide it. idle_s past give_up_s means nothing has touched this
+// cube for an hour and a half: the event is over, so it stops waking and the
+// next thing to reach it is a hand on the button or a USB-C lead. Below that it
+// checks in often enough to revive while somebody is standing there waiting.
+// And each check-in in a row that could not reach the broker doubles the sleep,
+// because no router or no Pi means the rig is packed away and every failed join
+// holds the radio up for its whole timeout -- the one case where checking in
+// often is expensive rather than cheap. A doubled sleep is still cut short at
+// give_up_s, so backing off cannot carry a cube past the point it should have
+// stopped.
+uint32_t checkInIntervalS(uint32_t idle_s, uint32_t base_s,
+                          uint8_t unreachable_checkins, uint32_t give_up_s);
 
 // A cell at or below BATTERY_LOW_MV has little usable charge left. The cube
 // stops staying awake there: a cube in play never auto-sleeps -- every letter

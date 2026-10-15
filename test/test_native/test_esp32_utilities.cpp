@@ -762,21 +762,42 @@ struct FakeWakeCheckInPorts : public WakeCheckInPorts {
   void stayAwake() override { record("stayAwake"); }
 };
 
-// No router or no Pi: each failed check-in doubles the sleep up to the cap, so
-// a rig packed away overnight stops waking every 20 s to fail.
-void test_checkInIntervalS_doubles_per_unreachable_checkin_up_to_the_cap() {
-    TEST_ASSERT_EQUAL_UINT32(20, checkInIntervalS(20, 0, 300));
-    TEST_ASSERT_EQUAL_UINT32(40, checkInIntervalS(20, 1, 300));
-    TEST_ASSERT_EQUAL_UINT32(160, checkInIntervalS(20, 3, 300));
-    TEST_ASSERT_EQUAL_UINT32(300, checkInIntervalS(20, 4, 300));
-    TEST_ASSERT_EQUAL_UINT32(300, checkInIntervalS(20, 255, 300));
+// No router or no Pi: each failed check-in doubles the sleep, so a rig packed
+// away stops waking every 10 s to fail.
+void test_checkInIntervalS_doubles_per_unreachable_checkin() {
+    TEST_ASSERT_EQUAL_UINT32(10, checkInIntervalS(0, 10, 0, 5400));
+    TEST_ASSERT_EQUAL_UINT32(20, checkInIntervalS(0, 10, 1, 5400));
+    TEST_ASSERT_EQUAL_UINT32(80, checkInIntervalS(0, 10, 3, 5400));
 }
 
-// The production cap is a day; a counter run up all week still lands on it.
-void test_checkInIntervalS_reaches_a_day_without_overflowing() {
-    TEST_ASSERT_EQUAL_UINT32(20u << 11, checkInIntervalS(20, 11, 86400));
-    TEST_ASSERT_EQUAL_UINT32(86400, checkInIntervalS(20, 13, 86400));
-    TEST_ASSERT_EQUAL_UINT32(86400, checkInIntervalS(20, 255, 86400));
+// The doubling stops at the point the cube would give up anyway; a counter run
+// up all week still lands there rather than overflowing.
+void test_checkInIntervalS_never_sleeps_past_giving_up() {
+    TEST_ASSERT_EQUAL_UINT32(5400, checkInIntervalS(0, 10, 10, 5400));
+    TEST_ASSERT_EQUAL_UINT32(5400, checkInIntervalS(0, 10, 255, 5400));
+}
+
+// Nothing has touched this cube in an hour and a half, so the event is over
+// and waking again buys nothing: 0 arms no timer, and only the button or a
+// USB-C lead brings it back.
+void test_checkInIntervalS_stops_waking_once_the_event_is_over() {
+    TEST_ASSERT_EQUAL_UINT32(0, checkInIntervalS(5400, 10, 0, 5400));
+    TEST_ASSERT_EQUAL_UINT32(0, checkInIntervalS(9000, 10, 3, 5400));
+}
+
+// The doubling must not sleep straight past the give-up point. Nine failed
+// check-ins land a cube at 5110 s idle with a 5120 s double queued, which would
+// have it waking at 2 h 50 min to give up on a 90 min rule.
+void test_checkInIntervalS_backoff_does_not_overshoot_giving_up() {
+    TEST_ASSERT_EQUAL_UINT32(290, checkInIntervalS(5110, 10, 9, 5400));
+}
+
+// One check-in short of giving up still wakes: the band is closed at the top,
+// not approached asymptotically. The last step is whatever is left rather than
+// a whole interval, so the cube wakes at the limit and not past it.
+void test_checkInIntervalS_still_wakes_just_under_the_limit() {
+    TEST_ASSERT_EQUAL_UINT32(10, checkInIntervalS(5390, 10, 0, 5400));
+    TEST_ASSERT_EQUAL_UINT32(1, checkInIntervalS(5399, 10, 0, 5400));
 }
 
 // ---------------------------------------------------------------------------
@@ -897,10 +918,10 @@ void test_a_healthy_cell_ends_no_wake() {
     TEST_ASSERT_FALSE(batteryLowEndsWake(WAKE_REASON_POWER_ON, false));
 }
 
-// An interval someone set longer than the cap is never shortened.
+// An interval someone set longer than the give-up point is never shortened.
 void test_checkInIntervalS_leaves_a_longer_configured_interval_alone() {
-    TEST_ASSERT_EQUAL_UINT32(600, checkInIntervalS(600, 0, 300));
-    TEST_ASSERT_EQUAL_UINT32(600, checkInIntervalS(600, 5, 300));
+    TEST_ASSERT_EQUAL_UINT32(600, checkInIntervalS(0, 600, 0, 300));
+    TEST_ASSERT_EQUAL_UINT32(600, checkInIntervalS(0, 600, 5, 300));
 }
 
 // Reaching the broker is what counts: a missing router and a missing Pi both
@@ -1358,9 +1379,12 @@ int main(void) {
     RUN_TEST(test_battery_latch_still_sets_on_unloaded_readings);
     RUN_TEST(test_battery_latch_clears_on_a_charged_cell);
     RUN_TEST(test_battery_latch_ignores_a_reading_no_running_cube_could_produce);
-    RUN_TEST(test_checkInIntervalS_doubles_per_unreachable_checkin_up_to_the_cap);
+    RUN_TEST(test_checkInIntervalS_doubles_per_unreachable_checkin);
     RUN_TEST(test_checkInIntervalS_leaves_a_longer_configured_interval_alone);
-    RUN_TEST(test_checkInIntervalS_reaches_a_day_without_overflowing);
+    RUN_TEST(test_checkInIntervalS_never_sleeps_past_giving_up);
+    RUN_TEST(test_checkInIntervalS_stops_waking_once_the_event_is_over);
+    RUN_TEST(test_checkInIntervalS_still_wakes_just_under_the_limit);
+    RUN_TEST(test_checkInIntervalS_backoff_does_not_overshoot_giving_up);
     RUN_TEST(test_runWakeCheckIn_records_whether_the_broker_was_reached);
     RUN_TEST(test_runWakeCheckIn_button_wake_records_nothing);
     RUN_TEST(test_runWakeCheckIn_wifi_timeout);

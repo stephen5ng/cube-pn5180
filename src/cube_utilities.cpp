@@ -208,14 +208,20 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports) {
   ports.stayAwake();
 }
 
-uint32_t checkInIntervalS(uint32_t base_s, uint8_t unreachable_checkins,
-                          uint32_t cap_s) {
-  if (base_s >= cap_s) return base_s;
+uint32_t checkInIntervalS(uint32_t idle_s, uint32_t base_s,
+                          uint8_t unreachable_checkins, uint32_t give_up_s) {
+  if (idle_s >= give_up_s) return 0;
+  if (base_s >= give_up_s) return base_s;
   uint32_t interval_s = base_s;
-  for (uint8_t i = 0; i < unreachable_checkins && interval_s < cap_s; i++) {
+  for (uint8_t i = 0; i < unreachable_checkins && interval_s < give_up_s; i++) {
     interval_s *= 2;
   }
-  return interval_s < cap_s ? interval_s : cap_s;
+  // Never sleep past the point of giving up. A doubled interval can be shorter
+  // than give_up_s and still land beyond it once idle_s is added, which would
+  // have a cube on its ninth failed check-in wake at 2 h 50 min to apply a
+  // 90 min rule.
+  const uint32_t remaining_s = give_up_s - idle_s;
+  return interval_s < remaining_s ? interval_s : remaining_s;
 }
 
 bool batteryLowEndsWake(WakeReason wake_reason, bool battery_low) {

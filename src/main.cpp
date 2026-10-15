@@ -218,18 +218,22 @@ static void restoreBatteryLowLatch() {
 RTC_DATA_ATTR bool pin0_state_at_sleep = HIGH;
 // How long a sleeping cube stays down between keep-alive check-ins. Survives
 // deep sleep in RTC memory, and cube/{id}/sleep_interval overrides it.
-RTC_DATA_ATTR uint32_t sleep_interval_s = 20;
-// Check-ins in a row that could not reach the broker; stretches the sleep up
-// to CHECKIN_BACKOFF_CAP_S. See checkInIntervalS(). The cap is a day rather
-// than minutes because unplugging USB-C cold-boots a cube, which is how a
-// backed-off cube is brought back; one check-in a day only guarantees that
-// a cube is never lost for good.
+RTC_DATA_ATTR uint32_t sleep_interval_s = 10;
+// Check-ins in a row that could not reach the broker; doubles the sleep. See
+// checkInIntervalS().
 RTC_DATA_ATTR uint8_t unreachable_checkins = 0;
-#define CHECKIN_BACKOFF_CAP_S 86400
+// Seconds this cube has spent asleep since anything last touched it, summed a
+// slept interval at a time because a sleeping cube has no other clock. Reset by
+// any activity, and by the cold boot that RTC_DATA_ATTR does not survive.
+RTC_DATA_ATTR uint32_t idle_sleep_s = 0;
+// Nothing for an hour and a half means the event is over. Counted from when the
+// cube first dozed off, so it lands about AUTO_SLEEP_TIMEOUT_MS later than the
+// last letter.
+#define CHECKIN_GIVE_UP_S 5400
 RTC_DATA_ATTR uint16_t saved_brightness = BRIGHTNESS;  // Persist brightness across sleep
 
 // Auto-sleep inactivity tracking
-#define AUTO_SLEEP_TIMEOUT_MS  600000UL  // 10 minutes
+#define AUTO_SLEEP_TIMEOUT_MS  900000UL  // 15 minutes
 RTC_DATA_ATTR unsigned long last_activity_time = 0;
 
 // MQTT Configuration
@@ -1377,7 +1381,7 @@ void enterSleepMode() {
   rtc_gpio_pullup_en(SLEEP_PIN);
 
   const uint32_t interval_s = checkInIntervalS(
-      sleep_interval_s, unreachable_checkins, CHECKIN_BACKOFF_CAP_S);
+      idle_sleep_s, sleep_interval_s, unreachable_checkins, CHECKIN_GIVE_UP_S);
 #ifdef BATTERY_SENSE
   // A latched cube has nothing to spend a timer wake on. The gate in setup()
   // runs ahead of the radio, so the wake takes no battery reading that could
@@ -1385,17 +1389,21 @@ void enterSleepMode() {
   // arrives back here having done nothing, a boot surge poorer, on the cell the
   // latch exists to protect. Pin 0 and a USB-C cold boot both still bring it
   // back.
-  const bool arm_timer = !battery_low_latched;
+  const bool arm_timer = !battery_low_latched && interval_s > 0;
 #else
-  const bool arm_timer = true;
+  const bool arm_timer = interval_s > 0;
 #endif
   if (arm_timer) {
+    idle_sleep_s += interval_s;
     esp_sleep_enable_timer_wakeup((uint64_t)interval_s * uS_TO_S_FACTOR);
   }
 
   char dbg[64];
   if (arm_timer) {
     snprintf(dbg, sizeof(dbg), "sleeping for %lu seconds", (unsigned long)interval_s);
+  } else if (interval_s == 0) {
+    snprintf(dbg, sizeof(dbg), "idle %lus: sleeping until Pin 0 or power",
+             (unsigned long)idle_sleep_s);
   } else {
     snprintf(dbg, sizeof(dbg), "battery low: sleeping until Pin 0 or power");
   }
@@ -1518,6 +1526,7 @@ class KeepAliveCheckInPorts : public WakeCheckInPorts {
 
   void stayAwake() override {
     last_activity_time = millis();
+    idle_sleep_s = 0;
     debugSend("WAKE FULL - staying awake");
     Serial.println("Waking fully - continuing setup");
   }
@@ -1639,7 +1648,10 @@ void subscribeSlotTopics() {
     mqtt_client.publish(mqtt_topic_device_nfc, "", true);
   }
 
-  auto resetActivityTimer = []() { last_activity_time = millis(); };
+  auto resetActivityTimer = []() {
+    last_activity_time = millis();
+    idle_sleep_s = 0;
+  };
 
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
@@ -1790,7 +1802,10 @@ void onConnectionEstablished() {
       String("cube/device/") + mac_nocolons + "/liveness-request",
       handleLivenessRequest);
 
-  auto resetActivityTimer = []() { last_activity_time = millis(); };
+  auto resetActivityTimer = []() {
+    last_activity_time = millis();
+    idle_sleep_s = 0;
+  };
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "brightness", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBrightnessCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "reboot", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleRebootCommand(msg); });
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "sleep_now", handleSleepNowCommand);
@@ -2200,6 +2215,7 @@ void handleUDP() {
 
         // Reset auto-sleep timer - active diagnostics should keep cube awake
         last_activity_time = millis();
+        idle_sleep_s = 0;
 
         // Reset accumulators after reading
         section_timing_accum = {0, 0, 0, 0};
