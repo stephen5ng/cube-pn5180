@@ -178,7 +178,9 @@ void runWakeCheckIn(WakeReason wake_reason, WakeCheckInPorts& ports);
 // And each check-in in a row that could not reach the broker doubles the sleep,
 // because no router or no Pi means the rig is packed away and every failed join
 // holds the radio up for its whole timeout -- the one case where checking in
-// often is expensive rather than cheap.
+// often is expensive rather than cheap. A doubled sleep is still cut short at
+// give_up_s, so backing off cannot carry a cube past the point it should have
+// stopped.
 uint32_t checkInIntervalS(uint32_t idle_s, uint32_t base_s,
                           uint8_t unreachable_checkins, uint32_t give_up_s);
 

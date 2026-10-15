@@ -785,10 +785,19 @@ void test_checkInIntervalS_stops_waking_once_the_event_is_over() {
     TEST_ASSERT_EQUAL_UINT32(0, checkInIntervalS(9000, 10, 3, 5400));
 }
 
+// The doubling must not sleep straight past the give-up point. Nine failed
+// check-ins land a cube at 5110 s idle with a 5120 s double queued, which would
+// have it waking at 2 h 50 min to give up on a 90 min rule.
+void test_checkInIntervalS_backoff_does_not_overshoot_giving_up() {
+    TEST_ASSERT_EQUAL_UINT32(290, checkInIntervalS(5110, 10, 9, 5400));
+}
+
 // One check-in short of giving up still wakes: the band is closed at the top,
-// not approached asymptotically.
+// not approached asymptotically. The last step is whatever is left rather than
+// a whole interval, so the cube wakes at the limit and not past it.
 void test_checkInIntervalS_still_wakes_just_under_the_limit() {
-    TEST_ASSERT_EQUAL_UINT32(10, checkInIntervalS(5399, 10, 0, 5400));
+    TEST_ASSERT_EQUAL_UINT32(10, checkInIntervalS(5390, 10, 0, 5400));
+    TEST_ASSERT_EQUAL_UINT32(1, checkInIntervalS(5399, 10, 0, 5400));
 }
 
 // ---------------------------------------------------------------------------
@@ -1375,6 +1384,7 @@ int main(void) {
     RUN_TEST(test_checkInIntervalS_never_sleeps_past_giving_up);
     RUN_TEST(test_checkInIntervalS_stops_waking_once_the_event_is_over);
     RUN_TEST(test_checkInIntervalS_still_wakes_just_under_the_limit);
+    RUN_TEST(test_checkInIntervalS_backoff_does_not_overshoot_giving_up);
     RUN_TEST(test_runWakeCheckIn_records_whether_the_broker_was_reached);
     RUN_TEST(test_runWakeCheckIn_button_wake_records_nothing);
     RUN_TEST(test_runWakeCheckIn_wifi_timeout);
