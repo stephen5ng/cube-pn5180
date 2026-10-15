@@ -114,7 +114,11 @@ void initialiseNeighbourSensor() {
 // Timing Constants
 #define ANIMATION_DURATION_MS 1000
 #define ANIMATION_SCALE 100
-#define BORDER_ANIMATION_DURATION_MS 1000
+// Shorter than it looks, because drawBorderFrame() eases with easeOutQuint:
+// five sixths of the travel is over in the first third, so the tail of a longer
+// duration is dead time between a border that has visibly arrived and one the
+// code still calls animating.
+#define BORDER_ANIMATION_DURATION_MS 500
 // MQTT can dispatch a small batch of topology updates before the display draws
 // its next frame. Let the final update in that frame replace the target while
 // preserving the original border as the animation's start state.
