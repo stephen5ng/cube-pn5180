@@ -143,12 +143,18 @@ get_cube_version() {
     mosquitto_sub -h 192.168.8.247 -t "cube/$cube_id/version" -C 1 -W 2 2>/dev/null | tr -d '\n'
 }
 
+# Clears every board's retained auto_sleep flag, which is all wake.sh does --
+# it takes no cube and knows none. A sleeping cube learns the flag is gone at
+# its next check-in and stays up instead of going back down.
+wake_fleet() {
+    MQTT_SERVER=192.168.8.247 "$(dirname "$0")/wake.sh"
+}
+
 wake_cube() {
     local cube_id=$1
     echo "Waking cube $cube_id..."
 
-    # Use wake script to clear retained sleep message
-    MQTT_SERVER=192.168.8.247 "$(dirname "$0")/wake.sh"
+    wake_fleet
     sleep 2  # Give cube time to wake
 }
 
@@ -159,8 +165,9 @@ wake_cube() {
 #
 # The /ping subscription resets the cube's inactivity timer, so nudging the
 # ones still to come keeps them up rather than recovering them afterwards. A
-# cube already asleep is not listening, which is fine -- flash_cube still
-# wakes it.
+# cube already asleep is not listening: /ping is QoS 0 and unretained, so the
+# nudge is dropped. Recovering it is wake_fleet's job before the sweep, and
+# wake_cube's in the per-cube path.
 keep_awake() {
     local id
     for id in "$@"; do
@@ -340,6 +347,7 @@ if [ "$1" = "all" ]; then
     # this: every slot has one whether or not its board is powered.
     #
     # Word splitting rather than mapfile: this runs under macOS's bash 3.2.
+    wake_fleet
     keep_awake "${all_cubes[@]}"
     echo "Waiting ${FLEET_SETTLE_S}s for woken cubes to come up..."
     sleep "$FLEET_SETTLE_S"
