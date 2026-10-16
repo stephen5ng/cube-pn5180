@@ -7,6 +7,7 @@
 #include "letter_color.h"
 #include "wake_flicker.h"
 #include "panel_text.h"
+#include "name_entry_display.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -118,6 +119,11 @@ void initialiseNeighbourSensor() {
 // its next frame. Let the final update in that frame replace the target while
 // preserving the original border as the animation's start state.
 #define BORDER_TARGET_REPLACE_WINDOW_MS 16
+// How long the letter drum takes to ease onto a newly published center. The
+// server steps discretely (1.0s slow, 360ms fast cadence); the ease is what
+// makes FAST streaming read continuous the way the approved assets show,
+// while always settling long before the latch it converges on.
+#define ENTRY_GLIDE_MS 120
 #define DISPLAY_STARTUP_DELAY_MS 600
 
 // Sleep Configuration
@@ -463,6 +469,22 @@ private:
   char previous_message[MESSAGE_MAX];
   char current_message[MESSAGE_MAX];
 
+  // Three-cube high score name entry (name_entry_display.h). Only `ui_mode`
+  // moves the cube between game and entry rendering; `/letter` while in an
+  // entry mode stashes like always and shows when GAME_NORMAL returns.
+  UiMode ui_mode;
+  NameEntryState name_entry;
+  StreamState entry_stream;
+  ArrowState entry_arrow;
+  // Letter glide: the published center steps discretely while the drum eases
+  // onto it. `glide_to_idx` is the last published center (-1 until the first
+  // publish); `glide_from_delta` is the signed step (±1) the live offset
+  // starts from and decays to 0 over ENTRY_GLIDE_MS.
+  int8_t glide_to_idx;
+  int8_t glide_from_delta;
+  unsigned long glide_start_ms;
+  bool glide_active;
+
   static void setMessage(char* destination, const char* source) {
     strncpy(destination, source, MESSAGE_MAX - 1);
     destination[MESSAGE_MAX - 1] = '\0';
@@ -536,6 +558,19 @@ public:
                                 border_preview_until(0) {
     setMessage(previous_message, " ");
     setMessage(current_message, " ");
+    ui_mode = UI_MODE_GAME_NORMAL;
+    strcpy(name_entry.initials, "AAA");
+    name_entry.active_slot = 0;
+    name_entry.submit_focused = false;
+    entry_stream.center_letter = 'A';
+    entry_stream.direction = STREAM_STOP;
+    entry_stream.speed = STREAM_SLOW;
+    entry_arrow.active = false;
+    entry_arrow.direction = ARROW_NONE;
+    glide_to_idx = -1;
+    glide_from_delta = 0;
+    glide_start_ms = 0;
+    glide_active = false;
     // Player 0's panels are mounted upside down relative to player 1's. The
     // slot is not known yet at construction, so start where a player 0 cube
     // needs to be; applySlot() calls setSlotRotation() once the roster answers.
@@ -646,6 +681,167 @@ public:
     }
     if (border.tick(current_time, BORDER_ANIMATION_DURATION_MS)) is_dirty = true;
     if (border_preview_side) is_dirty = true;
+    if (glide_active) {
+      if (current_time - glide_start_ms >= ENTRY_GLIDE_MS) {
+        glide_active = false;
+      }
+      is_dirty = true;
+    }
+  }
+
+  // The live glide remainder added to every stream letter's delta: the signed
+  // step at the glide's start, decaying linearly to 0 (centered) at its end.
+  float streamGlideOffset(unsigned long now) const {
+    if (!glide_active) return 0.0f;
+    unsigned long elapsed = now - glide_start_ms;
+    if (elapsed >= ENTRY_GLIDE_MS) return 0.0f;
+    return (float)glide_from_delta * (1.0f - (float)elapsed / (float)ENTRY_GLIDE_MS);
+  }
+
+  void drawEntrySubmitText(uint16_t color) {
+    static const char word[7] = "SUBMIT";
+    for (uint8_t i = 0; i < 6; ++i) {
+      const uint8_t* glyph = entrySubmitGlyph(word[i]);
+      if (!glyph) continue;
+      for (uint8_t row = 0; row < 5; ++row) {
+        for (uint8_t col = 0; col < ENTRY_SUBMIT_GLYPH_W; ++col) {
+          if (glyph[row] & (0x4 >> col)) {
+            led_display->drawPixel(ENTRY_SUBMIT_TEXT_X + i * 4 + col,
+                                   ENTRY_SUBMIT_TEXT_Y + row, color);
+          }
+        }
+      }
+    }
+  }
+
+  void drawNameEntry() {
+    // Before setCursor: setFont(NULL) shifts the cursor when a custom font
+    // was active, as displayDebugMessage also has to allow for.
+    led_display->setFont(NULL);
+    led_display->setTextSize(1);
+    led_display->setTextColor(ENTRY_YELLOW);
+    led_display->setCursor(entryCenteredX(11), ENTRY_HEADER_Y);
+    led_display->print("HIGH SCORE!");
+    led_display->setTextColor(ENTRY_WHITE);
+    led_display->setCursor(entryCenteredX(10), ENTRY_PROMPT_Y);
+    led_display->print("YOUR NAME:");
+    led_display->setTextSize(ENTRY_SLOT_SIZE);
+    for (uint8_t slot = 0; slot < 3; ++slot) {
+      int16_t cx = entrySlotCenterX(slot);
+      led_display->setTextColor(entrySlotColor(slot, name_entry.active_slot));
+      led_display->setCursor(entrySlotTextX(slot), ENTRY_SLOT_Y);
+      led_display->print(name_entry.initials[slot]);
+      if (slot == name_entry.active_slot) {
+        for (uint8_t r = 0; r < 4; ++r) {
+          // Above: wide mouth at row 26 narrowing to the 2px tip at 29.
+          uint8_t top_hw = entryChevronHalfWidth(3 - r);
+          led_display->drawFastHLine(cx - top_hw, ENTRY_CHEVRON_ABOVE_Y + r,
+                                     top_hw * 2, ENTRY_CYAN);
+          // Below: 2px tip at row 47 widening to the mouth at 50.
+          uint8_t bot_hw = entryChevronHalfWidth(r);
+          led_display->drawFastHLine(cx - bot_hw, ENTRY_CHEVRON_BELOW_Y + r,
+                                     bot_hw * 2, ENTRY_CYAN);
+        }
+      } else {
+        led_display->drawFastHLine(cx - 5, ENTRY_UNDERLINE_Y, 10, ENTRY_CYAN);
+        led_display->drawFastHLine(cx - 5, ENTRY_UNDERLINE_Y + 1, 10, ENTRY_CYAN);
+      }
+    }
+    if (name_entry.submit_focused) {
+      led_display->fillRect(ENTRY_SUBMIT_X, ENTRY_SUBMIT_Y,
+                            ENTRY_SUBMIT_W, ENTRY_SUBMIT_H, ENTRY_CYAN);
+      drawEntrySubmitText(BLACK);
+    } else {
+      drawEntrySubmitText(ENTRY_DARK_SLATE);
+    }
+  }
+
+  void drawLetterStream(unsigned long current_time) {
+    for (uint8_t x = 0; x < PANEL_RES_X; x += 2) {
+      led_display->drawPixel(x, ENTRY_RAIL_TOP_Y, ENTRY_RAIL_DOT);
+      led_display->drawPixel(x, ENTRY_RAIL_BOT_Y, ENTRY_RAIL_DOT);
+    }
+    for (uint8_t row = ENTRY_PTR_TOP_Y0; row <= ENTRY_PTR_TOP_TIP; ++row) {
+      int16_t x0;
+      uint8_t w;
+      if (streamPointerRow(true, row, &x0, &w)) {
+        led_display->drawFastHLine(x0, row, w, ENTRY_CYAN);
+      }
+    }
+    for (uint8_t row = ENTRY_PTR_BOT_TIP; row <= ENTRY_PTR_BOT_Y1; ++row) {
+      int16_t x0;
+      uint8_t w;
+      if (streamPointerRow(false, row, &x0, &w)) {
+        led_display->drawFastHLine(x0, row, w, ENTRY_CYAN);
+      }
+    }
+    led_display->setFont(NULL);
+    float offset = streamGlideOffset(current_time);
+    for (int8_t step = -2; step <= 2; ++step) {
+      char letter = streamLetterAt(entry_stream.center_letter, step);
+      float delta = (float)step + offset;
+      float xmid = streamLetterX(delta);
+      uint8_t size = streamGlyphSize(delta);
+      int16_t x0 = (int16_t)(xmid + 0.5f) - (size == 2 ? 5 : 2);
+      led_display->setTextSize(size);
+      led_display->setTextColor(streamLetterColor(delta));
+      led_display->setCursor(x0, size == 2 ? 25 : 28);
+      led_display->print(letter);
+    }
+  }
+
+  void drawOkBox() {
+    for (int16_t y = ENTRY_OK_Y0; y <= ENTRY_OK_Y1; ++y) {
+      for (int16_t x = ENTRY_OK_X0; x <= ENTRY_OK_X1; ++x) {
+        if (okBoxBorderPixel(x, y)) {
+          led_display->drawPixel(x, y, ENTRY_CYAN);
+        }
+      }
+    }
+    led_display->setFont(NULL);
+    led_display->setTextSize(ENTRY_OK_TEXT_SIZE);
+    led_display->setTextColor(ENTRY_CYAN);
+    led_display->setCursor(ENTRY_OK_TEXT_X, ENTRY_OK_TEXT_Y);
+    led_display->print("OK");
+  }
+
+  void drawArrowBidirectional() {
+    uint16_t left = (entry_arrow.active && entry_arrow.direction == ARROW_LEFT)
+        ? ENTRY_CYAN : ENTRY_DARK_SLATE;
+    uint16_t right = (entry_arrow.active && entry_arrow.direction == ARROW_RIGHT)
+        ? ENTRY_CYAN : ENTRY_DARK_SLATE;
+    for (int16_t y = ENTRY_ARROW_Y0; y <= ENTRY_ARROW_Y1; ++y) {
+      for (int16_t x = ENTRY_ARROW_LEFT_X0; x <= ENTRY_ARROW_LEFT_TIP; ++x) {
+        if (entryArrowLeftPixel(x, y)) {
+          led_display->drawPixel(x, y, left);
+        }
+      }
+      for (int16_t x = ENTRY_ARROW_RIGHT_TIP; x <= ENTRY_ARROW_RIGHT_X1; ++x) {
+        if (entryArrowRightPixel(x, y)) {
+          led_display->drawPixel(x, y, right);
+        }
+      }
+    }
+  }
+
+  void drawEntryMode(unsigned long current_time) {
+    switch (ui_mode) {
+      case UI_MODE_NAME_ENTRY:
+        drawNameEntry();
+        break;
+      case UI_MODE_LETTER_STREAM:
+        drawLetterStream(current_time);
+        break;
+      case UI_MODE_OK_BOX:
+        drawOkBox();
+        break;
+      case UI_MODE_ARROW_BIDIRECTIONAL:
+        drawArrowBidirectional();
+        break;
+      case UI_MODE_GAME_NORMAL:
+      default:
+        break;
+    }
   }
 
   void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
@@ -877,6 +1073,70 @@ public:
     resting_letter_color = parseLetterColor(message.c_str(), LETTER_COLOR);
   }
 
+  // `cube/{id}/ui_mode`: the ONLY thing that moves this cube between game
+  // rendering and name entry rendering. Unparseable payloads are ignored
+  // rather than blanking the panel on a guess.
+  void handleUiModeCommand(const String& message) {
+    UiMode mode;
+    if (!parseUiMode(message.c_str(), &mode)) {
+      return;
+    }
+    ui_mode = mode;
+    if (mode == UI_MODE_LETTER_STREAM) {
+      // The drum restarts centered: any glide in flight belonged to a dial
+      // the player already left.
+      glide_to_idx = entry_stream.center_letter - 'A';
+      glide_active = false;
+    }
+    is_dirty = true;
+  }
+
+  void handleNameEntryStateCommand(const String& message) {
+    NameEntryState parsed;
+    if (!parseNameEntryState(message.c_str(), &parsed)) {
+      return;
+    }
+    name_entry = parsed;
+    is_dirty = true;
+  }
+
+  void handleStreamStateCommand(const String& message) {
+    StreamState parsed;
+    if (!parseStreamState(message.c_str(), &parsed)) {
+      return;
+    }
+    entry_stream = parsed;
+    int8_t idx = parsed.center_letter - 'A';
+    if (parsed.direction == STREAM_STOP || glide_to_idx < 0) {
+      glide_to_idx = idx;
+      glide_active = false;
+    } else if (idx != glide_to_idx) {
+      int d = idx - glide_to_idx;
+      if (d > 13) d -= 26;
+      else if (d < -13) d += 26;
+      if (d > 2 || d < -2) {
+        // A teleport, not a step (retained skip, resync): snap to it.
+        glide_to_idx = idx;
+        glide_active = false;
+      } else {
+        glide_from_delta = (int8_t)d;
+        glide_to_idx = idx;
+        glide_start_ms = millis();
+        glide_active = true;
+      }
+    }
+    is_dirty = true;
+  }
+
+  void handleArrowStateCommand(const String& message) {
+    ArrowState parsed;
+    if (!parseArrowState(message.c_str(), &parsed)) {
+      return;
+    }
+    entry_arrow = parsed;
+    is_dirty = true;
+  }
+
   void handleLockCommand(const String& message) {
     debugPrintln("locking due to /lock");
     is_lock = message.length() > 0 && message.charAt(0) == '1';
@@ -901,6 +1161,16 @@ public:
     led_display->setFont(current_font);
     led_display->setTextSize(text_size);
     led_display->setRotation(rotation);
+
+    // The name entry owns the whole panel: no curtain, letters, borders, or
+    // blank power-down -- the approved entry art is drawn as-is and the panel
+    // stays lit on it.
+    if (ui_mode != UI_MODE_GAME_NORMAL) {
+      drawEntryMode(current_time);
+      led_display->flipDMABuffer();
+      is_dirty = false;
+      return;
+    }
 
     // After the rotation, so it descends from the letter's top.
     if (curtainShows()) {
@@ -1664,6 +1934,10 @@ void subscribeSlotTopics() {
   // every reconnect, and a reset here would let a cube hold itself awake just
   // by reconnecting. It is also not play.
   mqtt_client.subscribe(mqtt_topic_cube + "/letter_color", [](const String& msg) { display_manager->handleLetterColorCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/ui_mode", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleUiModeCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/name_entry_state", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleNameEntryStateCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/stream_state", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleStreamStateCommand(msg); });
+  mqtt_client.subscribe(mqtt_topic_cube + "/arrow_state", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleArrowStateCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/ping", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePingCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/power_test", [resetActivityTimer](const String& msg) { resetActivityTimer(); handlePowerTestCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
