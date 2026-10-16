@@ -635,6 +635,9 @@ public:
     // must run before setCursor or the two buffers disagree on the y position.
     led_display->setTextSize(1);
     led_display->setFont(NULL);
+    // Entry screens turn wrapping off; every normal-mode draw re-arms it, the
+    // way each already owns its font, size, and color.
+    led_display->setTextWrap(true);
     led_display->setTextColor(RED, BLACK);
 
     // Write the same text to both DMA buffers so it survives subsequent flips.
@@ -726,8 +729,14 @@ public:
   void drawNameEntry() {
     // Before setCursor: setFont(NULL) shifts the cursor when a custom font
     // was active, as displayDebugMessage also has to allow for.
+    // Wrap stays off for the whole entry screen: the 11-glyph header is 65px
+    // on a 64px panel, and GFX's wrap would relocate the "!" to x = 0 one row
+    // down. Safe because the overhanging column is empty ink -- the classic
+    // font's "!" is {0x00, 0x00, 0x5F, 0x00, 0x00} -- so nothing draws
+    // off-panel for the unclipped driver to alias.
     led_display->setFont(NULL);
     led_display->setTextSize(1);
+    led_display->setTextWrap(false);
     led_display->setTextColor(ENTRY_YELLOW);
     led_display->setCursor(entryCenteredX(11), ENTRY_HEADER_Y);
     led_display->print("HIGH SCORE!");
@@ -785,13 +794,15 @@ public:
       }
     }
     led_display->setFont(NULL);
+    led_display->setTextWrap(false);
     float offset = streamGlideOffset(current_time);
     for (int8_t step = -2; step <= 2; ++step) {
       char letter = streamLetterAt(entry_stream.center_letter, step);
       float delta = (float)step + offset;
       float xmid = streamLetterX(delta);
       uint8_t size = streamGlyphSize(delta);
-      int16_t x0 = (int16_t)(xmid + 0.5f) - (size == 2 ? 5 : 2);
+      int16_t x0 = streamClampedX0((int16_t)(xmid + 0.5f) - (size == 2 ? 5 : 2),
+                                   size);
       led_display->setTextSize(size);
       led_display->setTextColor(streamLetterColor(delta));
       led_display->setCursor(x0, size == 2 ? 25 : 28);
@@ -808,6 +819,7 @@ public:
       }
     }
     led_display->setFont(NULL);
+    led_display->setTextWrap(false);
     led_display->setTextSize(ENTRY_OK_TEXT_SIZE);
     led_display->setTextColor(ENTRY_CYAN);
     led_display->setCursor(ENTRY_OK_TEXT_X, ENTRY_OK_TEXT_Y);
@@ -864,6 +876,7 @@ public:
     // outgoing message and an incoming one that need different fonts.
     led_display->setFont(current_font);
     led_display->setTextSize(BIG_TEXT_SIZE);
+    led_display->setTextWrap(true);  // entry screens turn it off
     led_display->setCursor(BIG_COL, row-4);
     led_display->print(letter);
   }
@@ -878,6 +891,7 @@ public:
     // Before setCursor: setFont(NULL) shifts the cursor when a custom font was
     // active, as displayDebugMessage also has to allow for.
     led_display->setFont(NULL);
+    led_display->setTextWrap(true);  // entry screens turn it off
     led_display->setTextSize(MESSAGE_TEXT_SIZE);
     for (uint8_t line = 0; line < count; ++line) {
       led_display->setCursor(lines[line].x, lines[line].y);
