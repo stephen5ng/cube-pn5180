@@ -863,6 +863,13 @@ public:
       default:
         break;
     }
+    // The red orientation dots stay up in every entry mode: all four screens
+    // show letters, so "which way is up" still needs answering. Drawn last so
+    // the corners read red over the stream rails. Unconditional -- unlike the
+    // normal-mode call, entry screens are never blank or mid-animation.
+    if (ui_mode != UI_MODE_GAME_NORMAL) {
+      drawOrientationIndicator();
+    }
   }
 
   void drawLetter(uint16_t vertical_position, char letter, uint16_t color) {
