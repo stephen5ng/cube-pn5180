@@ -206,6 +206,40 @@ void test_center_glyph_is_big_rest_small(void) {
   TEST_ASSERT_EQUAL_UINT8(1, streamGlyphSize(-2.0f));
 }
 
+void test_stream_origins_clamp_off_panel_edges(void) {
+  // 1x ink is 5px: origins pin to 0..59, interior untouched.
+  TEST_ASSERT_EQUAL_INT16(0, streamClampedX0(-2, 1));  // left edge mid-glide
+  TEST_ASSERT_EQUAL_INT16(0, streamClampedX0(-1, 1));  // left edge at rest
+  TEST_ASSERT_EQUAL_INT16(0, streamClampedX0(0, 1));
+  TEST_ASSERT_EQUAL_INT16(27, streamClampedX0(27, 1));
+  TEST_ASSERT_EQUAL_INT16(59, streamClampedX0(59, 1));
+  TEST_ASSERT_EQUAL_INT16(59, streamClampedX0(60, 1));  // right edge at rest
+  TEST_ASSERT_EQUAL_INT16(59, streamClampedX0(62, 1));  // right edge mid-glide
+  // 2x ink is 10px: origins pin to 0..54.
+  TEST_ASSERT_EQUAL_INT16(27, streamClampedX0(27, 2));
+  TEST_ASSERT_EQUAL_INT16(54, streamClampedX0(60, 2));
+  TEST_ASSERT_EQUAL_INT16(0, streamClampedX0(-1, 2));
+}
+
+void test_every_drum_position_lands_its_ink_on_the_panel(void) {
+  // The clamp is load-bearing: the drum's rest extremes overhang raw.
+  TEST_ASSERT_LESS_THAN_INT16(0, (int16_t)(streamLetterX(-2.0f) + 0.5f) - 2);
+  TEST_ASSERT_GREATER_THAN_INT16(59, (int16_t)(streamLetterX(2.0f) + 0.5f) - 2);
+  // Every letter the drum can show, at rest and at full glide in both
+  // directions, keeps its ink fully on the panel once clamped. The origin
+  // formula mirrors drawLetterStream's call site exactly.
+  for (int8_t step = -2; step <= 2; ++step) {
+    for (float glide = -2.0f; glide <= 2.0f; glide += 0.5f) {
+      float delta = (float)step + glide;
+      float xmid = streamLetterX(delta);
+      uint8_t size = streamGlyphSize(delta);
+      int16_t x0 = streamClampedX0((int16_t)(xmid + 0.5f) - (size == 2 ? 5 : 2),
+                                   size);
+      TEST_ASSERT_TRUE(x0 >= 0 && x0 + 5 * size <= 64);
+    }
+  }
+}
+
 void test_spotlight_endpoints(void) {
   TEST_ASSERT_EQUAL_HEX16(ENTRY_CYAN, streamLetterColor(0.0f));
   TEST_ASSERT_EQUAL_HEX16(ENTRY_STREAM_AMBER, streamLetterColor(0.30f));
@@ -347,6 +381,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_cylinder_centers_and_clamps);
   RUN_TEST(test_stream_letters_wrap_the_alphabet);
   RUN_TEST(test_center_glyph_is_big_rest_small);
+  RUN_TEST(test_stream_origins_clamp_off_panel_edges);
+  RUN_TEST(test_every_drum_position_lands_its_ink_on_the_panel);
   RUN_TEST(test_spotlight_endpoints);
   RUN_TEST(test_spotlight_midpoints_move_toward_their_targets);
   RUN_TEST(test_pointers_widen_from_a_2px_tip);

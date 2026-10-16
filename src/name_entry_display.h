@@ -323,6 +323,17 @@ inline uint8_t streamGlyphSize(float delta) {
   return mag < 0.5f ? 2 : 1;
 }
 
+// Pin a stream letter's text origin so its 5px ink lands fully on the panel.
+// The drum's rest extremes overhang (x0 = -1 / 60) and the glide pushes to
+// -2 / 62, while the HUB75 driver draws unclipped -- off-panel ink aliases
+// into visible pixels instead of vanishing.
+inline int16_t streamClampedX0(int16_t x0, uint8_t text_size) {
+  int16_t max_x0 = (int16_t)(64 - 5 * text_size);
+  if (x0 < 0) return 0;
+  if (x0 > max_x0) return max_x0;
+  return x0;
+}
+
 // 565 channel mix in 8-bit room, so the midpoints land between the endpoints
 // instead of on whatever the 5/6-bit truncation felt like.
 inline uint16_t lerp565(uint16_t a, uint16_t b, float t) {
