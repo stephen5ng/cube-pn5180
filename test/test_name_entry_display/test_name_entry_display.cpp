@@ -80,6 +80,48 @@ void test_name_entry_state_rejects_and_leaves_state_untouched(void) {
   TEST_ASSERT_EQUAL_MEMORY(&before, &state, sizeof(state));
 }
 
+void test_name_entry_state_time_pct_is_optional_but_bounded(void) {
+  NameEntryState state;
+  // Present: carried through.
+  TEST_ASSERT_TRUE(parseNameEntryState(
+      "{\"initials\": \"SNG\", \"active_slot\": 2, \"submit_focused\": false, "
+      "\"time_left_pct\": 73}",
+      &state));
+  TEST_ASSERT_EQUAL_INT8(73, state.time_pct);
+  // Absent: parses fine (old servers), bar hidden via -1.
+  TEST_ASSERT_TRUE(parseNameEntryState(
+      "{\"initials\": \"SNG\", \"active_slot\": 2, \"submit_focused\": false}", &state));
+  TEST_ASSERT_EQUAL_INT8(-1, state.time_pct);
+  // Out of range: rejected, state untouched.
+  NameEntryState before = state;
+  TEST_ASSERT_FALSE(parseNameEntryState(
+      "{\"initials\": \"SNG\", \"active_slot\": 2, \"submit_focused\": false, "
+      "\"time_left_pct\": 101}",
+      &state));
+  TEST_ASSERT_FALSE(parseNameEntryState(
+      "{\"initials\": \"SNG\", \"active_slot\": 2, \"submit_focused\": false, "
+      "\"time_left_pct\": -5}",
+      &state));
+  TEST_ASSERT_EQUAL_MEMORY(&before, &state, sizeof(state));
+}
+
+void test_time_bar_shrinks_full_width_and_shifts_color(void) {
+  // Width: percent of the 64px panel, rounded so 1% still shows a pixel.
+  TEST_ASSERT_EQUAL_INT16(64, entryTimeBarWidth(100));
+  TEST_ASSERT_EQUAL_INT16(32, entryTimeBarWidth(50));
+  TEST_ASSERT_EQUAL_INT16(13, entryTimeBarWidth(20));
+  TEST_ASSERT_EQUAL_INT16(6, entryTimeBarWidth(10));
+  TEST_ASSERT_EQUAL_INT16(1, entryTimeBarWidth(1));
+  TEST_ASSERT_EQUAL_INT16(0, entryTimeBarWidth(0));
+  // Color: green past 20%, yellow to 10%, red at and below it.
+  TEST_ASSERT_EQUAL_HEX16(ENTRY_TIME_GREEN, entryTimeBarColor(100));
+  TEST_ASSERT_EQUAL_HEX16(ENTRY_TIME_GREEN, entryTimeBarColor(21));
+  TEST_ASSERT_EQUAL_HEX16(ENTRY_YELLOW, entryTimeBarColor(20));
+  TEST_ASSERT_EQUAL_HEX16(ENTRY_YELLOW, entryTimeBarColor(11));
+  TEST_ASSERT_EQUAL_HEX16(ENTRY_TIME_RED, entryTimeBarColor(10));
+  TEST_ASSERT_EQUAL_HEX16(ENTRY_TIME_RED, entryTimeBarColor(0));
+}
+
 void test_stream_state_parses_and_rejects(void) {
   StreamState state;
   TEST_ASSERT_TRUE(parseStreamState(
@@ -371,6 +413,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_ui_mode_rejects_the_unknown);
   RUN_TEST(test_name_entry_state_parses_typing_and_submit);
   RUN_TEST(test_name_entry_state_rejects_and_leaves_state_untouched);
+  RUN_TEST(test_name_entry_state_time_pct_is_optional_but_bounded);
+  RUN_TEST(test_time_bar_shrinks_full_width_and_shifts_color);
   RUN_TEST(test_stream_state_parses_and_rejects);
   RUN_TEST(test_arrow_state_parses_and_rejects);
   RUN_TEST(test_header_and_prompt_center_on_the_panel);

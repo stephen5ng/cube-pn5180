@@ -24,6 +24,8 @@ static const uint16_t ENTRY_STREAM_AMBER = ENTRY_RGB565(210, 130, 40);  // 0xD40
 static const uint16_t ENTRY_STREAM_DIM = ENTRY_RGB565(85, 50, 18);      // 0x5182
 static const uint16_t ENTRY_DARK_SLATE = ENTRY_RGB565(42, 48, 56);      // 0x2987
 static const uint16_t ENTRY_RAIL_DOT = ENTRY_RGB565(30, 45, 50);        // 0x1966
+static const uint16_t ENTRY_TIME_GREEN = ENTRY_RGB565(0, 255, 0);       // 0x07E0
+static const uint16_t ENTRY_TIME_RED = ENTRY_RGB565(255, 0, 0);         // 0xF800
 
 // ---- UI modes and state (MQTT section 5.2) --------------------------------
 
@@ -56,6 +58,7 @@ typedef struct {
   char initials[4];  // three A-Z plus NUL
   int8_t active_slot;  // 0..2, or -1 while SUBMIT is focused
   bool submit_focused;
+  int8_t time_pct;  // 0..100 unspent, or -1 when the server omits the bar
 } NameEntryState;
 
 typedef struct {
@@ -160,10 +163,25 @@ inline bool parseNameEntryState(const char* json, NameEntryState* out) {
   if (!strncmp(focused_text, "true", 4)) focused = true;
   else if (!strncmp(focused_text, "false", 5)) focused = false;
   else return false;
+  // The bar is optional: old servers omit it and the screen simply shows no
+  // bar. Present but out of range is a corrupt payload like any other.
+  int8_t pct = -1;
+  const char* pct_text;
+  if (entryJsonValue(json, "time_left_pct", &pct_text)) {
+    char* pct_end = NULL;
+    long pct_long = strtol(pct_text, &pct_end, 10);
+    if (pct_end == pct_text ||
+        (*pct_end != ',' && *pct_end != '}' && *pct_end != ' ' && *pct_end != '\0')) {
+      return false;
+    }
+    if (pct_long < 0 || pct_long > 100) return false;
+    pct = (int8_t)pct_long;
+  }
   for (uint8_t i = 0; i < 3; ++i) out->initials[i] = initials[i];
   out->initials[3] = '\0';
   out->active_slot = (int8_t)slot;
   out->submit_focused = focused;
+  out->time_pct = pct;
   return true;
 }
 
@@ -273,6 +291,25 @@ inline const uint8_t* entrySubmitGlyph(char c) {
     case 'T': return glyph_t;
     default: return NULL;
   }
+}
+
+// ---- time bar (Main cube top) ----------------------------------------------
+//
+// Five-minute limit as a 2px bar along y = 0..1, anchored left, shrinking
+// rightward. Green past 20%, yellow to 10%, red at and below it.
+#define ENTRY_TIME_BAR_X 0
+#define ENTRY_TIME_BAR_Y 0
+#define ENTRY_TIME_BAR_H 2
+
+inline int16_t entryTimeBarWidth(uint8_t pct) {
+  if (pct > 100) pct = 100;
+  return (int16_t)(pct * 64 + 50) / 100;
+}
+
+inline uint16_t entryTimeBarColor(uint8_t pct) {
+  if (pct <= 10) return ENTRY_TIME_RED;
+  if (pct <= 20) return ENTRY_YELLOW;
+  return ENTRY_TIME_GREEN;
 }
 
 // ---- letter stream (Stream cube, section 4.2) -----------------------------

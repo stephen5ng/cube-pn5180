@@ -571,6 +571,7 @@ public:
     strcpy(name_entry.initials, "AAA");
     name_entry.active_slot = 0;
     name_entry.submit_focused = false;
+    name_entry.time_pct = -1;
     entry_stream.center_letter = 'A';
     entry_stream.direction = STREAM_STOP;
     entry_stream.speed = STREAM_SLOW;
@@ -771,6 +772,12 @@ public:
       drawEntrySubmitText(BLACK);
     } else {
       drawEntrySubmitText(ENTRY_DARK_SLATE);
+    }
+    if (name_entry.time_pct >= 0) {
+      led_display->fillRect(ENTRY_TIME_BAR_X, ENTRY_TIME_BAR_Y,
+                            entryTimeBarWidth((uint8_t)name_entry.time_pct),
+                            ENTRY_TIME_BAR_H,
+                            entryTimeBarColor((uint8_t)name_entry.time_pct));
     }
   }
 
