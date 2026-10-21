@@ -68,12 +68,75 @@ inline int hallPresenceDistance(int delta, int on_delta) {
 // near end is a docked reading. Presence latching and releasing both fall
 // inside this span, which is deliberate -- most of the visible travel happens
 // before a cube is close enough to latch.
+// Measured on slot 1 on 2026-08-13, five weeks before v2.3 and its DRV5055A2
+// existed -- so these, like every other delta in this file, are A4 numbers.
+// (Slot 1 carries a v2.3 board now, which is the whole reason for the gain.)
+// See hallGainForRev().
 static constexpr int PRESENCE_CLOSENESS_NOISE_DELTA = 35;    // measured on slot 1
 static constexpr int PRESENCE_CLOSENESS_DOCKED_DELTA = 127;  // measured on slot 1
 
-inline int hallPresenceCloseness(int delta, int on_delta) {
-  const int far = hallPresenceDistance(PRESENCE_CLOSENESS_NOISE_DELTA, on_delta);
-  const int near_by = hallPresenceDistance(PRESENCE_CLOSENESS_DOCKED_DELTA, on_delta);
+// The hall board's presence sensor sets how many ADC counts a given field is
+// worth, and the two revs in the fleet are not the same part:
+//
+//   v2.2        DRV5055A4   12.5 mV/mT   gain 1  (what every delta here is
+//                                                 calibrated against)
+//   v2.3, v2.4  DRV5055A2   50 mV/mT     gain 4
+//
+// The whole family is binary steps off A4 -- A3 25 mV/mT, A1 100 mV/mT -- so an
+// integer gain covers every variant and no delta needs floating point. Both
+// parts share the ratiometric VCC/2 quiescent output, so the gain changes how
+// far a magnet moves the reading and not where the reading rests: the baseline
+// tracker is unaffected, only the thresholds scale.
+//
+// Nothing can detect this at runtime. At rest the two are indistinguishable, so
+// a cube has to be told; see cube/device/<mac>/hall_rev.
+inline int hallGainForRev(const char* rev) {
+  if (rev == nullptr) return 0;
+  if (rev[0] != 'a' && rev[0] != 'A') return 0;
+  if (rev[1] == '\0' || rev[2] != '\0') return 0;
+  switch (rev[1]) {
+    case '1': return 8;
+    case '2': return 4;
+    case '3': return 2;
+    case '4': return 1;
+    default:  return 0;   // unparseable; caller keeps its current gain
+  }
+}
+
+// A gain that came back from NVS or off the wire. Anything else is corruption or
+// a typo, and silently scaling the thresholds by it would be worse than
+// ignoring it.
+inline bool plausibleHallGain(int gain) {
+  return gain == 1 || gain == 2 || gain == 4 || gain == 8;
+}
+
+// What a hall_rev message has to do, decided from the gain it names, the gain
+// NVS holds (0 if nothing is stored) and the gain the firmware is running.
+//
+// The distinction that matters is Persist. A cube whose build default already
+// equals the named gain needs no reboot, but it does need the write: the
+// default is a property of the carrier the firmware was compiled for, not of
+// the daughterboard someone plugged in, so leaving NVS empty means a reflash to
+// a carrier with a different default silently reverts the board's real gain.
+// Storing it is what makes the setting outlive the build.
+enum class HallRevAction {
+  Unparseable,      // not a rev name; keep the current gain
+  AlreadyApplied,   // running and stored both agree; a retained message lands here
+  Persist,          // running gain is right, NVS does not say so yet
+  PersistAndApply,  // running gain is wrong: store it, then rebuild the copies
+};
+
+inline HallRevAction hallRevAction(const char* rev, int stored, int running) {
+  const int gain = hallGainForRev(rev);
+  if (gain == 0) return HallRevAction::Unparseable;
+  if (gain != running) return HallRevAction::PersistAndApply;
+  if (gain != stored) return HallRevAction::Persist;
+  return HallRevAction::AlreadyApplied;
+}
+
+inline int hallPresenceCloseness(int delta, int on_delta, int gain = 1) {
+  const int far = hallPresenceDistance(PRESENCE_CLOSENESS_NOISE_DELTA * gain, on_delta);
+  const int near_by = hallPresenceDistance(PRESENCE_CLOSENESS_DOCKED_DELTA * gain, on_delta);
   const int distance = hallPresenceDistance(delta, on_delta);
   if (distance >= far) return 0;
   if (distance <= near_by) return 100;
@@ -266,6 +329,11 @@ class HallPresenceTracker {
   int  baseline() const { return (int)(base_ >> cfg_.base_shift); }
   int  filtered() const { return (int)(fast_ >> cfg_.fast_shift); }
   int  delta()    const { return delta_; }  // signed by direction; proximity measure
+  // The latch threshold this tracker is actually running, which is a copy taken
+  // in begin(). Reported in the diagnostics rather than recomputing it from the
+  // configured gain: if the two ever disagree, the bug is exactly that the
+  // tracker was not rebuilt, and a diagnostic that recomputed would hide it.
+  int  onDelta()  const { return cfg_.on_delta; }
 
  private:
   HallPresenceConfig cfg_ {};

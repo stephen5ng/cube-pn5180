@@ -7,6 +7,7 @@ static const char* KEY_SLOT = "slot";
 static const char* KEY_GENERATION = "gen";
 static const char* KEY_AUTHORITY = "auth";
 static const char* KEY_PRESENCE_BASELINE = "presbase";
+static const char* KEY_HALL_GAIN = "hallgain";
 
 int loadPresenceBaseline() {
   Preferences prefs;
@@ -22,6 +23,24 @@ bool savePresenceBaseline(int baseline) {
   Preferences prefs;
   if (!prefs.begin(NVS_NAMESPACE, false)) return false;
   const bool written = prefs.putInt(KEY_PRESENCE_BASELINE, baseline) != 0;
+  prefs.end();
+  return written;
+}
+
+int loadHallGain() {
+  Preferences prefs;
+  int gain = 0;
+  if (prefs.begin(NVS_NAMESPACE, true)) {
+    gain = prefs.getInt(KEY_HALL_GAIN, 0);
+    prefs.end();
+  }
+  return gain;
+}
+
+bool saveHallGain(int gain) {
+  Preferences prefs;
+  if (!prefs.begin(NVS_NAMESPACE, false)) return false;
+  const bool written = prefs.putInt(KEY_HALL_GAIN, gain) != 0;
   prefs.end();
   return written;
 }
