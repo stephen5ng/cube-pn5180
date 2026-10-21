@@ -234,7 +234,23 @@ class HallPresenceTracker {
 
     // Frozen while a neighbour is there, latched or not: otherwise the baseline
     // creeps up to the magnet and the cube forgets the neighbour is there.
-    if (id_mask == 0 && !active_ &&
+    //
+    // Frozen through a wrong-pole excursion too. active_ only latches upwards,
+    // so a magnet presented the wrong way round leaves it false and the
+    // baseline used to adapt down through the excursion. When the magnet left,
+    // the restored idle reading stood on_delta clear of that poisoned
+    // reference and latched with no neighbour there -- seen on cube 13, which
+    // walked 1893 -> 1793 under a hand-waved magnet and then sat active at
+    // delta +99, and on cube 1 after a bench flash. Anything at latch strength
+    // is signal in either direction; only drift-sized moves are drift.
+    // Tested on the raw sample as well as the filtered one. The fast filter
+    // lags a step by design, so going by delta_ alone lets the baseline take a
+    // nibble out of the excursion while the reading is still crossing the
+    // drift-sized band on its way down. The raw value is the evidence; at
+    // on_delta against +/-13 counts of ADC noise, one sample is enough.
+    const bool excursion = delta_ <= -cfg_.on_delta ||
+                           cfg_.direction * (raw - baseline()) <= -cfg_.on_delta;
+    if (id_mask == 0 && !active_ && !excursion &&
         (uint32_t)(now_ms - last_base_ms_) >= cfg_.base_interval_ms) {
       base_ += f - (base_ >> cfg_.base_shift);
       last_base_ms_ = now_ms;
