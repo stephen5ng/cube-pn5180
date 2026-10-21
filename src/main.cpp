@@ -218,9 +218,11 @@ static void restoreBatteryLowLatch() {
 // shift of 7 is roughly 128ms, slow enough that the +/-13 counts of ADC noise
 // measured on slot 1 do not show as jitter.
 #define HALL_PROXIMITY_SHIFT           7
-// GH1230KSW ID sensors are open-drain with 10k pull-ups on the PCB: lines
-// idle HIGH and a magnet pulls them LOW: an undocked cube reads hall_mask
-// 00 in the diag response, so HIGH is the no-magnet level.
+// GH1230KSW ID sensors are open-drain, pulled up on the hall board by R1-R6:
+// 10k on the v2 boards, 4.7k from v2.2 on, where a JLCPCB stock-out forced
+// the substitution. Nothing here depends on the value -- only on the sense:
+// lines idle HIGH and a magnet pulls them LOW, so an undocked cube reads
+// hall_mask 00 in the diag response and HIGH is the no-magnet level.
 #define HALL_ID_ACTIVE_LEVEL LOW
 #define HALL_POLL_INTERVAL_MS 1     // ~1 kHz polling; each digitalRead is ~us
 #define HALL_DEBOUNCE_READS 8       // consecutive identical reads to confirm (~8 ms)
@@ -2279,8 +2281,9 @@ static void recalibratePresence() {
 
 void setupHallSensors() {
   for (uint8_t i = 0; i < 6; i++) {
-    // The GH1230KSW outputs are open-drain and the daughterboard carries a 10k
-    // pull-up per sensor, so a line whose pull-up path opens floats -- and it
+    // The GH1230KSW outputs are open-drain and the daughterboard carries a
+    // pull-up per sensor (10k on v2, 4.7k from v2.2 on), so a line whose
+    // pull-up path opens floats -- and it
     // floats LOW, which reads as a magnet that is not there. Slot 16 lost P6 to
     // a bad joint that way and reported a neighbour with nothing beside it.
     //
