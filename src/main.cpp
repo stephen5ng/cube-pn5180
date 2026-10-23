@@ -205,8 +205,22 @@ static void restoreBatteryLowLatch() {
 // 55-count band is comfortably stable. A partial 15/16 alignment reaches about
 // 45 counts, while the weakest seated pair measured 98, leaving the threshold
 // clear of both states.
-#define HALL_PRESENCE_ON_DELTA         70
-#define HALL_PRESENCE_OFF_DELTA        15
+// A4 (v2.2) numbers, as measured. hall_gain scales them for whichever hall
+// board this cube actually carries -- see hallGainForRev() in hall_presence.h.
+#define HALL_PRESENCE_BASE_ON_DELTA    70
+#define HALL_PRESENCE_BASE_OFF_DELTA   15
+
+// Default for a cube that has never been told. Set per carrier env: a v8 board
+// is new enough that it ships beside a v2.3 hall board, while the v6 cubes in
+// slots 11-16 are the v2.2 boards every delta here was calibrated on. NVS
+// overrides it, so this only decides the first boot after a fresh flash.
+#ifndef HALL_DEFAULT_GAIN
+#define HALL_DEFAULT_GAIN 1
+#endif
+static int hall_gain = HALL_DEFAULT_GAIN;
+
+static int hallPresenceOnDelta()  { return HALL_PRESENCE_BASE_ON_DELTA * hall_gain; }
+static int hallPresenceOffDelta() { return HALL_PRESENCE_BASE_OFF_DELTA * hall_gain; }
 #define HALL_PRESENCE_FAST_SHIFT       5
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
@@ -2100,6 +2114,7 @@ void handleLivenessRequest(const String& nonce) {
 
 // Defined with the hall code below, which needs the tracker and its config.
 static void recalibratePresence();
+static void setHallRev(const String& rev);
 
 void onConnectionEstablished() {
   debugSend("MQTT connected");
@@ -2130,6 +2145,11 @@ void onConnectionEstablished() {
   mqtt_client.subscribe(String(MQTT_TOPIC_PREFIX_CUBE) + "curtain", [](const String& msg) { display_manager->handleCurtainCommand(msg); });
   mqtt_client.subscribe("cube/device/" + mac_nocolons + "/recalibrate",
                         [](const String&) { recalibratePresence(); });
+  // Which hall board is plugged in, as "a2" (v2.3+) or "a4" (v2.2). A swap
+  // changes the gain but not the resting reading, so the stored baseline is
+  // still valid; the thresholds around it are what move.
+  mqtt_client.subscribe("cube/device/" + mac_nocolons + "/hall_rev",
+                        [](const String& msg) { setHallRev(msg); });
   mqtt_client.subscribe("cube/resend", [](const String&) {
     // Re-announce what we see now. Publish-on-change alone would leave a
     // cleared record unrestored until the neighbor physically moved.
@@ -2260,6 +2280,47 @@ static void storePresenceBaseline(uint8_t stable_mask, bool active,
   }
 }
 
+// Adopts a hall board rev and remembers it. Persisted rather than held in RAM
+// because a daughterboard does not change when a cube reboots, and a cube that
+// forgot would silently go back to thresholds four times wrong.
+static void setHallRev(const String& rev) {
+  const int gain = hallGainForRev(rev.c_str());
+  const HallRevAction action = hallRevAction(rev.c_str(), loadHallGain(), hall_gain);
+  if (action == HallRevAction::Unparseable) {
+    Serial.printf("hall_rev: ignoring unparseable '%s'\n", rev.c_str());
+    return;
+  }
+  if (action == HallRevAction::AlreadyApplied) return;
+  if (!saveHallGain(gain)) {
+    Serial.println(F("hall_rev: NVS write failed"));
+    return;
+  }
+  if (action == HallRevAction::Persist) {
+    Serial.printf("hall_rev=%s, gain=%d; already running, now stored\n",
+                  rev.c_str(), gain);
+    return;
+  }
+  // Restart rather than re-apply in place. The thresholds are copied, not read
+  // live: HallPresenceTracker takes cfg_ in begin(), and the neighbour debounce
+  // is a static local fixed at the first poll. Reaching all of them means the
+  // boot path, and rebooting reuses the one path already known to agree. The
+  // AlreadyApplied above is what keeps a retained hall_rev message from
+  // looping: after this restart the running gain and NVS both match it.
+  Serial.printf("hall_rev=%s, gain=%d; restarting to apply\n", rev.c_str(), gain);
+  Serial.flush();
+  ESP.restart();
+}
+
+// NVS wins over the build default: the build only knows which carrier it was
+// compiled for, while NVS knows what someone actually plugged in.
+static void restoreHallGain() {
+  const int stored = loadHallGain();
+  if (plausibleHallGain(stored)) hall_gain = stored;
+  Serial.printf("hall gain %d (%s); presence on=%d off=%d\n", hall_gain,
+                plausibleHallGain(stored) ? "from NVS" : "build default",
+                hallPresenceOnDelta(), hallPresenceOffDelta());
+}
+
 // Clears every stored reference so the tracker primes again from the current
 // reading. A baseline taken while something was in range latches active_ and is
 // then frozen by its own activation, and it reaches NVS in the moment between
@@ -2270,8 +2331,8 @@ static void recalibratePresence() {
   saved_presence_baseline = 0;
   savePresenceBaseline(0);  // below PRESENCE_BASELINE_MIN, so it reads as absent
   hall_presence.begin({HALL_PRESENCE_DIRECTION,
-                       HALL_PRESENCE_ON_DELTA,
-                       HALL_PRESENCE_OFF_DELTA,
+                       hallPresenceOnDelta(),
+                       hallPresenceOffDelta(),
                        HALL_PRESENCE_FAST_SHIFT,
                        HALL_PRESENCE_BASE_SHIFT,
                        HALL_PRESENCE_BASE_INTERVAL_MS},
@@ -2280,6 +2341,7 @@ static void recalibratePresence() {
 }
 
 void setupHallSensors() {
+  restoreHallGain();
   for (uint8_t i = 0; i < 6; i++) {
     // The GH1230KSW outputs are open-drain and the daughterboard carries a
     // pull-up per sensor (10k on v2, 4.7k from v2.2 on), so a line whose
@@ -2296,8 +2358,8 @@ void setupHallSensors() {
   }
   pinMode(HALL_PRESENCE_PIN, INPUT);
   hall_presence.begin({HALL_PRESENCE_DIRECTION,
-                       HALL_PRESENCE_ON_DELTA,
-                       HALL_PRESENCE_OFF_DELTA,
+                       hallPresenceOnDelta(),
+                       hallPresenceOffDelta(),
                        HALL_PRESENCE_FAST_SHIFT,
                        HALL_PRESENCE_BASE_SHIFT,
                        HALL_PRESENCE_BASE_INTERVAL_MS},
@@ -2513,14 +2575,14 @@ void handleUDP() {
         snprintf(diagStr, sizeof(diagStr),
           "%s|fw=%s|mac=%s|loop=%lu|mqtt=%lu|disp=%lu|udp=%lu|nfc=%lu|nfc_max=%lu|nfc_resets=%d|letter_avg=%lu|letter_max=%lu|letter_n=%d|rssi=%d|samples=%d|uptime_ms=%lu"
           "|hall_mask=%02X|hall_raw=%d|hall_filt=%d|hall_base=%d"
-          "|hall_delta=%d|hall_on=%d|hall_active=%d|hall_primed=%d",
+          "|hall_delta=%d|hall_on=%d|hall_active=%d|hall_primed=%d|hall_gain=%d",
           cube_identifier.c_str(), fw_board, WiFi.macAddress().c_str(), avg_total, avg_mqtt, avg_display, avg_udp, avg_nfc,
           nfc_read_max_us, nfc_reset_count, avg_letter_interval, max_letter_interval, letter_interval_count,
           WiFi.RSSI(), section_timing_count, millis(),
           last_hall_id_mask, last_hall_presence_raw, hall_presence.filtered(),
           hall_presence.baseline(), hall_presence.delta(),
-          HALL_PRESENCE_ON_DELTA, hall_presence.active(),
-          hall_presence.primed());
+          hall_presence.onDelta(), hall_presence.active(),
+          hall_presence.primed(), hall_gain);
 
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write((const uint8_t*)diagStr, strlen(diagStr));
@@ -2957,7 +3019,7 @@ void loop() {
       static unsigned long last_hall_poll = 0;
       static HallNeighborDebounce neighbor{HALL_DEBOUNCE_READS,
                                            HALL_ID_CHANGE_SETTLE_READS,
-                                           HALL_PRESENCE_ON_DELTA};
+                                           hallPresenceOnDelta()};
       static uint8_t stable_id = 0xFF;  // sentinel forces first real publish
     
       // For debugging raw ID sensors U1-U6
@@ -3027,7 +3089,8 @@ void loop() {
           proximity_filter += presence_delta - (proximity_filter >> HALL_PROXIMITY_SHIFT);
         }
         const int proximity = hallPresenceCloseness(
-            (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), HALL_PRESENCE_ON_DELTA);
+            (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), hallPresenceOnDelta(),
+            hall_gain);
 
         // A debounced 2-of-6 Hall mask identifies the candidate before the
         // presence latch confirms a neighbour. Preview the prospective shared
