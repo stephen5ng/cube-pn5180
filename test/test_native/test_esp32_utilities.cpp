@@ -74,6 +74,42 @@ void test_presence_ignores_the_wrong_direction() {
     TEST_ASSERT_FALSE(t.active());
 }
 
+// A wrong-pole excursion never latches, so without a freeze the baseline adapts
+// down through it -- and when the magnet leaves, the restored reading stands
+// on_delta clear of the poisoned reference and latches with no neighbour there.
+// Observed on cube 13 with a hand-waved magnet: baseline 1893 -> 1793, then
+// stuck active at delta +99 because the latch froze the baseline it needed to
+// recover with. Anything at latch strength is signal, not drift, either way.
+void test_presence_freezes_the_baseline_through_a_wrong_pole_excursion() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    const int idle = t.baseline();
+
+    for (int i = 0; i < 60; i++) settle(t, 2035 - 400, now, 1000);
+    TEST_ASSERT_FALSE(t.active());
+    TEST_ASSERT_EQUAL(idle, t.baseline());
+
+    // Magnet gone: the reading matches the reference instead of standing proud
+    // of a poisoned one, so there is no phantom latch.
+    settle(t, 2035, now, 200);
+    TEST_ASSERT_FALSE(t.active());
+    TEST_ASSERT_TRUE(t.delta() > -60 && t.delta() < 60);
+}
+
+// The freeze must only catch excursions, not ordinary wander: a drift-sized
+// negative move still has to be absorbed, or the reference can never follow
+// the rail down.
+void test_presence_still_adapts_through_drift_sized_negative_wander() {
+    HallPresenceTracker t; t.begin(test_presence_config());
+    uint32_t now = 0;
+    settle(t, 2035, now);
+    settle(t, 2035 - 40, now, 40000, 0);
+    TEST_ASSERT_FALSE(t.active());
+    TEST_ASSERT_TRUE(t.baseline() < 2035 - 20);
+    TEST_ASSERT_TRUE(t.delta() > -20);
+}
+
 void test_presence_tracks_slow_rail_drift_without_asserting() {
     HallPresenceTracker t; t.begin(test_presence_config());
     uint32_t now = 0;
@@ -1423,6 +1459,8 @@ int main(void) {
     RUN_TEST(test_presence_starts_inactive_and_adopts_the_settled_reading);
     RUN_TEST(test_presence_asserts_above_on_delta_and_holds_through_hysteresis);
     RUN_TEST(test_presence_ignores_the_wrong_direction);
+    RUN_TEST(test_presence_freezes_the_baseline_through_a_wrong_pole_excursion);
+    RUN_TEST(test_presence_still_adapts_through_drift_sized_negative_wander);
     RUN_TEST(test_presence_tracks_slow_rail_drift_without_asserting);
     RUN_TEST(test_presence_is_fooled_by_a_fast_rail_step);
     RUN_TEST(test_presence_freezes_the_baseline_while_a_neighbour_is_present);
