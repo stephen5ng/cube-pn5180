@@ -1449,6 +1449,66 @@ void test_an_unparseable_rev_does_nothing_at_all() {
     TEST_ASSERT_TRUE(HallRevAction::Unparseable == hallRevAction(nullptr, 0, 4));
 }
 
+// The surveyed patterns, per player 0 cube. Measured 2026-10-25 with each cube
+// read by its right-hand neighbour, three stable rounds each. These are
+// hardware facts, so the test restates the measurement rather than the
+// implementation: if someone reshuffles the table, this is what disagrees.
+void test_every_player0_cube_decodes_from_its_measured_magnets() {
+    TEST_ASSERT_EQUAL(1, hallCubeIdForMask(0b000011, 3));  // P1+P2
+    TEST_ASSERT_EQUAL(2, hallCubeIdForMask(0b101000, 3));  // P4+P6
+    TEST_ASSERT_EQUAL(3, hallCubeIdForMask(0b100100, 4));  // P3+P6
+    TEST_ASSERT_EQUAL(4, hallCubeIdForMask(0b011000, 5));  // P4+P5
+    TEST_ASSERT_EQUAL(5, hallCubeIdForMask(0b001001, 6));  // P1+P4
+    TEST_ASSERT_EQUAL(6, hallCubeIdForMask(0b000110, 2));  // P2+P3
+}
+
+void test_every_player1_cube_still_decodes_as_before() {
+    TEST_ASSERT_EQUAL(11, hallCubeIdForMask(0b110000, 12));
+    TEST_ASSERT_EQUAL(12, hallCubeIdForMask(0b100010, 13));
+    TEST_ASSERT_EQUAL(13, hallCubeIdForMask(0b001100, 14));
+    TEST_ASSERT_EQUAL(14, hallCubeIdForMask(0b101000, 15));
+    TEST_ASSERT_EQUAL(15, hallCubeIdForMask(0b000101, 16));
+    TEST_ASSERT_EQUAL(16, hallCubeIdForMask(0b100100, 11));
+}
+
+// Why the decode takes the reader's slot at all. Two patterns are fitted in
+// both groups, so the same mask has to resolve to different cubes depending on
+// who is reading it -- a single table cannot hold both, and a player 0 cube
+// reporting "14" would be naming a cube that is not in its game.
+void test_the_shared_patterns_resolve_per_player() {
+    TEST_ASSERT_EQUAL(2,  hallCubeIdForMask(0b101000, 1));   // P4+P6, read by P0
+    TEST_ASSERT_EQUAL(14, hallCubeIdForMask(0b101000, 11));  // same mask, P1
+    TEST_ASSERT_EQUAL(3,  hallCubeIdForMask(0b100100, 1));   // P3+P6, read by P0
+    TEST_ASSERT_EQUAL(16, hallCubeIdForMask(0b100100, 11));  // same mask, P1
+}
+
+// A cube that has not been assigned a slot has no table to read, and a slot
+// outside both groups is not a cube. Both must stay silent rather than guess a
+// group: naming a neighbour wrongly is worse than naming none.
+void test_a_reader_with_no_group_names_nobody() {
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000011, -1));  // unresolved
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000011, 0));
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000011, 7));   // between groups
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000011, 10));
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000011, 17));
+}
+
+// A mask no cube is fitted with must name nobody. 0b010110 is not hypothetical:
+// it is what cube 4 read off cube 6 on the bench while a positioning magnet sat
+// over its P5 sensor, and decoding it would have reported a neighbour that was
+// not there. Weight is not checked anywhere -- these decode to 0 by being
+// absent from the table, which is the property under test.
+void test_a_mask_no_cube_is_fitted_with_names_nobody() {
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000000, 3));  // nothing docked
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000001, 3));  // one magnet
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b010110, 3));  // P2+P3+P5, the
+                                                           // positioning-magnet
+                                                           // reading off cube 6
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b111111, 3));  // every line low
+    // Weight 2 but no cube fitted with it: still nothing.
+    TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000101, 3));  // P1+P3 is player 1's
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -1594,6 +1654,11 @@ int main(void) {
     RUN_TEST(test_a_rev_matching_the_build_default_is_still_written_to_nvs);
     RUN_TEST(test_a_rev_that_changes_the_gain_asks_for_a_restart);
     RUN_TEST(test_an_unparseable_rev_does_nothing_at_all);
+    RUN_TEST(test_every_player0_cube_decodes_from_its_measured_magnets);
+    RUN_TEST(test_every_player1_cube_still_decodes_as_before);
+    RUN_TEST(test_the_shared_patterns_resolve_per_player);
+    RUN_TEST(test_a_reader_with_no_group_names_nobody);
+    RUN_TEST(test_a_mask_no_cube_is_fitted_with_names_nobody);
 
     return UNITY_END();
 }

@@ -110,6 +110,59 @@ inline bool plausibleHallGain(int gain) {
   return gain == 1 || gain == 2 || gain == 4 || gain == 8;
 }
 
+// ID-magnet patterns, as measured off the physical carriers on 2026-10-25 with
+// each cube read by its right-hand neighbour. The magnets sit in fixed slots in
+// a printed carrier, so these patterns are a survey of the hardware, not a
+// scheme the hardware was built to match -- which is why they look arbitrary.
+//
+// Bit i is sensor P(i+1); exactly two bits are ever valid. The decode is
+// per-player because the two groups reuse patterns: player 0's cube 2 (P4+P6)
+// is player 1's cube 14, and cube 3 (P3+P6) is cube 16. Cubes from different
+// players never dock, so the same mask resolving to two ids is harmless -- but
+// one shared table cannot express it (two `case` labels, one value), and a
+// reader only ever needs the table for its own group.
+inline uint8_t hallCubeIdForMaskPlayer0(uint8_t id_mask) {
+  switch (id_mask & 0x3F) {
+    case 0b000011: return 1;  // P1+P2
+    case 0b101000: return 2;  // P4+P6
+    case 0b100100: return 3;  // P3+P6
+    case 0b011000: return 4;  // P4+P5
+    case 0b001001: return 5;  // P1+P4
+    case 0b000110: return 6;  // P2+P3
+    default:       return 0;
+  }
+}
+
+// Player 1, measured with the cubes ordered A through F.
+inline uint8_t hallCubeIdForMaskPlayer1(uint8_t id_mask) {
+  switch (id_mask & 0x3F) {
+    case 0b110000: return 11;  // P5+P6
+    case 0b100010: return 12;  // P2+P6
+    case 0b001100: return 13;  // P3+P4
+    case 0b101000: return 14;  // P4+P6
+    case 0b000101: return 15;  // P1+P3
+    case 0b100100: return 16;  // P3+P6
+    default:       return 0;
+  }
+}
+
+// Maps a 6-bit ID mask to a neighbour cube id; 0 = invalid pattern.
+//
+// `own_slot` is the READER's slot, which picks the table: player 0 is slots
+// 1-6, player 1 is 11-16. An unresolved slot (-1) has no group and so decodes
+// nothing -- a cube that does not know who it is cannot say who is beside it.
+//
+// No weight check: every pattern above has exactly two bits, so a mask of any
+// other weight matches no case and falls through to 0 on its own. The call
+// sites used to test popcount before calling, which read as a guard and was
+// really a restatement of the table. A three-bit mask -- what a stray
+// positioning magnet produces -- is rejected by not being in the table.
+inline uint8_t hallCubeIdForMask(uint8_t id_mask, int own_slot) {
+  if (own_slot >= 1 && own_slot <= 6) return hallCubeIdForMaskPlayer0(id_mask);
+  if (own_slot >= 11 && own_slot <= 16) return hallCubeIdForMaskPlayer1(id_mask);
+  return 0;
+}
+
 // What a hall_rev message has to do, decided from the gain it names, the gain
 // NVS holds (0 if nothing is stored) and the gain the firmware is running.
 //
