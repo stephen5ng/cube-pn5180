@@ -1,21 +1,21 @@
 # flash_cubes.sh reads MAC from ARP table and looks up version here
 # MAC Address = Board Version
 3C:8A:1F:77:DF:8C=v6
-5C:01:3B:4A:87:4C=v6_battery
+5C:01:3B:4A:87:4C=v6_battery_with_hall_analog
 04:83:08:59:76:98=v6
 5C:01:3B:64:E2:84=v6
-B4:BF:E9:60:C0:68=v6_battery
+B4:BF:E9:60:C0:68=v6_battery_with_hall_analog
 5C:01:3B:66:08:20=v6
 80:F3:DA:54:53:B8=v6
 8C:4F:00:2E:B5:AC=v6
 8C:4F:00:37:7C:DC=v6
 CC:DB:A7:9B:5D:9C=v6
 CC:DB:A7:9F:C2:84=v6
-D4:8A:FC:9F:B0:C0=v6_battery
-D8:BC:38:E5:A8:38=v6_battery
+D4:8A:FC:9F:B0:C0=v6_battery_with_hall_analog
+D8:BC:38:E5:A8:38=v6_battery_with_hall_analog
 EC:E3:34:79:8A:BC=v6
 20:50:0D:19:FB:C8=v6_with_hall_analog
-5C:01:3B:65:F2:74=v6_battery
+5C:01:3B:65:F2:74=v6_battery_with_hall_analog
 # Player 1 (slots 11-16).
 EC:E3:34:79:9D:2C=v6_with_hall_analog
 20:50:0D:1A:04:AC=v6_with_hall_analog
