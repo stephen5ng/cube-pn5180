@@ -2174,34 +2174,6 @@ void onConnectionEstablished() {
 
 // ============= System Functions =============
 // ============= Hall Neighbor Functions =============
-// Maps a 6-bit ID mask (bits P6 P5 P4 P3 P2 P1) to a neighbor cube id;
-// 0 = invalid pattern. Player 0 is cubes 1-6, player 1 is cubes 11-16, and
-// each cube's ID magnets carry the pattern that decodes to its game id.
-static uint8_t hallCubeIdForMask(uint8_t id_mask) {
-  switch (id_mask & 0x3F) {
-    // Player 1, measured with the cubes ordered A through F: each mask is what
-    // the cube immediately to its left reports as hall_mask in its diag response.
-    case 0b110000: return 11;  // P5+P6
-    case 0b100010: return 12;  // P2+P6
-    case 0b001100: return 13;  // P3+P4
-    case 0b101000: return 14;  // P4+P6
-    case 0b000101: return 15;  // P1+P3
-    case 0b100100: return 16;  // P3+P6
-    // Player 0 has no magnets fitted -- those boards still run NFC -- so these are
-    // a free choice, taken from what player 1 left and preferring the pins that
-    // are not GPIO 34/35. Fit magnets to match, or renumber these to match the
-    // magnets, whichever comes first. P1+P2 is free after the Player 1 mapping,
-    // so it avoids overlapping a physical Player 1 ID.
-    case 0b000110: return 1;   // P2+P3
-    case 0b001010: return 2;   // P2+P4
-    case 0b010100: return 3;   // P3+P5
-    case 0b011000: return 4;   // P4+P5
-    case 0b100001: return 5;   // P1+P6
-    case 0b000011: return 6;   // P1+P2
-    default:       return 0;
-  }
-}
-
 static HallPresenceTracker hall_presence;
 // Last values the poll saw, for the diag response. A neighbour that is present
 // but unreported can mean a missing magnet, a sensor reading nothing, or a
@@ -2393,10 +2365,10 @@ uint8_t decodeHallNeighborId(uint8_t id_mask) {
   if (!hall_presence.update(presence_raw, millis(), id_mask)) {
     return 0;  // presence magnet absent -> no neighbor seated
   }
-  if (__builtin_popcount(id_mask) != 2) {
-    return 0;  // reject anything that isn't exactly two ID magnets
-  }
-  return hallCubeIdForMask(id_mask);  // 0 = invalid weight-2 pattern
+  // Weight and group are both checked in hallCubeIdForMask: 0 means "no
+  // neighbour I can name", whether the mask was the wrong weight, an
+  // unfitted pattern, or this cube does not yet know its own slot.
+  return hallCubeIdForMask(id_mask, applied_slot);
 }
 
 // ============= NFC Functions =============
@@ -3098,9 +3070,7 @@ void loop() {
         static uint8_t preview_candidate = 0;
         static unsigned long last_preview_publish = 0;
         const uint8_t stable_candidate =
-            stable_raw != 0xFF && __builtin_popcount(stable_raw) == 2
-                ? hallCubeIdForMask(stable_raw)
-                : 0;
+            stable_raw != 0xFF ? hallCubeIdForMask(stable_raw, applied_slot) : 0;
         const uint8_t wanted_preview =
             shouldPreviewHallCandidate(proximity, presence_state) ? stable_candidate : 0;
         if (wanted_preview != preview_candidate ||
