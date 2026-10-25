@@ -15,6 +15,13 @@ struct StoredSlot {
 int loadPresenceBaseline();
 bool savePresenceBaseline(int baseline);
 
+// Which hall board this cube carries, as an integer gain off the DRV5055A4
+// thresholds (1 = A4 / v2.2, 4 = A2 / v2.3+). 0 means nothing stored, and the
+// build-time default stands. Survives a power cycle, because a daughterboard
+// does not change when a cube reboots.
+int loadHallGain();
+bool saveHallGain(int gain);
+
 StoredSlot loadStoredSlot();
 void saveStoredSlot(int slot, uint32_t generation);
 void latchAuthority();

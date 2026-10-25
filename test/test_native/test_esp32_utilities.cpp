@@ -1362,6 +1362,93 @@ void test_boot_identity_fits_the_debug_line() {
     TEST_ASSERT_TRUE_MESSAGE(strlen(buf) <= 10, buf);
 }
 
+// The fleet runs two hall board revs with different presence sensors, and the
+// deltas in the firmware are the A4 numbers. Getting the gain wrong by a factor
+// of four either latches at a quarter of the intended range or not at all, so
+// the mapping is worth pinning rather than trusting to a comment.
+void test_hall_gain_maps_every_drv5055_variant() {
+    TEST_ASSERT_EQUAL(1, hallGainForRev("a4"));   // v2.2, 12.5 mV/mT, the baseline
+    TEST_ASSERT_EQUAL(4, hallGainForRev("a2"));   // v2.3+, 50 mV/mT
+    TEST_ASSERT_EQUAL(2, hallGainForRev("a3"));
+    TEST_ASSERT_EQUAL(8, hallGainForRev("a1"));
+    TEST_ASSERT_EQUAL(4, hallGainForRev("A2"));   // case does not matter on the wire
+}
+
+// A typo on the wire or a corrupt NVS read must leave the gain alone rather
+// than scale every threshold by garbage. 0 is the "no opinion" answer.
+void test_hall_gain_rejects_anything_it_cannot_parse() {
+    TEST_ASSERT_EQUAL(0, hallGainForRev(""));
+    TEST_ASSERT_EQUAL(0, hallGainForRev("a"));
+    TEST_ASSERT_EQUAL(0, hallGainForRev("a5"));
+    TEST_ASSERT_EQUAL(0, hallGainForRev("a22"));
+    TEST_ASSERT_EQUAL(0, hallGainForRev("b2"));
+    TEST_ASSERT_EQUAL(0, hallGainForRev("2"));
+    TEST_ASSERT_EQUAL(0, hallGainForRev(nullptr));
+    TEST_ASSERT_FALSE(plausibleHallGain(0));
+    TEST_ASSERT_FALSE(plausibleHallGain(3));
+    TEST_ASSERT_FALSE(plausibleHallGain(-4));
+    TEST_ASSERT_TRUE(plausibleHallGain(1));
+    TEST_ASSERT_TRUE(plausibleHallGain(4));
+}
+
+// The proximity bar reads 0 at the noise floor and 100 at a dock. Both of those
+// reference points are deltas, so both have to scale with the gain -- otherwise
+// an A2 board pins the bar at 100 as soon as a neighbour is anywhere near.
+void test_closeness_reference_points_scale_with_gain() {
+    // A4: unchanged from how it was calibrated.
+    TEST_ASSERT_EQUAL(0,   hallPresenceCloseness(35, 70, 1));
+    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(127, 70, 1));
+
+    // A2: the same physical positions, four times the counts and four times
+    // the on_delta, must read the same closeness.
+    TEST_ASSERT_EQUAL(0,   hallPresenceCloseness(35 * 4, 70 * 4, 4));
+    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(127 * 4, 70 * 4, 4));
+
+    // And the midpoint tracks, rather than saturating at one end.
+    const int mid_a4 = hallPresenceCloseness((35 + 127) / 2, 70, 1);
+    const int mid_a2 = hallPresenceCloseness(((35 + 127) / 2) * 4, 70 * 4, 4);
+    TEST_ASSERT_TRUE(mid_a4 > 0 && mid_a4 < 100);
+    TEST_ASSERT_INT_WITHIN(2, mid_a4, mid_a2);
+}
+
+// The reason hallRevAction exists rather than a bare "did the gain change?"
+// check. Gain 4 is the v8 build default, so a v8 cube told "a2" is already
+// running the right thresholds and needs no reboot -- but with nothing in NVS,
+// reflashing that same daughterboard with a v6 hall build (default gain 1) puts
+// an A2 board back on A4 thresholds and it reports a neighbour before docking.
+// The write is what carries the setting across that reflash.
+void test_a_rev_matching_the_build_default_is_still_written_to_nvs() {
+    TEST_ASSERT_TRUE(HallRevAction::Persist ==
+                     hallRevAction("a2", 0, 4));   // v8 default, NVS empty
+    TEST_ASSERT_TRUE(HallRevAction::Persist ==
+                     hallRevAction("a4", 0, 1));   // v6 default, NVS empty
+    // Same board, gain already stored: nothing left to do.
+    TEST_ASSERT_TRUE(HallRevAction::AlreadyApplied ==
+                     hallRevAction("a2", 4, 4));
+}
+
+// A rev that disagrees with what is running has to reach NVS *and* reboot,
+// because the thresholds are copied into the tracker at begin() rather than
+// read live. The reboot is also what makes a retained message terminate: the
+// cube comes back with running and stored both matching, which is
+// AlreadyApplied.
+void test_a_rev_that_changes_the_gain_asks_for_a_restart() {
+    TEST_ASSERT_TRUE(HallRevAction::PersistAndApply ==
+                     hallRevAction("a2", 0, 1));   // v6 build, A2 board fitted
+    TEST_ASSERT_TRUE(HallRevAction::PersistAndApply ==
+                     hallRevAction("a4", 4, 4));   // A2 board swapped for A4
+    TEST_ASSERT_TRUE(HallRevAction::AlreadyApplied ==
+                     hallRevAction("a2", 4, 4));   // ... and after the reboot
+}
+
+// Garbage on the wire must not be mistaken for a gain change and must not
+// trigger a write or a reboot, whatever is stored.
+void test_an_unparseable_rev_does_nothing_at_all() {
+    TEST_ASSERT_TRUE(HallRevAction::Unparseable == hallRevAction("zz", 4, 4));
+    TEST_ASSERT_TRUE(HallRevAction::Unparseable == hallRevAction("", 0, 1));
+    TEST_ASSERT_TRUE(HallRevAction::Unparseable == hallRevAction(nullptr, 0, 4));
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -1500,6 +1587,13 @@ int main(void) {
     RUN_TEST(test_boot_identity_admits_an_unknown_slot);
     RUN_TEST(test_boot_identity_negative_stored_slot_is_not_treated_as_assigned);
     RUN_TEST(test_boot_identity_fits_the_debug_line);
+
+    RUN_TEST(test_hall_gain_maps_every_drv5055_variant);
+    RUN_TEST(test_hall_gain_rejects_anything_it_cannot_parse);
+    RUN_TEST(test_closeness_reference_points_scale_with_gain);
+    RUN_TEST(test_a_rev_matching_the_build_default_is_still_written_to_nvs);
+    RUN_TEST(test_a_rev_that_changes_the_gain_asks_for_a_restart);
+    RUN_TEST(test_an_unparseable_rev_does_nothing_at_all);
 
     return UNITY_END();
 }
