@@ -163,6 +163,87 @@ inline uint8_t hallCubeIdForMask(uint8_t id_mask, int own_slot) {
   return 0;
 }
 
+// Which side of a cube its hall board is mounted on. Player 0's boards face
+// left, player 1's face right. That is a mechanical fact about the enclosures
+// and it must not reach the game, so it is resolved here.
+enum class HallSensorSide { None, Left, Right };
+
+inline HallSensorSide hallSensorSideForSlot(int own_slot) {
+  if (own_slot >= 1 && own_slot <= 6) return HallSensorSide::Left;
+  if (own_slot >= 11 && own_slot <= 16) return HallSensorSide::Right;
+  return HallSensorSide::None;
+}
+
+// What to publish on cube/right/<topic_slot>, whose payload asserts
+// "<subject_slot> is immediately to the right of <topic_slot>". That is the
+// server's convention: scripts/start_game.py publishes right/<A> = <B> for a
+// word spelled A then B.
+//
+// A cube sensing on its RIGHT observes that relation directly and is its
+// subject: right/<me> = <neighbour>. A cube sensing on its LEFT sees the mirror
+// image -- the neighbour is to ITS left -- so the same physical edge keys on
+// the NEIGHBOUR instead: right/<neighbour> = <me>. Publishing the sensor's
+// point of view on the cube's own topic asserts the edge backwards, which
+// reverses the whole row, and the row is the word.
+//
+// topic_slot 0 means there is nothing to assert. A left-side sensor with no
+// neighbour is the case that matters: it has no subject and no topic of its
+// own, so the caller retires whichever topic it last wrote.
+struct HallEdgeAssertion {
+  int topic_slot;
+  int subject_slot;  // 0 publishes "-", the standing "no neighbour" value
+};
+
+inline HallEdgeAssertion hallEdgeAssertion(int own_slot, uint8_t neighbor_id) {
+  switch (hallSensorSideForSlot(own_slot)) {
+    case HallSensorSide::Right:
+      return {own_slot, (int)neighbor_id};
+    case HallSensorSide::Left:
+      if (neighbor_id == 0) return {0, 0};
+      return {(int)neighbor_id, own_slot};
+    case HallSensorSide::None:
+    default:
+      return {0, 0};
+  }
+}
+
+// What a cube owes the cube/right topics when it (re)connects. Every record
+// there is retained, so a stale one outlives the cube that wrote it and the
+// game applies it without consulting sensor_mode -- a ghost edge, and a ghost
+// word around it.
+//
+// Who may clear what follows from who is the SUBJECT. A right-facing cube is
+// the subject of its own topic and clears it. A left-facing cube is the subject
+// of its NEIGHBOUR's topic: clearing its own would delete a live edge written
+// by the cube to its right, which republishes only on change, so it must not
+// touch it. What it can do is retire records that name IT, because it can be to
+// the right of exactly one cube.
+//
+// The left-facing case does NOT depend on the sensor mode, and that is the
+// whole point. A cube replugged with an NFC reader stops writing cube/right
+// entirely, so its last hall-era assertion -- sitting on its old neighbour's
+// topic -- is exactly the record nothing else will ever overwrite.
+enum class HallEdgeCleanup {
+  None,              // no slot or no group: nothing to assert, nothing to retire
+  ClearOwnStanding,  // own subject, hall board fitted: the standing "no neighbour"
+  ClearOwnRetire,    // own subject, no hall board: delete the record outright
+  WatchSelfClaims,   // not own subject: retire records naming this cube
+};
+
+inline HallEdgeCleanup hallEdgeCleanupOnConnect(int own_slot,
+                                                bool sensing_magnets) {
+  switch (hallSensorSideForSlot(own_slot)) {
+    case HallSensorSide::Right:
+      return sensing_magnets ? HallEdgeCleanup::ClearOwnStanding
+                             : HallEdgeCleanup::ClearOwnRetire;
+    case HallSensorSide::Left:
+      return HallEdgeCleanup::WatchSelfClaims;
+    case HallSensorSide::None:
+    default:
+      return HallEdgeCleanup::None;
+  }
+}
+
 // What a hall_rev message has to do, decided from the gain it names, the gain
 // NVS holds (0 if nothing is stored) and the gain the firmware is running.
 //

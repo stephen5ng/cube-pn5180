@@ -1509,6 +1509,127 @@ void test_a_mask_no_cube_is_fitted_with_names_nobody() {
     TEST_ASSERT_EQUAL(0, hallCubeIdForMask(0b000101, 3));  // P1+P3 is player 1's
 }
 
+// Player 1's boards face right, so such a cube sees the relation the server
+// wants stated and is its own subject -- unchanged behaviour.
+void test_a_right_facing_cube_asserts_on_its_own_topic() {
+    HallEdgeAssertion e = hallEdgeAssertion(12, 13);
+    TEST_ASSERT_EQUAL(12, e.topic_slot);    // right/12 ...
+    TEST_ASSERT_EQUAL(13, e.subject_slot);  // ... = 13
+    // Neighbour gone: it still owns the topic, and says so.
+    e = hallEdgeAssertion(12, 0);
+    TEST_ASSERT_EQUAL(12, e.topic_slot);
+    TEST_ASSERT_EQUAL(0, e.subject_slot);   // publishes "-"
+}
+
+// Player 0's boards face left, so the cube it senses is to ITS left: the same
+// edge has to be keyed on the neighbour, with this cube as the subject.
+// Asserting it the other way round is what reversed the row.
+void test_a_left_facing_cube_asserts_on_its_neighbours_topic() {
+    const HallEdgeAssertion e = hallEdgeAssertion(3, 1);
+    TEST_ASSERT_EQUAL(1, e.topic_slot);    // right/1 ...
+    TEST_ASSERT_EQUAL(3, e.subject_slot);  // ... = 3, because 3 is right of 1
+}
+
+// With nothing sensed, a left-facing cube has no subject AND no topic: it is
+// not the subject of its own cube/right topic, so it must not write there --
+// the cube to its right owns that one. The caller retires the topic it last
+// wrote instead.
+void test_a_left_facing_cube_with_no_neighbour_asserts_nothing() {
+    const HallEdgeAssertion e = hallEdgeAssertion(3, 0);
+    TEST_ASSERT_EQUAL(0, e.topic_slot);
+    TEST_ASSERT_EQUAL(0, e.subject_slot);
+}
+
+void test_an_unassigned_cube_asserts_nothing() {
+    TEST_ASSERT_EQUAL(0, hallEdgeAssertion(-1, 4).topic_slot);
+    TEST_ASSERT_EQUAL(0, hallEdgeAssertion(0, 4).topic_slot);
+    TEST_ASSERT_EQUAL(0, hallEdgeAssertion(7, 4).topic_slot);   // between groups
+    TEST_ASSERT_EQUAL(0, hallEdgeAssertion(17, 4).topic_slot);
+}
+
+void test_the_sensor_side_is_per_player() {
+    for (int slot = 1; slot <= 6; slot++) {
+        TEST_ASSERT_TRUE(HallSensorSide::Left == hallSensorSideForSlot(slot));
+    }
+    for (int slot = 11; slot <= 16; slot++) {
+        TEST_ASSERT_TRUE(HallSensorSide::Right == hallSensorSideForSlot(slot));
+    }
+    TEST_ASSERT_TRUE(HallSensorSide::None == hallSensorSideForSlot(-1));
+    TEST_ASSERT_TRUE(HallSensorSide::None == hallSensorSideForSlot(7));
+}
+
+// The bug this exists to stop, stated as the game sees it. A physical row is
+// laid out left to right; each cube's assertion is collected; the row is then
+// walked from its head. It has to come back out in the order it went in.
+//
+// Measured on the bench 2026-10-25: the row 1,3,4,5,6 reported right/3=1,
+// right/4=3, right/5=4, right/6=5, which walks out as 6,5,4,3,1 -- the word
+// backwards.
+static void collectRow(const int* row, int count, int* right_of) {
+    for (int i = 0; i < count; i++) {
+        // Each cube senses whichever neighbour its own board faces.
+        const int sensed =
+            hallSensorSideForSlot(row[i]) == HallSensorSide::Left
+                ? (i > 0 ? row[i - 1] : 0)
+                : (i + 1 < count ? row[i + 1] : 0);
+        const HallEdgeAssertion e = hallEdgeAssertion(row[i], (uint8_t)sensed);
+        if (e.topic_slot != 0 && e.subject_slot != 0) {
+            right_of[e.topic_slot] = e.subject_slot;
+        }
+    }
+}
+
+void test_a_physical_row_reconstructs_in_the_order_it_was_laid_out() {
+    // Player 0, left-facing boards.
+    const int row0[5] = {1, 3, 4, 5, 6};
+    int right_of[20] = {0};
+    collectRow(row0, 5, right_of);
+    TEST_ASSERT_EQUAL(3, right_of[1]);
+    TEST_ASSERT_EQUAL(4, right_of[3]);
+    TEST_ASSERT_EQUAL(5, right_of[4]);
+    TEST_ASSERT_EQUAL(6, right_of[5]);
+    TEST_ASSERT_EQUAL(0, right_of[6]);  // last cube, nothing to its right
+
+    // Player 1, right-facing boards: the same walk, the same direction.
+    const int row1[4] = {14, 11, 16, 12};
+    int right_of1[20] = {0};
+    collectRow(row1, 4, right_of1);
+    TEST_ASSERT_EQUAL(11, right_of1[14]);
+    TEST_ASSERT_EQUAL(16, right_of1[11]);
+    TEST_ASSERT_EQUAL(12, right_of1[16]);
+    TEST_ASSERT_EQUAL(0, right_of1[12]);
+}
+
+// A right-facing cube is the subject of its own topic, so it clears it on
+// connect: a standing "no neighbour" while it has a hall board, and an outright
+// delete once it does not, so a hall-era edge cannot outlive the cable.
+void test_a_right_facing_cube_clears_its_own_topic() {
+    TEST_ASSERT_TRUE(HallEdgeCleanup::ClearOwnStanding ==
+                     hallEdgeCleanupOnConnect(12, true));
+    TEST_ASSERT_TRUE(HallEdgeCleanup::ClearOwnRetire ==
+                     hallEdgeCleanupOnConnect(12, false));
+}
+
+// The cable-swap case, and the reason the left-facing branch cannot sit inside
+// a magnets-only check. A left-facing cube writes its edge on its NEIGHBOUR's
+// topic. Replugged with an NFC reader it stops writing cube/right at all, so
+// that hall-era record is precisely the one nothing will ever overwrite -- and
+// it cannot clear its own topic instead, because the cube to its right owns
+// that one. It has to watch for records naming itself in BOTH modes.
+void test_a_left_facing_cube_watches_for_self_claims_in_either_mode() {
+    TEST_ASSERT_TRUE(HallEdgeCleanup::WatchSelfClaims ==
+                     hallEdgeCleanupOnConnect(3, true));   // hall board fitted
+    TEST_ASSERT_TRUE(HallEdgeCleanup::WatchSelfClaims ==
+                     hallEdgeCleanupOnConnect(3, false));  // swapped to NFC
+}
+
+void test_a_cube_with_no_group_has_nothing_to_retire() {
+    TEST_ASSERT_TRUE(HallEdgeCleanup::None == hallEdgeCleanupOnConnect(-1, true));
+    TEST_ASSERT_TRUE(HallEdgeCleanup::None == hallEdgeCleanupOnConnect(0, false));
+    TEST_ASSERT_TRUE(HallEdgeCleanup::None == hallEdgeCleanupOnConnect(7, true));
+    TEST_ASSERT_TRUE(HallEdgeCleanup::None == hallEdgeCleanupOnConnect(17, false));
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -1659,6 +1780,15 @@ int main(void) {
     RUN_TEST(test_the_shared_patterns_resolve_per_player);
     RUN_TEST(test_a_reader_with_no_group_names_nobody);
     RUN_TEST(test_a_mask_no_cube_is_fitted_with_names_nobody);
+    RUN_TEST(test_a_right_facing_cube_asserts_on_its_own_topic);
+    RUN_TEST(test_a_left_facing_cube_asserts_on_its_neighbours_topic);
+    RUN_TEST(test_a_left_facing_cube_with_no_neighbour_asserts_nothing);
+    RUN_TEST(test_an_unassigned_cube_asserts_nothing);
+    RUN_TEST(test_the_sensor_side_is_per_player);
+    RUN_TEST(test_a_physical_row_reconstructs_in_the_order_it_was_laid_out);
+    RUN_TEST(test_a_right_facing_cube_clears_its_own_topic);
+    RUN_TEST(test_a_left_facing_cube_watches_for_self_claims_in_either_mode);
+    RUN_TEST(test_a_cube_with_no_group_has_nothing_to_retire);
 
     return UNITY_END();
 }
