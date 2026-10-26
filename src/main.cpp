@@ -1293,11 +1293,15 @@ public:
     const float t = (float)((now - border_preview_start_time) % BORDER_PREVIEW_PULSE_MS) / BORDER_PREVIEW_PULSE_MS;
     const float inv = 1.0f - t;
     const float p = 1.0f - inv * inv * inv * inv * inv;
-    const bool left = border_preview_side == 'W';
+    // 'W'/'E' say where the prospective NEIGHBOUR is, so the side to draw has
+    // to be derived: the shared edge is on the neighbour's side, the free-end
+    // cap is away from it.
+    const bool neighbour_on_left = border_preview_side == 'W';
     // Any settled vertical edge makes this cube part of a series rather than a
     // free endpoint. It sheds the prospective edge while a free endpoint grows
     // the complete three-sided end shape.
     const bool has_confirmed_edge = border.to.left != 0 || border.to.right != 0;
+    const bool left = previewDrawsLeftSide(neighbour_on_left, has_confirmed_edge);
     if (has_confirmed_edge) {
       drawPreviewSideErasing(left, p, WHITE);
     } else {
@@ -3144,11 +3148,14 @@ void loop() {
         if (wanted_preview != preview_candidate ||
             (wanted_preview && current_time - last_preview_publish >= 1000)) {
           if (mqtt_client.isConnected()) {
-            mqtt_client.publish(mqtt_topic_cube + "/border_preview", wanted_preview ? "E" : "", false);
+            // The payload says where each cube's neighbour IS, not which side
+            // to draw: the preview renders opposite sides for a free endpoint
+            // and for a cube already in a chain. See hallPreviewNeighbourSides.
+            const HallPreviewNeighbourSides sides =
+                hallPreviewNeighbourSides(applied_slot);
+            mqtt_client.publish(mqtt_topic_cube + "/border_preview", wanted_preview ? sides.mine : "", false);
             if (preview_candidate) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(preview_candidate) + "/border_preview", "", false);
-            // The consolidated border protocol renders this physical shared
-            // edge as east on both participants, including the endpoint.
-            if (wanted_preview) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(wanted_preview) + "/border_preview", "E", false);
+            if (wanted_preview) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(wanted_preview) + "/border_preview", sides.candidate, false);
             preview_candidate = wanted_preview;
             last_preview_publish = current_time;
           }
