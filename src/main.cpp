@@ -369,11 +369,22 @@ static unsigned long next_wifi_connection_attempt = 0;
 // Animation
 char last_neighbor_id[NFCID_LENGTH * 2 + 1] = "INIT";  // last raw NFC value read
 char last_right_published[8] = "INIT";                  // last value published to /right
+// The slot whose cube/right topic we last wrote. With a left-side sensor the
+// topic is keyed by the NEIGHBOUR, so it moves when the neighbour changes and
+// the previous one has to be retired by hand -- a cube does not own one fixed
+// topic any more. 0 = nothing written yet.
+int last_right_topic_slot = 0;
 
 // Pre-allocated MQTT topics
 String mqtt_topic_cube;
 String mqtt_topic_echo;
 String mqtt_topic_cube_right;  // publishes neighbor cube index to cube/right/<id>
+
+// cube/right for any slot, not just our own: a left-side sensor asserts on its
+// neighbour's topic.
+static String rightTopicForSlot(int slot) {
+  return String(MQTT_TOPIC_PREFIX_CUBE) + String("right/") + String(slot);
+}
 
 // UDP Configuration
 #define UDP_PORT 54321  // Port for ping-pong
@@ -1996,25 +2007,52 @@ void subscribeSlotTopics() {
   mqtt_client.subscribe(mqtt_topic_cube + "/reset", [resetActivityTimer](const String& msg) { resetActivityTimer(); handleResetCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/rise_ms", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleRiseMsCommand(msg); });
 
-  if (sensorModeIsMagnets()) {
-    mqtt_client.publish(mqtt_topic_cube_right, "-", true);
-    strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
-    last_right_published[sizeof(last_right_published) - 1] = '\0';
-  } else {
-    // cube/right is retained, so the last edge a hall board reported outlives
-    // the swap back to a reader. The game server applies every cube/right
-    // payload without consulting sensor_mode, so the broker replays that edge
-    // on its next subscribe and a word can form around a neighbour that has
-    // not existed since the cable changed.
-    //
-    // Empty, not "-": an empty payload deletes the retained record rather than
-    // leaving a standing "no neighbour" assertion, and it is already how a
-    // cleared edge is expressed. The NFC path re-announces its own observation
-    // right after this -- last_observation_published is reset just before
-    // subscribeSlotTopics() runs -- so clearing here cannot strand the edge
-    // the observation path owns.
-    mqtt_client.publish(mqtt_topic_cube_right, "", true);
-    last_right_published[0] = '\0';
+  // Retiring a stale cube/right record: see hallEdgeCleanupOnConnect for who
+  // is allowed to clear which topic, and why the left-facing case ignores the
+  // sensor mode.
+  switch (hallEdgeCleanupOnConnect(applied_slot, sensorModeIsMagnets())) {
+    case HallEdgeCleanup::ClearOwnStanding:
+      mqtt_client.publish(mqtt_topic_cube_right, "-", true);
+      strncpy(last_right_published, "-", sizeof(last_right_published) - 1);
+      last_right_published[sizeof(last_right_published) - 1] = '\0';
+      last_right_topic_slot = applied_slot;
+      break;
+
+    case HallEdgeCleanup::ClearOwnRetire:
+      // Empty, not "-": an empty payload deletes the retained record rather
+      // than leaving a standing "no neighbour" assertion, and it is already how
+      // a cleared edge is expressed. The NFC path re-announces its own
+      // observation right after this -- last_observation_published is reset
+      // just before subscribeSlotTopics() runs -- so clearing here cannot
+      // strand the edge the observation path owns.
+      mqtt_client.publish(mqtt_topic_cube_right, "", true);
+      last_right_published[0] = '\0';
+      last_right_topic_slot = 0;
+      break;
+
+    case HallEdgeCleanup::WatchSelfClaims:
+      // Every cube/right record, not just one topic, because this cube does not
+      // know which neighbour it last named: last_right_topic_slot is 0 after a
+      // power cut, and in NFC mode it is never set at all. Retire any record
+      // that names this cube as the subject apart from the one it is currently
+      // asserting -- the cube is the authority on where it is. Empty, so the
+      // record ceases to exist rather than standing as a claim about a slot
+      // this cube may know nothing about.
+      mqtt_client.subscribe(
+          "cube/right/+",
+          [](const String& topic, const String& payload) {
+            if (applied_slot <= 0 || payload.toInt() != applied_slot) return;
+            const int topic_slot =
+                topic.substring(topic.lastIndexOf('/') + 1).toInt();
+            if (topic_slot <= 0 || topic_slot == last_right_topic_slot) return;
+            mqtt_client.publish(topic, "", true);
+            Serial.printf("retired stale edge right/%d = %d\n", topic_slot,
+                          applied_slot);
+          });
+      break;
+
+    case HallEdgeCleanup::None:
+      break;
   }
 }
 
@@ -3024,9 +3062,12 @@ void loop() {
                                              hall_presence.delta());
         const uint8_t candidate_id = neighbor.candidate;
         if (settled && candidate_id != stable_id) {
+          // The payload is the assertion's SUBJECT, which is this cube itself
+          // when the sensor faces left -- not the cube it just sensed.
+          const HallEdgeAssertion edge = hallEdgeAssertion(applied_slot, candidate_id);
           char buf[8];
-          if (candidate_id > 0) {
-            snprintf(buf, sizeof(buf), "%d", candidate_id);
+          if (edge.subject_slot > 0) {
+            snprintf(buf, sizeof(buf), "%d", edge.subject_slot);
           } else {
             strcpy(buf, "-");  // no/invalid neighbor
           }
@@ -3035,14 +3076,31 @@ void loop() {
           // a change decided while MQTT is down is never sent: reconnecting
           // republishes a retained "-" and resets last_right_published, and this
           // block would no longer see a difference to publish.
-          if (strcmp(buf, last_right_published) == 0) {
+          if (edge.topic_slot == last_right_topic_slot &&
+              strcmp(buf, last_right_published) == 0) {
             stable_id = candidate_id;
-          } else if (mqtt_client.isConnected() &&
-                     mqtt_client.publish(mqtt_topic_cube_right, buf, true)) {
-            strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
-            last_right_published[sizeof(last_right_published) - 1] = '\0';
-            stable_id = candidate_id;
-            Serial.printf("Hall neighbor -> %s\n", buf);
+          } else if (mqtt_client.isConnected()) {
+            bool published = true;
+            // Retire the previous assertion before making the new one. A
+            // left-side sensor that moves to a different neighbour is asserting
+            // on a different topic, and the old one is retained -- left alone it
+            // stands forever, claiming an edge that no longer exists.
+            if (last_right_topic_slot != 0 &&
+                last_right_topic_slot != edge.topic_slot) {
+              published = mqtt_client.publish(
+                  rightTopicForSlot(last_right_topic_slot), "-", true);
+            }
+            if (published && edge.topic_slot != 0) {
+              published = mqtt_client.publish(
+                  rightTopicForSlot(edge.topic_slot), buf, true);
+            }
+            if (published) {
+              last_right_topic_slot = edge.topic_slot;
+              strncpy(last_right_published, buf, sizeof(last_right_published) - 1);
+              last_right_published[sizeof(last_right_published) - 1] = '\0';
+              stable_id = candidate_id;
+              Serial.printf("Hall edge -> right/%d = %s\n", edge.topic_slot, buf);
+            }
           }
           if (stable_id == candidate_id) neighbor.reported();
         }
