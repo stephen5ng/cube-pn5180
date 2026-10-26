@@ -213,62 +213,6 @@ void test_baseline_saves_when_nothing_is_stored_yet() {
     TEST_ASSERT_TRUE(shouldSavePresenceBaseline(0, false, 1771, 0));
 }
 
-// Distance and closeness exist so a consumer never has to know the cube law. These
-// use the shipped on_delta of 95 and the readings measured on slot 1.
-void test_distance_falls_as_the_cube_root_of_field() {
-    // Reference point: at on_delta the cube is exactly at the latch distance.
-    TEST_ASSERT_EQUAL(100, hallPresenceDistance(95, 95));
-    // Eight times the field is half the distance, which is the whole point of the
-    // conversion -- delta alone would read as an eightfold change.
-    TEST_ASSERT_EQUAL(50, hallPresenceDistance(95 * 8, 95));
-    TEST_ASSERT_EQUAL(200, hallPresenceDistance(95, 95 * 8));
-}
-
-void test_distance_reports_out_of_range_behind_the_baseline() {
-    // A negative delta is the rail below its baseline, not a very distant magnet.
-    TEST_ASSERT_EQUAL(999, hallPresenceDistance(0, 95));
-    TEST_ASSERT_EQUAL(999, hallPresenceDistance(-30, 95));
-}
-
-void test_closeness_spans_nothing_to_docked() {
-    // Nothing in range, including the out-of-range sentinel, must read as 0 rather
-    // than leak 999 into an animation.
-    TEST_ASSERT_EQUAL(0, hallPresenceCloseness(0, 95));
-    TEST_ASSERT_EQUAL(0, hallPresenceCloseness(-30, 95));
-    // 35 counts is the measured ADC noise floor: the first delta worth believing.
-    TEST_ASSERT_EQUAL(0, hallPresenceCloseness(35, 95));
-    // 127 is the docked reading measured on slot 1.
-    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(127, 95));
-    // Closer still stays pinned rather than running over 100.
-    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(400, 95));
-}
-
-void test_closeness_rises_smoothly_between_the_endpoints() {
-    // An animation needs every step of the approach, not just a jump at the trip
-    // point, so assert it is strictly increasing across the usable span.
-    int previous = -1;
-    for (int delta = 36; delta <= 127; delta++) {
-        const int closeness = hallPresenceCloseness(delta, 95);
-        TEST_ASSERT_TRUE(closeness >= previous);
-        TEST_ASSERT_TRUE(closeness >= 0 && closeness <= 100);
-        previous = closeness;
-    }
-    // Latching happens partway up, not at the top: most of the travel is before it.
-    const int at_latch = hallPresenceCloseness(95, 95);
-    TEST_ASSERT_TRUE(at_latch > 50 && at_latch < 100);
-}
-
-void test_candidate_preview_stops_when_presence_is_confirmed() {
-    TEST_ASSERT_TRUE(shouldPreviewHallCandidate(1, false));
-    TEST_ASSERT_TRUE(shouldPreviewHallCandidate(99, false));
-    TEST_ASSERT_FALSE(shouldPreviewHallCandidate(0, false));
-    TEST_ASSERT_FALSE(shouldPreviewHallCandidate(100, false));
-
-    // A fully docked cube can read below the calibrated 100% endpoint. The
-    // presence latch is authoritative, so that state must clear the preview.
-    TEST_ASSERT_FALSE(shouldPreviewHallCandidate(94, true));
-}
-
 // Cube 11 slid one column reads as cube 4 while presence is still latched. The
 // change is only believed at docked strength; below it the gate reports no
 // neighbour rather than the wrong one.
@@ -1391,26 +1335,6 @@ void test_hall_gain_rejects_anything_it_cannot_parse() {
     TEST_ASSERT_TRUE(plausibleHallGain(4));
 }
 
-// The proximity bar reads 0 at the noise floor and 100 at a dock. Both of those
-// reference points are deltas, so both have to scale with the gain -- otherwise
-// an A2 board pins the bar at 100 as soon as a neighbour is anywhere near.
-void test_closeness_reference_points_scale_with_gain() {
-    // A4: unchanged from how it was calibrated.
-    TEST_ASSERT_EQUAL(0,   hallPresenceCloseness(35, 70, 1));
-    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(127, 70, 1));
-
-    // A2: the same physical positions, four times the counts and four times
-    // the on_delta, must read the same closeness.
-    TEST_ASSERT_EQUAL(0,   hallPresenceCloseness(35 * 4, 70 * 4, 4));
-    TEST_ASSERT_EQUAL(100, hallPresenceCloseness(127 * 4, 70 * 4, 4));
-
-    // And the midpoint tracks, rather than saturating at one end.
-    const int mid_a4 = hallPresenceCloseness((35 + 127) / 2, 70, 1);
-    const int mid_a2 = hallPresenceCloseness(((35 + 127) / 2) * 4, 70 * 4, 4);
-    TEST_ASSERT_TRUE(mid_a4 > 0 && mid_a4 < 100);
-    TEST_ASSERT_INT_WITHIN(2, mid_a4, mid_a2);
-}
-
 // The reason hallRevAction exists rather than a bare "did the gain change?"
 // check. Gain 4 is the v8 build default, so a v8 cube told "a2" is already
 // running the right thresholds and needs no reboot -- but with nothing in NVS,
@@ -1630,69 +1554,6 @@ void test_a_cube_with_no_group_has_nothing_to_retire() {
     TEST_ASSERT_TRUE(HallEdgeCleanup::None == hallEdgeCleanupOnConnect(17, false));
 }
 
-// The payload is where the NEIGHBOUR is, not which side to draw. A cube sensing
-// leftward found its neighbour on its west and is itself on that neighbour's
-// east, so the pair always gets opposite facts -- never the same string, which
-// is what shipped originally.
-void test_each_cube_is_told_which_side_its_neighbour_is_on() {
-    const HallPreviewNeighbourSides p0 = hallPreviewNeighbourSides(5);
-    TEST_ASSERT_EQUAL_STRING("W", p0.mine);        // cube 5 senses leftward
-    TEST_ASSERT_EQUAL_STRING("E", p0.candidate);   // ... so it is east of cube 2
-
-    const HallPreviewNeighbourSides p1 = hallPreviewNeighbourSides(13);
-    TEST_ASSERT_EQUAL_STRING("E", p1.mine);
-    TEST_ASSERT_EQUAL_STRING("W", p1.candidate);
-
-    TEST_ASSERT_TRUE(p0.mine[0] != p0.candidate[0]);
-    TEST_ASSERT_TRUE(p1.mine[0] != p1.candidate[0]);
-}
-
-void test_a_cube_with_no_group_previews_no_side() {
-    const int ungrouped[] = {-1, 0, 7, 10, 17};
-    for (unsigned i = 0; i < sizeof(ungrouped) / sizeof(ungrouped[0]); i++) {
-        const HallPreviewNeighbourSides s = hallPreviewNeighbourSides(ungrouped[i]);
-        TEST_ASSERT_EQUAL_STRING("", s.mine);
-        TEST_ASSERT_EQUAL_STRING("", s.candidate);
-    }
-}
-
-// The two topologies draw on OPPOSITE sides from the same fact, which is why a
-// payload naming a side could never be right for both. A free endpoint caps the
-// end away from its neighbour; a cube already in a chain animates the shared
-// edge, which is on the neighbour's side.
-void test_the_drawn_side_flips_with_the_topology() {
-    // Neighbour on the left.
-    TEST_ASSERT_FALSE(previewDrawsLeftSide(true,  false));  // free end -> cap right
-    TEST_ASSERT_TRUE (previewDrawsLeftSide(true,  true));   // in chain -> shared edge left
-    // Neighbour on the right.
-    TEST_ASSERT_TRUE (previewDrawsLeftSide(false, false));  // free end -> cap left
-    TEST_ASSERT_FALSE(previewDrawsLeftSide(false, true));   // in chain -> shared edge right
-}
-
-// End to end, in the terms the bug was reported: cube 2 docked to the LEFT of
-// cube 5, both free endpoints, was animating top/bottom/RIGHT when it should
-// have capped top/bottom/LEFT.
-void test_the_reported_pair_caps_its_outer_ends() {
-    const HallPreviewNeighbourSides sides = hallPreviewNeighbourSides(5);  // cube 5 senses
-    // Cube 5: neighbour to its west, free endpoint -> caps its east end.
-    TEST_ASSERT_FALSE(previewDrawsLeftSide(sides.mine[0] == 'W', false));
-    // Cube 2: neighbour to its east, free endpoint -> caps its WEST end.
-    TEST_ASSERT_TRUE(previewDrawsLeftSide(sides.candidate[0] == 'W', false));
-}
-
-// The reviewer's case on #143: a player-1 cube with a settled left border that
-// senses a new neighbour on its right must animate the RIGHT edge. Sending it
-// "W" made it erase the existing left edge instead.
-void test_a_cube_already_in_a_chain_animates_the_prospective_edge() {
-    const HallPreviewNeighbourSides p1 = hallPreviewNeighbourSides(13);
-    TEST_ASSERT_EQUAL_STRING("E", p1.mine);                       // neighbour east
-    TEST_ASSERT_FALSE(previewDrawsLeftSide(p1.mine[0] == 'W', true));  // draws right
-    // Player 0's mirrored case.
-    const HallPreviewNeighbourSides p0 = hallPreviewNeighbourSides(5);
-    TEST_ASSERT_EQUAL_STRING("W", p0.mine);
-    TEST_ASSERT_TRUE(previewDrawsLeftSide(p0.mine[0] == 'W', true));   // draws left
-}
-
 int main(void) {
     UNITY_BEGIN();
 
@@ -1802,11 +1663,6 @@ int main(void) {
     RUN_TEST(test_baseline_is_not_saved_while_presence_is_asserted);
     RUN_TEST(test_baseline_saves_only_on_a_move_worth_a_flash_write);
     RUN_TEST(test_baseline_saves_when_nothing_is_stored_yet);
-    RUN_TEST(test_distance_falls_as_the_cube_root_of_field);
-    RUN_TEST(test_distance_reports_out_of_range_behind_the_baseline);
-    RUN_TEST(test_closeness_spans_nothing_to_docked);
-    RUN_TEST(test_closeness_rises_smoothly_between_the_endpoints);
-    RUN_TEST(test_candidate_preview_stops_when_presence_is_confirmed);
     RUN_TEST(test_id_change_to_another_cube_needs_a_docked_reading);
     RUN_TEST(test_id_change_gate_lets_the_seated_cube_return_weakly);
     RUN_TEST(test_id_change_gate_passes_the_first_id_and_absence);
@@ -1834,7 +1690,6 @@ int main(void) {
 
     RUN_TEST(test_hall_gain_maps_every_drv5055_variant);
     RUN_TEST(test_hall_gain_rejects_anything_it_cannot_parse);
-    RUN_TEST(test_closeness_reference_points_scale_with_gain);
     RUN_TEST(test_a_rev_matching_the_build_default_is_still_written_to_nvs);
     RUN_TEST(test_a_rev_that_changes_the_gain_asks_for_a_restart);
     RUN_TEST(test_an_unparseable_rev_does_nothing_at_all);
@@ -1852,11 +1707,6 @@ int main(void) {
     RUN_TEST(test_a_right_facing_cube_clears_its_own_topic);
     RUN_TEST(test_a_left_facing_cube_watches_for_self_claims_in_either_mode);
     RUN_TEST(test_a_cube_with_no_group_has_nothing_to_retire);
-    RUN_TEST(test_each_cube_is_told_which_side_its_neighbour_is_on);
-    RUN_TEST(test_the_drawn_side_flips_with_the_topology);
-    RUN_TEST(test_the_reported_pair_caps_its_outer_ends);
-    RUN_TEST(test_a_cube_already_in_a_chain_animates_the_prospective_edge);
-    RUN_TEST(test_a_cube_with_no_group_previews_no_side);
 
     return UNITY_END();
 }

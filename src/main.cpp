@@ -123,12 +123,6 @@ void initialiseNeighbourSensor() {
 // the easing is why the two are closer than the numbers look -- 100ms of
 // duration is only 33ms of visible motion.
 #define BORDER_ANIMATION_DURATION_MS 350
-// The border PREVIEW loops on its own period rather than sharing the draw-in's.
-// It used the same constant, so halving the draw-in doubled the preview's pulse
-// rate as a side effect -- and the two are not the same motion: the draw-in
-// plays once on arrival, while the preview repeats for as long as a candidate
-// is near. Keeping it at 500 leaves the preview looking exactly as it did.
-#define BORDER_PREVIEW_PULSE_MS 500
 // MQTT can dispatch a small batch of topology updates before the display draws
 // its next frame. Let the final update in that frame replace the target while
 // preserving the original border as the animation's start state.
@@ -234,14 +228,6 @@ static int hallPresenceOffDelta() { return HALL_PRESENCE_BASE_OFF_DELTA * hall_g
 #define HALL_PRESENCE_FAST_SHIFT       5
 #define HALL_PRESENCE_BASE_SHIFT       7
 #define HALL_PRESENCE_BASE_INTERVAL_MS 250  // baseline tau ~32s
-
-
-// The 0..100 closeness of the neighbour, driving the presence bar and the
-// candidate border preview. Smoothed harder than the detection path, which is
-// deliberately quick so a docking cube latches promptly: at the ~1kHz poll a
-// shift of 7 is roughly 128ms, slow enough that the +/-13 counts of ADC noise
-// measured on slot 1 do not show as jitter.
-#define HALL_PROXIMITY_SHIFT           7
 // GH1230KSW ID sensors are open-drain, pulled up on the hall board by R1-R6:
 // 10k on the v2 boards, 4.7k from v2.2 on, where a JLCPCB stock-out forced
 // the substitution. Nothing here depends on the value -- only on the sense:
@@ -489,9 +475,6 @@ private:
   // driving a tri-stated pin set or an unpowered panel is what the pairing
   // exists to prevent.
   bool panel_powered;
-  char border_preview_side;
-  unsigned long border_preview_start_time;
-  unsigned long border_preview_until;
   //: How long the sink spends TRAVELLING, in ms. Below this the glyphs move;
   //: above it they have arrived and the settle tail rebounds three times.
   //:
@@ -599,9 +582,7 @@ public:
                                 text_size(1), is_lock(false),
                                 // setup() raises the rail and the constructor
                                 // below runs begin(), so the panel is live here.
-                                panel_powered(true),
-                                border_preview_side(0), border_preview_start_time(0),
-                                border_preview_until(0) {
+                                panel_powered(true) {
     setMessage(previous_message, " ");
     setMessage(current_message, " ");
     ui_mode = UI_MODE_GAME_NORMAL;
@@ -730,7 +711,6 @@ public:
       }
     }
     if (border.tick(current_time, BORDER_ANIMATION_DURATION_MS)) is_dirty = true;
-    if (border_preview_side) is_dirty = true;
     if (glide_active) {
       if (current_time - glide_start_ms >= ENTRY_GLIDE_MS) {
         glide_active = false;
@@ -1024,24 +1004,6 @@ public:
       }
     }
   }
-  void drawPreviewSideErasing(bool left, float p, uint16_t side) {
-    // p=0 is a complete shared edge. As p grows, its two halves withdraw
-    // from the centre to their endpoints; the following preview cycle snaps
-    // straight back to the complete edge.
-    const int half = (int)(PANEL_RES_Y / 2.0f * (1.0f - p) + .5f);
-    for (uint8_t line = 0; line < BORDER_LINE_COUNT / 2; ++line) {
-      const int x = left ? line : PANEL_RES_X - BORDER_LINE_COUNT / 2 + line;
-      if (half) {
-        led_display->drawFastVLine(x, 0, half, side);
-        led_display->drawFastVLine(x, PANEL_RES_Y - half, half, side);
-      }
-      // A settled border can already occupy this edge. Mask its middle before
-      // drawing the remaining halves so the withdrawal is visible in either
-      // topology.
-      const int gap = PANEL_RES_Y - 2 * half;
-      if (gap) led_display->drawFastVLine(x, half, gap, BLACK);
-    }
-  }
   void drawAnimatedBorder(float p) {
     const bool from_empty = isEmptyBorder(border.from.top, border.from.bottom, border.from.left, border.from.right);
     const bool to_empty = isEmptyBorder(border.to.top, border.to.bottom, border.to.left, border.to.right);
@@ -1267,59 +1229,26 @@ public:
     }
 
     drawBorderFrame();
-    drawBorderPreview(current_time);
     led_display->flipDMABuffer();
     is_dirty = false;
 
     // AFTER the flip, so the blank frame is what the panel was last given. The
     // rail then goes down over a dark panel rather than mid-letter.
-    if (displayIsBlank(current_time)) {
+    if (displayIsBlank()) {
       powerDownPanel();
     }
   }
 
-  void handleBorderPreviewCommand(const String& message) {
-    // Protocol: E or W identifies the prospective shared edge.
-    const char side = message.length() ? message.charAt(0) : 0;
-    border_preview_side = (side == 'E' || side == 'W') ? side : 0;
-    border_preview_start_time = millis();
-    border_preview_until = border_preview_side ? border_preview_start_time + 1500 : 0;
-    is_dirty = true;
-  }
-
-  void drawBorderPreview(unsigned long now) {
-    if (!border_preview_side) return;
-    if (now >= border_preview_until) { border_preview_side = 0; return; }
-    const float t = (float)((now - border_preview_start_time) % BORDER_PREVIEW_PULSE_MS) / BORDER_PREVIEW_PULSE_MS;
-    const float inv = 1.0f - t;
-    const float p = 1.0f - inv * inv * inv * inv * inv;
-    // 'W'/'E' say where the prospective NEIGHBOUR is, so the side to draw has
-    // to be derived: the shared edge is on the neighbour's side, the free-end
-    // cap is away from it.
-    const bool neighbour_on_left = border_preview_side == 'W';
-    // Any settled vertical edge makes this cube part of a series rather than a
-    // free endpoint. It sheds the prospective edge while a free endpoint grows
-    // the complete three-sided end shape.
-    const bool has_confirmed_edge = border.to.left != 0 || border.to.right != 0;
-    const bool left = previewDrawsLeftSide(neighbour_on_left, has_confirmed_edge);
-    if (has_confirmed_edge) {
-      drawPreviewSideErasing(left, p, WHITE);
-    } else {
-      drawEndPath(left, p, WHITE, WHITE, WHITE);
-    }
-  }
-
   // EVERY DRAW THIS FRAME WOULD MAKE, not just the letter. updateDisplay draws
-  // the letter, the border frame and the border preview; a predicate that
-  // forgot one would cut power with that element still owed. Anything added
-  // to updateDisplay belongs here too.
-  bool displayIsBlank(unsigned long now) const {
+  // the letter and the border frame; a predicate that forgot one would cut
+  // power with that element still owed. Anything added to updateDisplay
+  // belongs here too.
+  bool displayIsBlank() const {
     if (!isBlank(current_message) || !isBlank(previous_message)) return false;
     if (percent_complete < 100) return false;          // a letter is animating
     if (border.active || border.has_pending) return false;
     if (border.to.top || border.to.bottom ||
         border.to.left || border.to.right) return false;
-    if (border_preview_side && now < border_preview_until) return false;
     return true;
   }
 
@@ -2003,7 +1932,6 @@ void subscribeSlotTopics() {
 
   mqtt_client.subscribe(mqtt_topic_cube + "/sleep_interval", handleSleepIntervalCommand);
   mqtt_client.subscribe(mqtt_topic_cube + "/border", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleConsolidatedBorderCommand(msg); });
-  mqtt_client.subscribe(mqtt_topic_cube + "/border_preview", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleBorderPreviewCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/wake", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleWakeCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/flash", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleFlashCommand(msg); });
   mqtt_client.subscribe(mqtt_topic_cube + "/letter", [resetActivityTimer](const String& msg) { resetActivityTimer(); display_manager->handleLetterCommand(msg); });
@@ -3065,8 +2993,7 @@ void loop() {
           candidate_raw_count = 1;
         }
       
-        // Not a debug artifact: stable_raw gates the NVS baseline save and
-        // picks the candidate for the border preview.
+        // Not a debug artifact: stable_raw gates the NVS baseline save.
         if (candidate_raw_count >= HALL_DEBOUNCE_READS) {
           stable_raw = candidate_raw;
         }
@@ -3121,45 +3048,7 @@ void loop() {
 
         // decodeHallNeighborId() above fed the tracker this sample, so the
         // accessors describe the reading the id decision was just made on.
-        const int presence_delta = hall_presence.delta();
         const bool presence_state = hall_presence.active();
-
-        static int32_t proximity_filter = 0;
-        static bool proximity_primed = false;
-        if (!proximity_primed) {
-          proximity_filter = (int32_t)presence_delta << HALL_PROXIMITY_SHIFT;
-          proximity_primed = true;
-        } else {
-          proximity_filter += presence_delta - (proximity_filter >> HALL_PROXIMITY_SHIFT);
-        }
-        const int proximity = hallPresenceCloseness(
-            (int)(proximity_filter >> HALL_PROXIMITY_SHIFT), hallPresenceOnDelta(),
-            hall_gain);
-
-        // A debounced 2-of-6 Hall mask identifies the candidate before the
-        // presence latch confirms a neighbour. Preview the prospective shared
-        // edge on both cubes while it is near, but never alter /border.
-        static uint8_t preview_candidate = 0;
-        static unsigned long last_preview_publish = 0;
-        const uint8_t stable_candidate =
-            stable_raw != 0xFF ? hallCubeIdForMask(stable_raw, applied_slot) : 0;
-        const uint8_t wanted_preview =
-            shouldPreviewHallCandidate(proximity, presence_state) ? stable_candidate : 0;
-        if (wanted_preview != preview_candidate ||
-            (wanted_preview && current_time - last_preview_publish >= 1000)) {
-          if (mqtt_client.isConnected()) {
-            // The payload says where each cube's neighbour IS, not which side
-            // to draw: the preview renders opposite sides for a free endpoint
-            // and for a cube already in a chain. See hallPreviewNeighbourSides.
-            const HallPreviewNeighbourSides sides =
-                hallPreviewNeighbourSides(applied_slot);
-            mqtt_client.publish(mqtt_topic_cube + "/border_preview", wanted_preview ? sides.mine : "", false);
-            if (preview_candidate) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(preview_candidate) + "/border_preview", "", false);
-            if (wanted_preview) mqtt_client.publish(String(MQTT_TOPIC_PREFIX_CUBE) + String(wanted_preview) + "/border_preview", sides.candidate, false);
-            preview_candidate = wanted_preview;
-            last_preview_publish = current_time;
-          }
-        }
 
         // Only once there is a reference to save. An unprimed tracker has no
         // baseline worth carrying across a reset, and writing the magic anyway
