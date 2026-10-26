@@ -293,19 +293,11 @@ flash_cube() {
 
     if [ $upload_status -eq 0 ]; then
         echo "✅ Cube $cube_id flashed successfully"
-
-        # Reboot and verify
-        echo "Rebooting cube $cube_id..."
-        mosquitto_pub -h 192.168.8.247 -t "cube/$cube_id/reboot" -m "0"
-#        sleep 8
-
-        # Check firmware version via UDP
-#a        fw_check=$(echo "diag" | nc -u -w 1 "$ip" 54321 2>/dev/null | grep -o 'fw=v[0-9]' || echo "")
-  #      if [[ "$fw_check" == "fw=$version" ]]; then
-#            echo "✅ Verified: cube $cube_id running $version firmware"
-#        else
-#            echo "⚠️  Warning: could not verify firmware version on cube $cube_id"
-#        fi
+        # No reboot command: espota's upload ends with the cube restarting
+        # into the new image by itself, so there is nothing to ask for -- and
+        # no per-cube topic to ask on. The firmware subscribes to the
+        # fleet-wide `cube/reboot` only, never `cube/<id>/reboot`; see
+        # tools/reboot.sh, which says the same.
     else
         echo "❌ Failed to flash cube $cube_id"
         return 1
