@@ -1630,6 +1630,69 @@ void test_a_cube_with_no_group_has_nothing_to_retire() {
     TEST_ASSERT_TRUE(HallEdgeCleanup::None == hallEdgeCleanupOnConnect(17, false));
 }
 
+// The payload is where the NEIGHBOUR is, not which side to draw. A cube sensing
+// leftward found its neighbour on its west and is itself on that neighbour's
+// east, so the pair always gets opposite facts -- never the same string, which
+// is what shipped originally.
+void test_each_cube_is_told_which_side_its_neighbour_is_on() {
+    const HallPreviewNeighbourSides p0 = hallPreviewNeighbourSides(5);
+    TEST_ASSERT_EQUAL_STRING("W", p0.mine);        // cube 5 senses leftward
+    TEST_ASSERT_EQUAL_STRING("E", p0.candidate);   // ... so it is east of cube 2
+
+    const HallPreviewNeighbourSides p1 = hallPreviewNeighbourSides(13);
+    TEST_ASSERT_EQUAL_STRING("E", p1.mine);
+    TEST_ASSERT_EQUAL_STRING("W", p1.candidate);
+
+    TEST_ASSERT_TRUE(p0.mine[0] != p0.candidate[0]);
+    TEST_ASSERT_TRUE(p1.mine[0] != p1.candidate[0]);
+}
+
+void test_a_cube_with_no_group_previews_no_side() {
+    const int ungrouped[] = {-1, 0, 7, 10, 17};
+    for (unsigned i = 0; i < sizeof(ungrouped) / sizeof(ungrouped[0]); i++) {
+        const HallPreviewNeighbourSides s = hallPreviewNeighbourSides(ungrouped[i]);
+        TEST_ASSERT_EQUAL_STRING("", s.mine);
+        TEST_ASSERT_EQUAL_STRING("", s.candidate);
+    }
+}
+
+// The two topologies draw on OPPOSITE sides from the same fact, which is why a
+// payload naming a side could never be right for both. A free endpoint caps the
+// end away from its neighbour; a cube already in a chain animates the shared
+// edge, which is on the neighbour's side.
+void test_the_drawn_side_flips_with_the_topology() {
+    // Neighbour on the left.
+    TEST_ASSERT_FALSE(previewDrawsLeftSide(true,  false));  // free end -> cap right
+    TEST_ASSERT_TRUE (previewDrawsLeftSide(true,  true));   // in chain -> shared edge left
+    // Neighbour on the right.
+    TEST_ASSERT_TRUE (previewDrawsLeftSide(false, false));  // free end -> cap left
+    TEST_ASSERT_FALSE(previewDrawsLeftSide(false, true));   // in chain -> shared edge right
+}
+
+// End to end, in the terms the bug was reported: cube 2 docked to the LEFT of
+// cube 5, both free endpoints, was animating top/bottom/RIGHT when it should
+// have capped top/bottom/LEFT.
+void test_the_reported_pair_caps_its_outer_ends() {
+    const HallPreviewNeighbourSides sides = hallPreviewNeighbourSides(5);  // cube 5 senses
+    // Cube 5: neighbour to its west, free endpoint -> caps its east end.
+    TEST_ASSERT_FALSE(previewDrawsLeftSide(sides.mine[0] == 'W', false));
+    // Cube 2: neighbour to its east, free endpoint -> caps its WEST end.
+    TEST_ASSERT_TRUE(previewDrawsLeftSide(sides.candidate[0] == 'W', false));
+}
+
+// The reviewer's case on #143: a player-1 cube with a settled left border that
+// senses a new neighbour on its right must animate the RIGHT edge. Sending it
+// "W" made it erase the existing left edge instead.
+void test_a_cube_already_in_a_chain_animates_the_prospective_edge() {
+    const HallPreviewNeighbourSides p1 = hallPreviewNeighbourSides(13);
+    TEST_ASSERT_EQUAL_STRING("E", p1.mine);                       // neighbour east
+    TEST_ASSERT_FALSE(previewDrawsLeftSide(p1.mine[0] == 'W', true));  // draws right
+    // Player 0's mirrored case.
+    const HallPreviewNeighbourSides p0 = hallPreviewNeighbourSides(5);
+    TEST_ASSERT_EQUAL_STRING("W", p0.mine);
+    TEST_ASSERT_TRUE(previewDrawsLeftSide(p0.mine[0] == 'W', true));   // draws left
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -1789,6 +1852,11 @@ int main(void) {
     RUN_TEST(test_a_right_facing_cube_clears_its_own_topic);
     RUN_TEST(test_a_left_facing_cube_watches_for_self_claims_in_either_mode);
     RUN_TEST(test_a_cube_with_no_group_has_nothing_to_retire);
+    RUN_TEST(test_each_cube_is_told_which_side_its_neighbour_is_on);
+    RUN_TEST(test_the_drawn_side_flips_with_the_topology);
+    RUN_TEST(test_the_reported_pair_caps_its_outer_ends);
+    RUN_TEST(test_a_cube_already_in_a_chain_animates_the_prospective_edge);
+    RUN_TEST(test_a_cube_with_no_group_previews_no_side);
 
     return UNITY_END();
 }

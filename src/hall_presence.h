@@ -348,6 +348,47 @@ inline bool shouldPreviewHallCandidate(int proximity, bool presence_active) {
   return !presence_active && proximity > 0 && proximity < 100;
 }
 
+// Where each participant's prospective neighbour sits, for the border preview.
+//
+// The payload is a FACT about the topology -- "my neighbour is on my west/east"
+// -- not an instruction about which side to draw. That distinction is the whole
+// bug history of this protocol: the preview renders two different shapes from
+// it, on OPPOSITE sides, so no single "draw here" value can serve both.
+//
+//   free endpoint      drawEndPath caps the end AWAY from the neighbour
+//   already in a chain drawPreviewSideErasing animates the shared edge,
+//                      which is ON the neighbour's side
+//
+// previewDrawsLeftSide() turns this fact into the side to draw. Sending a side
+// directly got the free-end case right and the in-chain case backwards, or the
+// reverse, depending on which way round it was sent.
+//
+// Which side the neighbour is on follows from where the board faces: a cube
+// sensing leftward has found it on its left, and is itself on its neighbour's
+// right. Same mechanical fact hallEdgeAssertion resolves.
+struct HallPreviewNeighbourSides {
+  const char* mine;       // "" when this cube has no group and must not publish
+  const char* candidate;
+};
+
+inline HallPreviewNeighbourSides hallPreviewNeighbourSides(int own_slot) {
+  switch (hallSensorSideForSlot(own_slot)) {
+    // I sense leftward: my neighbour is west of me, and I am east of it.
+    case HallSensorSide::Left:   return {"W", "E"};
+    case HallSensorSide::Right:  return {"E", "W"};
+    case HallSensorSide::None:
+    default:                     return {"", ""};
+  }
+}
+
+// Which side the preview draws on, given where the neighbour is and whether
+// this cube already has a settled vertical edge. The two topologies want
+// opposite sides, which is why this is a function rather than the payload.
+inline bool previewDrawsLeftSide(bool neighbour_on_left, bool has_confirmed_edge) {
+  return has_confirmed_edge ? neighbour_on_left   // the shared edge, on its side
+                            : !neighbour_on_left; // the free end, away from it
+}
+
 class HallPresenceTracker {
  public:
   // saved_baseline carries a baseline across a wake. Priming from the first sample
