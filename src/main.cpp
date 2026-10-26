@@ -117,8 +117,18 @@ void initialiseNeighbourSensor() {
 // Shorter than it looks, because drawBorderFrame() eases with easeOutQuint:
 // five sixths of the travel is over in the first third, so the tail of a longer
 // duration is dead time between a border that has visibly arrived and one the
-// code still calls animating.
-#define BORDER_ANIMATION_DURATION_MS 500
+// code still calls animating. At 350 that visible part is about 117ms.
+//
+// 350 rather than 250: 250 was tried on cube 5 first and read as too quick, and
+// the easing is why the two are closer than the numbers look -- 100ms of
+// duration is only 33ms of visible motion.
+#define BORDER_ANIMATION_DURATION_MS 350
+// The border PREVIEW loops on its own period rather than sharing the draw-in's.
+// It used the same constant, so halving the draw-in doubled the preview's pulse
+// rate as a side effect -- and the two are not the same motion: the draw-in
+// plays once on arrival, while the preview repeats for as long as a candidate
+// is near. Keeping it at 500 leaves the preview looking exactly as it did.
+#define BORDER_PREVIEW_PULSE_MS 500
 // MQTT can dispatch a small batch of topology updates before the display draws
 // its next frame. Let the final update in that frame replace the target while
 // preserving the original border as the animation's start state.
@@ -1280,7 +1290,7 @@ public:
   void drawBorderPreview(unsigned long now) {
     if (!border_preview_side) return;
     if (now >= border_preview_until) { border_preview_side = 0; return; }
-    const float t = (float)((now - border_preview_start_time) % BORDER_ANIMATION_DURATION_MS) / BORDER_ANIMATION_DURATION_MS;
+    const float t = (float)((now - border_preview_start_time) % BORDER_PREVIEW_PULSE_MS) / BORDER_PREVIEW_PULSE_MS;
     const float inv = 1.0f - t;
     const float p = 1.0f - inv * inv * inv * inv * inv;
     const bool left = border_preview_side == 'W';
