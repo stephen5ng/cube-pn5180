@@ -36,44 +36,6 @@ inline bool shouldSavePresenceBaseline(uint8_t id_mask, bool active, int baselin
   return move > PRESENCE_BASELINE_SAVE_DELTA;
 }
 
-// delta is a field strength, which falls off as the cube of distance, so it is a
-// badly misleading gauge of how close a neighbour is: the 176 -> 148 drop
-// measured while re-seating slot 1 looks like losing a sixth of the signal and
-// is under 6% of extra gap. These convert it to a distance, in units where 100
-// is the gap at which presence latches on.
-//
-// Calibration-free by construction: only the ratio to on_delta matters, so no
-// bench measurement of a real gap is needed. The cost is that the number is
-// relative, not millimetres, and the inverse-cube law holds in the far field --
-// across a gap comparable to the magnet the true exponent is smaller, so a
-// distance change is somewhat larger than reported.
-static constexpr int PRESENCE_DISTANCE_REFERENCE = 100;
-static constexpr int PRESENCE_DISTANCE_OUT_OF_RANGE = 999;
-
-inline int hallPresenceDistance(int delta, int on_delta) {
-  if (delta < 1) return PRESENCE_DISTANCE_OUT_OF_RANGE;  // at or behind the baseline
-  return (int)lroundf(PRESENCE_DISTANCE_REFERENCE *
-                      cbrtf((float)on_delta / (float)delta));
-}
-
-// 0..100 for driving an animation: 0 is nothing in range, 100 is as close as a
-// docked neighbour gets. Rising with proximity so brightness, size or speed can
-// use it directly, and clamped at both ends so a consumer never has to know
-// about the out-of-range sentinel.
-//
-// The endpoints are where the number stops being informative rather than where
-// the thresholds sit, and both are stated in the delta counts they were
-// measured in rather than in derived distance: the far end is the ADC noise
-// floor, beyond which nothing is distinguishable from an idle sensor, and the
-// near end is a docked reading. Presence latching and releasing both fall
-// inside this span, which is deliberate -- most of the visible travel happens
-// before a cube is close enough to latch.
-// Measured on slot 1 on 2026-08-13, five weeks before v2.3 and its DRV5055A2
-// existed -- so these, like every other delta in this file, are A4 numbers.
-// (Slot 1 carries a v2.3 board now, which is the whole reason for the gain.)
-// See hallGainForRev().
-static constexpr int PRESENCE_CLOSENESS_NOISE_DELTA = 35;    // measured on slot 1
-static constexpr int PRESENCE_CLOSENESS_DOCKED_DELTA = 127;  // measured on slot 1
 
 // The hall board's presence sensor sets how many ADC counts a given field is
 // worth, and the two revs in the fleet are not the same part:
@@ -268,15 +230,6 @@ inline HallRevAction hallRevAction(const char* rev, int stored, int running) {
   return HallRevAction::AlreadyApplied;
 }
 
-inline int hallPresenceCloseness(int delta, int on_delta, int gain = 1) {
-  const int far = hallPresenceDistance(PRESENCE_CLOSENESS_NOISE_DELTA * gain, on_delta);
-  const int near_by = hallPresenceDistance(PRESENCE_CLOSENESS_DOCKED_DELTA * gain, on_delta);
-  const int distance = hallPresenceDistance(delta, on_delta);
-  if (distance >= far) return 0;
-  if (distance <= near_by) return 100;
-  return 100 * (far - distance) / (far - near_by);
-}
-
 // Whether a decoded neighbour ID may be believed, given the ID already seated during
 // this presence latch (0 if none yet).
 //
@@ -340,54 +293,6 @@ struct HallNeighborDebounce {
     if (candidate != 0) seated = candidate;
   }
 };
-
-// The shared-edge animation is an approach hint, not a second representation of
-// a confirmed neighbour. A real dock can settle below the calibrated 100% point,
-// so the presence latch, rather than closeness alone, ends the preview.
-inline bool shouldPreviewHallCandidate(int proximity, bool presence_active) {
-  return !presence_active && proximity > 0 && proximity < 100;
-}
-
-// Where each participant's prospective neighbour sits, for the border preview.
-//
-// The payload is a FACT about the topology -- "my neighbour is on my west/east"
-// -- not an instruction about which side to draw. That distinction is the whole
-// bug history of this protocol: the preview renders two different shapes from
-// it, on OPPOSITE sides, so no single "draw here" value can serve both.
-//
-//   free endpoint      drawEndPath caps the end AWAY from the neighbour
-//   already in a chain drawPreviewSideErasing animates the shared edge,
-//                      which is ON the neighbour's side
-//
-// previewDrawsLeftSide() turns this fact into the side to draw. Sending a side
-// directly got the free-end case right and the in-chain case backwards, or the
-// reverse, depending on which way round it was sent.
-//
-// Which side the neighbour is on follows from where the board faces: a cube
-// sensing leftward has found it on its left, and is itself on its neighbour's
-// right. Same mechanical fact hallEdgeAssertion resolves.
-struct HallPreviewNeighbourSides {
-  const char* mine;       // "" when this cube has no group and must not publish
-  const char* candidate;
-};
-
-inline HallPreviewNeighbourSides hallPreviewNeighbourSides(int own_slot) {
-  switch (hallSensorSideForSlot(own_slot)) {
-    // I sense leftward: my neighbour is west of me, and I am east of it.
-    case HallSensorSide::Left:   return {"W", "E"};
-    case HallSensorSide::Right:  return {"E", "W"};
-    case HallSensorSide::None:
-    default:                     return {"", ""};
-  }
-}
-
-// Which side the preview draws on, given where the neighbour is and whether
-// this cube already has a settled vertical edge. The two topologies want
-// opposite sides, which is why this is a function rather than the payload.
-inline bool previewDrawsLeftSide(bool neighbour_on_left, bool has_confirmed_edge) {
-  return has_confirmed_edge ? neighbour_on_left   // the shared edge, on its side
-                            : !neighbour_on_left; // the free end, away from it
-}
 
 class HallPresenceTracker {
  public:
