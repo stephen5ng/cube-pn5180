@@ -214,10 +214,22 @@ static void restoreBatteryLowLatch() {
 #define HALL_PRESENCE_BASE_ON_DELTA    70
 #define HALL_PRESENCE_BASE_OFF_DELTA   15
 
-// Default for a cube that has never been told. Set per carrier env: a v8 board
-// is new enough that it ships beside a v2.3 hall board, while the v6 cubes in
-// slots 11-16 are the v2.2 boards every delta here was calibrated on. NVS
-// overrides it, so this only decides the first boot after a fresh flash.
+// Default for a cube that has never been told, and deliberately NOT set per
+// carrier env. env:v8 used to force 4 on the grounds that a v8 carrier ships
+// beside a v2.3 hall board; measured 2026-10-26, that is false as built -- the
+// only v8 cube carries an A4, and both A2 boards in the fleet sit in v6 cubes.
+// The hall board is a daughterboard that swaps independently of the carrier, so
+// nothing about the carrier predicts the sensor and no build flag can guess it.
+//
+// 1 is the safe default because it is the gain the deltas below were calibrated
+// at: an undertold A2 cube reads 4x the counts against the same threshold, so
+// it latches early rather than failing to latch. The reverse -- defaulting to 4
+// on an A4 board -- is what shipped, and it left two cubes needing 4x the field
+// to see a neighbour at all.
+//
+// NVS overrides this, so it only decides the first boot after a fresh flash of
+// a cube nobody has told. Tell it with cube/device/<mac>/hall_rev, whose value
+// names the SENSOR SUFFIX (a2/a4), not the board rev.
 #ifndef HALL_DEFAULT_GAIN
 #define HALL_DEFAULT_GAIN 1
 #endif
